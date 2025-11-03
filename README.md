@@ -1,6 +1,6 @@
 # Sing-box SS2022 一键部署脚本
 
-这个仓库提供了一个 **一键部署 Sing-box Shadowsocks 2022 (2022-blake3-aes-128-gcm)** 的 Bash 脚本，支持 Debian/Ubuntu 和 Alpine Linux。
+ **一键部署 Sing-box Shadowsocks 2022 (2022-blake3-aes-128-gcm)** 的 Bash 脚本，支持 Debian/Ubuntu 和 Alpine Linux。
 
 ## 功能
 
