@@ -682,6 +682,8 @@ action_reset_port_pwd() {
     fi
     info "已写入新端口($new_port)与新密码(隐藏)，正在重启服务..."
     service_restart || warn "重启失败"
+    # 生成新的 SS URI
+    generate_and_save_uri || warn "生成 SS URI 失败"
 }
 
 # Update sing-box (preserve config)
