@@ -11,18 +11,18 @@
 
 ## ✅ 功能特点
 
-- **自动检测系统类型**（Alpine / Debian / Ubuntu / CentOS / 其他常见 Linux）
-- **自动检测 CPU 架构**（amd64 / arm64 / armv7 / 386）
-- **自动从 GitHub 拉取 sing-box 最新 Release**
-- 自动安装依赖（curl / tar / openssl 等）
-- 支持自定义端口或自动随机端口（10000–60000）
-- 支持自定义或自动生成 Base64 PSK（16 字节）
-- 自动生成 SS2022 配置文件
-- 自动创建服务（systemd 或 OpenRC）
-- 自动获取公网 IP
+- **自动检测系统类型**（Alpine / Debian / Ubuntu / CentOS / 其他常见 Linux）  
+- **自动检测 CPU 架构**（amd64 / arm64 / armv7 / 386）  
+- **自动从 GitHub 拉取 sing-box 最新 Release**  
+- 自动安装依赖（curl / tar / openssl 等）  
+- 支持自定义端口或自动随机端口（10000–60000）  
+- 支持自定义或自动生成 Base64 PSK（16 字节）  
+- 自动生成 SS2022 配置文件  
+- 自动创建服务（systemd 或 OpenRC）  
+- 自动获取公网 IP  
 - 自动生成两种 Shadowsocks 链接：
   - ✅ SIP002 URL  
-  - ✅ Base64 URL (`ss://BASE64@host:port`)
+  - ✅ Base64 URL (`ss://BASE64@host:port`)  
 
 ---
 
@@ -33,28 +33,30 @@
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox.sh)"
 
+
 ⸻
 
-## ✅ 管理命令
+✅ 管理命令
 
 脚本会自动安装服务，管理方式和系统一致：
 
-⸻
-
 🔧 Debian / Ubuntu / CentOS / RHEL（systemd）
+
 systemctl start sing-box
 systemctl stop  sing-box
 systemctl restart sing-box
 systemctl status sing-box
 
 🔧 Alpine（OpenRC）
+
 rc-service sing-box start
 rc-service sing-box stop
 rc-service sing-box restart
 
----
 
-## ✅ 卸载方法
+⸻
+
+✅ 卸载方法
 
 # 停止服务
 systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true
@@ -70,11 +72,12 @@ rm -f /etc/init.d/sing-box
 rm -rf /etc/sing-box
 rm -f /usr/bin/sing-box
 
----
 
-## ✅ FAQ
+⸻
 
-❓可以重复运行脚本吗？
+✅ FAQ
+
+❓ 可以重复运行脚本吗？
 
 ✅ 可以重复运行。
 
@@ -85,19 +88,16 @@ rm -f /usr/bin/sing-box
 
 不会影响已有配置目录之外的文件。
 
-⸻
+❓ 支持多端口或多用户吗？
 
-❓支持多端口或多用户吗？
+当前脚本仅用于单端口 SS2022。
 
-当前脚本仅用于 单端口 SS2022。
-
-⸻
-
-❓如何查看配置文件？
+❓ 如何查看配置文件？
 
 cat /etc/sing-box/config.json
 
----
+
+⸻
 
 ⭐ 欢迎 Star 支持！
 
