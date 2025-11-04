@@ -33,7 +33,7 @@
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox.sh)"
 
----
+⸻
 
 ## ✅ 管理命令
 
