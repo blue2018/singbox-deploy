@@ -665,81 +665,73 @@ action_edit_config() {
 }
 
 # Reset port & password
-action_reset_port_pwd() {
-    if [ ! -f "$CONFIG_PATH" ]; then
-        err "配置文件不存在: $CONFIG_PATH"
-        return 1
-    fi
+reset_password_port() {
+    info "重置端口和密码..."
 
-    read -p "输入新端口（回车随机 10000-60000）： " new_port
-    if [ -z "$new_port" ]; then
-        if command -v shuf >/dev/null 2>&1; then
-            new_port=$(shuf -i 10000-60000 -n 1)
-        else
-            new_port=$((RANDOM % 50001 + 10000))
-        fi
-        info "使用随机端口: $new_port"
+    # 生成新端口
+    read -p "请输入新端口（留空则随机 10000-60000）: " NEW_PORT
+    if [ -z "$NEW_PORT" ]; then
+        NEW_PORT=$(shuf -i 10000-60000 -n 1 2>/dev/null || echo $((RANDOM % 50001 + 10000)))
+        info "随机生成端口: $NEW_PORT"
     else
-        if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+        if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
             err "端口必须为 1-65535 的数字"
-            return 1
+            return
         fi
     fi
 
-    read -p "输入新密码（回车随机生成 Base64 密钥）： " new_pwd
-    if [ -z "$new_pwd" ]; then
-        # try sing-box generate
-        if command -v sing-box >/dev/null 2>&1; then
-            new_pwd=$(sing-box generate rand --base64 16 2>/dev/null | tr -d '\n\r' || true)
-        fi
-        if [ -z "$new_pwd" ] && command -v openssl >/dev/null 2>&1; then
-            new_pwd=$(openssl rand -base64 16 | tr -d '\n\r')
-        fi
-        if [ -z "$new_pwd" ]; then
-            new_pwd=$(head -c 16 /dev/urandom | base64 | tr -d '\n\r')
-        fi
-        info "生成新密码"
-    fi
+    # 生成新密码
+    KEY_BYTES=16
+    NEW_PWD=$(openssl rand -base64 "$KEY_BYTES" | tr -d '\n\r')
+    info "生成新密码"
 
-    # try python3 to safely update JSON
-    if command -v python3 >/dev/null 2>&1; then
-        python3 - <<PY
-import json
-pfile='$CONFIG_PATH'
-with open(pfile,'r',encoding='utf-8') as f:
-    c=json.load(f)
-try:
-    c['inbounds'][0]['listen_port']=int($new_port)
-except Exception:
-    pass
-try:
-    c['inbounds'][0]['password']='$new_pwd'
-except Exception:
-    pass
-with open(pfile,'w',encoding='utf-8') as f:
-    json.dump(c,f,indent=2,ensure_ascii=False)
-PY
-    else
-        # fallback to sed replacements (works with the generated config structure)
-        # replace listen_port
-        sed -E -i "s/(\"listen_port\"[[:space:]]*:[[:space:]]*)[0-9]+/\1${new_port}/" "$CONFIG_PATH" || true
-        # replace password (replace first occurrence)
-        sed -E -i "0,/(\"password\"[[:space:]]*:[[:space:]]*\")([^\"\n]*)\"/s//\"password\": \"${new_pwd}\"/" "$CONFIG_PATH" || true
-    fi
+    # 直接重新写入 config.json，保持原格式
+    cat > "$CONFIG_PATH" <<EOF
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "shadowsocks",
+      "listen": "::",
+      "listen_port": $NEW_PORT,
+      "method": "$METHOD",
+      "password": "$NEW_PWD",
+      "tag": "ss2022-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct-out"
+    }
+  ]
+}
+EOF
 
-    info "已写入新端口($new_port)与新密码(隐藏)，正在校验并重启服务..."
-    # regenerate variables for SS URI
-    generate_and_save_uri || warn "更新 SS URI 失败"
+    info "配置文件已更新: $CONFIG_PATH"
+    PORT="$NEW_PORT"
+    PSK="$NEW_PWD"
+
+    # 校验配置并重启服务
     if command -v sing-box >/dev/null 2>&1; then
         if sing-box check -c "$CONFIG_PATH" >/dev/null 2>&1; then
-            service_restart || warn "重启失败"
-            info "端口/密码重置并已重启服务"
+            info "配置文件验证通过"
         else
-            warn "配置校验失败，服务未被重启，请手动检查"
+            warn "配置文件验证失败，但将继续..."
         fi
-    else
-        warn "未检测到 sing-box，可执行文件，无法校验或重启"
     fi
+
+    info "重启 sing-box 服务..."
+    if [ "$OS" = "alpine" ]; then
+        rc-service sing-box restart
+    else
+        systemctl restart sing-box
+    fi
+
+    info "✅ 密码和端口已重置"
 }
 
 # Update sing-box (preserve config)
