@@ -619,16 +619,13 @@ PY
     info "SS URI 已写入: $SS_URI_PATH"
 }
 
-# View SS URI
+# View SS URI (每次直接从配置生成)
 action_view_uri() {
-    if [ -f "$SS_URI_PATH" ]; then
-        info "显示已保存的 SS URI:"
-        sed -n '1,200p' "$SS_URI_PATH"
-    else
-        warn "未找到 $SS_URI_PATH，尝试从配置生成..."
-        generate_and_save_uri || { err "生成 SS URI 失败"; return 1; }
-        sed -n '1,200p' "$SS_URI_PATH"
-    fi
+    info "正在从配置生成 SS URI..."
+    generate_and_save_uri || { err "生成 SS URI 失败"; return 1; }
+
+    # 显示生成的 SS URI
+    sed -n '1,200p' "$SS_URI_PATH"
 }
 
 # View config path
