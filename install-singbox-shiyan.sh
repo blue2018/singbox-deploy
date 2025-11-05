@@ -810,10 +810,8 @@ install_singbox() {
 }
 install_singbox
 UUID=$(cat /proc/sys/kernel/random/uuid)
-REALITY_PK=$(openssl rand -base64 32 | tr -d '\n\r')
-REALITY_SID=$(openssl rand -base64 8 | tr -d '\n\r')
-REALITY_PK_ESCAPED=$(printf '%s' "$REALITY_PK" | sed 's/"/\\"/g')
-REALITY_SID_ESCAPED=$(printf '%s' "$REALITY_SID" | sed 's/"/\\"/g')
+REALITY_PK=$(openssl rand 32 | base64 | tr -d '\n\r')  # 32字节原始数据 -> Base64
+REALITY_SID=$(openssl rand 8  | base64 | tr -d '\n\r')  # 8字节原始数据 -> Base64
 read -p "输入线路机监听端口（留空则随机 20000-65000）: " USER_PORT
 if [ -z "$USER_PORT" ]; then
     LISTEN_PORT=$(shuf -i 20000-65000 -n 1 2>/dev/null || echo $((RANDOM % 45001 + 20000)))
