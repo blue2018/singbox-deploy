@@ -889,8 +889,17 @@ EOF
 if [ "$OS" = "alpine" ]; then
     cat > /etc/init.d/sing-box << 'SVC'
 #!/sbin/openrc-run
+name="sing-box"
+description="SingBox service"
+
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
+command_background="yes"
+pidfile="/run/sing-box.pid"
+
+depend() {
+    need net
+}
 SVC
     chmod +x /etc/init.d/sing-box
     rc-update add sing-box default
