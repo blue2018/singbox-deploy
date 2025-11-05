@@ -810,11 +810,10 @@ install_singbox() {
 }
 install_singbox
 UUID=$(cat /proc/sys/kernel/random/uuid)
-info "生成 Reality 私钥和 Short ID"
-REALITY_INFO=$(sing-box generate reality-keypair --disable-color)
-echo "$REALITY_INFO"
-REALITY_PK=$(echo "$REALITY_INFO" | grep "Private key" | awk -F': ' '{print $2}')
-REALITY_SID=$(echo "$REALITY_INFO" | grep "Short ID"   | awk -F': ' '{print $2}')
+info "生成 Reality 私钥"
+REALITY_PK=$(sing-box generate reality-keypair --disable-color | grep 'PrivateKey' | awk '{print $2}')
+# 生成随机 Short ID (8字节 base64)
+REALITY_SID=$(head -c8 /dev/urandom | base64 | tr -d '\n\r')
 
 info "Reality PK: $REALITY_PK"
 info "Reality SID: $REALITY_SID"
