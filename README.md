@@ -25,7 +25,17 @@
 
 ## ✅ 一键部署命令
 
-在任意支持 `curl` 的 Linux VPS 上运行即可安装 sing-box：
+安装全功能 sing-box：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox-all.sh)"
+
+安装附带管理面板 sing-box：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox-panel.sh)"
+
+安装极简版 sing-box：
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox.sh)"
