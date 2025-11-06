@@ -29,15 +29,3 @@
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox-all.sh)"
-
-
-安装附带管理面板 sing-box：
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox-panel.sh)"
-
-
-安装极简版 sing-box：
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox.sh)"
