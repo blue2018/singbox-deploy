@@ -731,6 +731,11 @@ except Exception:
     pass
 PY
 )
+        
+        # Also try to read from stored file
+        if [ -z "$REALITY_SID" ] && [ -f /etc/sing-box/.reality_sid ]; then
+            REALITY_SID=$(cat /etc/sing-box/.reality_sid)
+        fi
     fi
 
     SS_PORT="${SS_PORT:-}"
@@ -771,11 +776,20 @@ PY
     # HY2 URI
     hy2_uri="hy2://${HY2_PSK}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com#singbox-hy2"
 
-    # Read pub key from stored file if exists
+    # Read pub key from stored file
     if [ -f "$REALITY_PUB_FILE" ]; then
         REALITY_PUB=$(cat "$REALITY_PUB_FILE")
     else
         REALITY_PUB="UNKNOWN"
+    fi
+    
+    # Read SID from stored file or config
+    if [ -z "$REALITY_SID" ]; then
+        if [ -f "/etc/sing-box/.reality_sid" ]; then
+            REALITY_SID=$(cat /etc/sing-box/.reality_sid)
+        else
+            REALITY_SID="UNKNOWN"
+        fi
     fi
 
     reality_uri="vless://${REALITY_UUID}@${PUBLIC_IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}#singbox-reality"
@@ -861,6 +875,10 @@ for ib in c.get('inbounds',[]):
 with open('$CONFIG_PATH','w') as f:
     json.dump(c,f,indent=2)
 PY
+
+    # 保存到临时文件确保读取到新值
+    echo "$new_ss_port" > /etc/sing-box/.ss_port_cache
+    echo "$new_ss_psk" > /etc/sing-box/.ss_psk_cache
 
     info "已更新 SS 端口($new_ss_port)与密码(隐藏)，正在启动服务..."
     service_start || warn "启动服务失败"
