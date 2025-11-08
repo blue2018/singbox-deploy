@@ -1,15 +1,15 @@
-# Sing-box SS2022 一键部署脚本（增强版）
+# Sing-box 多协议一键部署脚本
 
-一个强大的 Sing-box 自动化部署工具，支持落地机 Shadowsocks 部署和线路机 VLESS Reality 中转的完整解决方案。
+一个强大的 Sing-box 自动化部署工具，支持ss2022/hy2/vless reality 部署和线路机 VLESS Reality 中转的完整解决方案。
 
 ---
 
 ## ✨ 主要特性
 
-### 🎯 落地机功能
+### 🎯 部署机功能
 
-- ✅ **一键安装** - 自动部署 Sing-box + Shadowsocks 服务器
-- ✅ **密钥生成** - 自动生成 Shadowsocks 密钥和配置文件
+- ✅ **一键安装** - 自动部署 Sing-box 最新服务端
+- ✅ **密钥生成** - 自动生成 密钥和配置文件
 - ✅ **多系统支持** - 支持 Alpine, Debian, Ubuntu, CentOS, RHEL, Fedora 等操作系统
 - ✅ **开机自启** - 自动配置 Systemd / OpenRC 开机自启
 - ✅ **公网 IP** - 自动获取公网 IP 并生成客户端链接
@@ -28,4 +28,4 @@
 安装全功能 sing-box：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox-all.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox-yyds.sh)"
