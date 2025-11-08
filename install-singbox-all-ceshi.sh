@@ -609,138 +609,41 @@ read_config_fields() {
         return 1
     fi
 
-    if command -v python3 >/dev/null 2>&1; then
-        # Read SS config
-        SS_PORT=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='shadowsocks':
-            print(ib.get('listen_port',''))
-            break
-except Exception:
-    pass
-PY
-)
-        SS_PSK=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='shadowsocks':
-            print(ib.get('password',''))
-            break
-except Exception:
-    pass
-PY
-)
-        SS_METHOD=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='shadowsocks':
-            print(ib.get('method',''))
-            break
-except Exception:
-    pass
-PY
-)
-
-        # Read HY2 config
-        HY2_PORT=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='hysteria2':
-            print(ib.get('listen_port',''))
-            break
-except Exception:
-    pass
-PY
-)
-        HY2_PSK=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='hysteria2':
-            users=ib.get('users',[])
-            if users:
-                print(users[0].get('password',''))
-            break
-except Exception:
-    pass
-PY
-)
-
-        # Read Reality config
-        REALITY_PORT=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='vless':
-            print(ib.get('listen_port',''))
-            break
-except Exception:
-    pass
-PY
-)
-        REALITY_UUID=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='vless':
-            users=ib.get('users',[])
-            if users:
-                print(users[0].get('uuid',''))
-            break
-except Exception:
-    pass
-PY
-)
-        REALITY_PK=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='vless':
-            reality=ib.get('tls',{}).get('reality',{})
-            print(reality.get('private_key',''))
-            break
-except Exception:
-    pass
-PY
-)
-        REALITY_SID=$(python3 - <<'PY'
-import json
-try:
-    c=json.load(open('/etc/sing-box/config.json'))
-    for ib in c.get('inbounds',[]):
-        if ib.get('type')=='vless':
-            reality=ib.get('tls',{}).get('reality',{})
-            sids=reality.get('short_id',[])
-            if sids:
-                print(sids[0])
-            break
-except Exception:
-    pass
-PY
-)
-        
-        # Also try to read from stored file
-        if [ -z "$REALITY_SID" ] && [ -f /etc/sing-box/.reality_sid ]; then
-            REALITY_SID=$(cat /etc/sing-box/.reality_sid)
-        fi
+    # 先尝试从缓存文件读取
+    if [ -f /etc/sing-box/.ss_port_cache ]; then
+        SS_PORT=$(cat /etc/sing-box/.ss_port_cache)
+    fi
+    if [ -f /etc/sing-box/.ss_psk_cache ]; then
+        SS_PSK=$(cat /etc/sing-box/.ss_psk_cache)
+    fi
+    if [ -f /etc/sing-box/.hy2_port_cache ]; then
+        HY2_PORT=$(cat /etc/sing-box/.hy2_port_cache)
+    fi
+    if [ -f /etc/sing-box/.hy2_psk_cache ]; then
+        HY2_PSK=$(cat /etc/sing-box/.hy2_psk_cache)
     fi
 
+    # 从 JSON 配置读取（使用 grep 和 sed 做为主要方法）
+    SS_PORT="${SS_PORT:-$(grep -A 10 '"type": "shadowsocks"' "$CONFIG_PATH" | grep -oP '"listen_port":\s*\K[0-9]+' | head -1)}"
+    SS_PSK="${SS_PSK:-$(grep -A 10 '"type": "shadowsocks"' "$CONFIG_PATH" | grep -oP '"password":\s*"\K[^"]+' | head -1)}"
+    SS_METHOD="${SS_METHOD:-$(grep -A 10 '"type": "shadowsocks"' "$CONFIG_PATH" | grep -oP '"method":\s*"\K[^"]+' | head -1)}"
+
+    HY2_PORT="${HY2_PORT:-$(grep -A 10 '"type": "hysteria2"' "$CONFIG_PATH" | grep -oP '"listen_port":\s*\K[0-9]+' | head -1)}"
+    HY2_PSK="${HY2_PSK:-$(grep -A 15 '"type": "hysteria2"' "$CONFIG_PATH" | grep -oP '"password":\s*"\K[^"]+' | head -1)}"
+
+    REALITY_PORT="${REALITY_PORT:-$(grep -A 10 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"listen_port":\s*\K[0-9]+' | head -1)}"
+    REALITY_UUID="${REALITY_UUID:-$(grep -A 15 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"uuid":\s*"\K[^"]+' | head -1)}"
+    REALITY_PK="${REALITY_PK:-$(grep -A 30 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"private_key":\s*"\K[^"]+' | head -1)}"
+    REALITY_SID="${REALITY_SID:-$(grep -A 30 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"short_id":\s*\[\s*"\K[^"]+' | head -1)}"
+
+    # 从保存的文件读取 Reality 相关信息
+    [ -f /etc/sing-box/.reality_pub ] && REALITY_PUB=$(cat /etc/sing-box/.reality_pub) || REALITY_PUB=""
+    [ -f /etc/sing-box/.reality_sid ] && REALITY_SID=$(cat /etc/sing-box/.reality_sid) || true
+    
+    # 设置默认值
     SS_PORT="${SS_PORT:-}"
     SS_PSK="${SS_PSK:-}"
-    SS_METHOD="${SS_METHOD:-}"
+    SS_METHOD="${SS_METHOD:-2022-blake3-aes-128-gcm}"
     HY2_PORT="${HY2_PORT:-}"
     HY2_PSK="${HY2_PSK:-}"
     REALITY_PORT="${REALITY_PORT:-}"
@@ -914,6 +817,10 @@ for ib in c.get('inbounds',[]):
 with open('$CONFIG_PATH','w') as f:
     json.dump(c,f,indent=2)
 PY
+
+    # 保存到临时文件确保读取到新值
+    echo "$new_hy2_port" > /etc/sing-box/.hy2_port_cache
+    echo "$new_hy2_psk" > /etc/sing-box/.hy2_psk_cache
 
     info "已更新 HY2 端口($new_hy2_port)与密码(隐藏)，正在启动服务..."
     service_start || warn "启动服务失败"
