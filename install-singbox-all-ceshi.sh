@@ -971,6 +971,9 @@ REALITY_KEYS=$(sing-box generate reality-keypair 2>/dev/null || true)
 REALITY_PK=$(echo "$REALITY_KEYS" | grep "PrivateKey" | awk '{print $NF}' || true)
 REALITY_PUB=$(echo "$REALITY_KEYS" | grep "PublicKey" | awk '{print $NF}' || true)
 REALITY_SID=$(sing-box generate rand 8 --hex 2>/dev/null || echo "")
+info "Reality PK: $REALITY_PK"
+info "Reality PUB: $REALITY_PUB"
+info "Reality SID: $REALITY_SID"
 
 read -p "输入线路鸡监听端口（留空随机 20000-65000）: " USER_PORT
 if [ -z "$USER_PORT" ]; then
@@ -1026,7 +1029,39 @@ cat > /etc/sing-box/config.json <<EOF
   "route": { "rules": [ { "inbound": "vless-in", "outbound": "relay-out" } ] }
 }
 EOF
+if [ "$OS" = "alpine" ]; then
+    cat > /etc/init.d/sing-box << 'SVC'
+#!/sbin/openrc-run
+name="sing-box"
+description="SingBox service"
 
+command="/usr/bin/sing-box"
+command_args="run -c /etc/sing-box/config.json"
+command_background="yes"
+pidfile="/run/sing-box.pid"
+
+depend() {
+    need net
+}
+SVC
+    chmod +x /etc/init.d/sing-box
+    rc-update add sing-box default
+    rc-service sing-box restart
+else
+    cat > /etc/systemd/system/sing-box.service << 'SYSTEMD'
+[Unit]
+Description=Sing-box Relay
+After=network.target
+[Service]
+ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+SYSTEMD
+    systemctl daemon-reload
+    systemctl enable sing-box
+    systemctl restart sing-box
+fi
 # 获取本机公网 IP
 PUB_IP=$(curl -s https://api.ipify.org || echo "YOUR_RELAY_IP")
 
