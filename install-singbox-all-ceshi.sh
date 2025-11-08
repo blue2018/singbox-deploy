@@ -623,22 +623,53 @@ read_config_fields() {
         HY2_PSK=$(cat /etc/sing-box/.hy2_psk_cache)
     fi
 
-    # 从 JSON 配置读取（使用 grep 和 sed 做为主要方法）
-    SS_PORT="${SS_PORT:-$(grep -A 10 '"type": "shadowsocks"' "$CONFIG_PATH" | grep -oP '"listen_port":\s*\K[0-9]+' | head -1)}"
-    SS_PSK="${SS_PSK:-$(grep -A 10 '"type": "shadowsocks"' "$CONFIG_PATH" | grep -oP '"password":\s*"\K[^"]+' | head -1)}"
-    SS_METHOD="${SS_METHOD:-$(grep -A 10 '"type": "shadowsocks"' "$CONFIG_PATH" | grep -oP '"method":\s*"\K[^"]+' | head -1)}"
+    # 使用 Python 作为主要方法（更可靠）
+    if command -v python3 >/dev/null 2>&1; then
+        python3 <<'PYSCRIPT'
+import json
+import sys
 
-    HY2_PORT="${HY2_PORT:-$(grep -A 10 '"type": "hysteria2"' "$CONFIG_PATH" | grep -oP '"listen_port":\s*\K[0-9]+' | head -1)}"
-    HY2_PSK="${HY2_PSK:-$(grep -A 15 '"type": "hysteria2"' "$CONFIG_PATH" | grep -oP '"password":\s*"\K[^"]+' | head -1)}"
-
-    REALITY_PORT="${REALITY_PORT:-$(grep -A 10 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"listen_port":\s*\K[0-9]+' | head -1)}"
-    REALITY_UUID="${REALITY_UUID:-$(grep -A 15 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"uuid":\s*"\K[^"]+' | head -1)}"
-    REALITY_PK="${REALITY_PK:-$(grep -A 30 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"private_key":\s*"\K[^"]+' | head -1)}"
-    REALITY_SID="${REALITY_SID:-$(grep -A 30 '"type": "vless"' "$CONFIG_PATH" | grep -oP '"short_id":\s*\[\s*"\K[^"]+' | head -1)}"
-
+try:
+    with open('/etc/sing-box/config.json') as f:
+        config = json.load(f)
+    
+    for ib in config.get('inbounds', []):
+        if ib.get('type') == 'shadowsocks':
+            print(f"SS_PORT={ib.get('listen_port', '')}")
+            print(f"SS_PSK={ib.get('password', '')}")
+            print(f"SS_METHOD={ib.get('method', '')}")
+        elif ib.get('type') == 'hysteria2':
+            print(f"HY2_PORT={ib.get('listen_port', '')}")
+            users = ib.get('users', [])
+            if users:
+                print(f"HY2_PSK={users[0].get('password', '')}")
+        elif ib.get('type') == 'vless':
+            print(f"REALITY_PORT={ib.get('listen_port', '')}")
+            users = ib.get('users', [])
+            if users:
+                print(f"REALITY_UUID={users[0].get('uuid', '')}")
+            tls = ib.get('tls', {})
+            reality = tls.get('reality', {})
+            print(f"REALITY_PK={reality.get('private_key', '')}")
+            short_ids = reality.get('short_id', [])
+            if short_ids:
+                print(f"REALITY_SID={short_ids[0]}")
+except Exception as e:
+    print(f"# Error: {e}", file=sys.stderr)
+PYSCRIPT
+    fi > /tmp/config_read.tmp
+    
+    # 从临时文件读取变量
+    [ -f /tmp/config_read.tmp ] && source /tmp/config_read.tmp
+    rm -f /tmp/config_read.tmp
+    
     # 从保存的文件读取 Reality 相关信息
-    [ -f /etc/sing-box/.reality_pub ] && REALITY_PUB=$(cat /etc/sing-box/.reality_pub) || REALITY_PUB=""
-    [ -f /etc/sing-box/.reality_sid ] && REALITY_SID=$(cat /etc/sing-box/.reality_sid) || true
+    if [ -f /etc/sing-box/.reality_pub ]; then
+        REALITY_PUB=$(cat /etc/sing-box/.reality_pub)
+    fi
+    if [ -f /etc/sing-box/.reality_sid ]; then
+        REALITY_SID=$(cat /etc/sing-box/.reality_sid)
+    fi
     
     # 设置默认值
     SS_PORT="${SS_PORT:-}"
@@ -650,6 +681,7 @@ read_config_fields() {
     REALITY_UUID="${REALITY_UUID:-}"
     REALITY_PK="${REALITY_PK:-}"
     REALITY_SID="${REALITY_SID:-}"
+    REALITY_PUB="${REALITY_PUB:-}"
 }
 
 # generate uris from current config and save
