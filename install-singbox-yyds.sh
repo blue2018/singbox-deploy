@@ -501,7 +501,7 @@ generate_uris() {
     
     # HY2 URI
     echo "=== Hysteria2 (HY2) ==="
-    echo "hy2://${hy2_encoded}@${host}:${PORT_HY2}/?sni=www.bing.com#singbox-hy2"
+    echo "hy2://${hy2_encoded}@${host}:${PORT_HY2}/?sni=www.bing.com&insecure=1#singbox-hy2"
     echo ""
     
     # VLESS Reality URI
@@ -710,7 +710,7 @@ generate_and_save_uris() {
     ss_encoded=$(url_encode_min "$ss_userinfo")
     ss_b64=$(printf "%s" "$ss_userinfo" | base64 -w0 2>/dev/null || printf "%s" "$ss_userinfo" | base64 | tr -d '\n')
     hy2_encoded=$(url_encode_min "$HY2_PSK")
-    hy2_uri="hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com#singbox-hy2"
+    hy2_uri="hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#singbox-hy2"
 
 
     # reality pubkey read file or from config (fallback)
