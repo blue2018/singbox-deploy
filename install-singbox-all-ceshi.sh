@@ -789,16 +789,16 @@ action_reset_ss() {
     info "正在停止服务..."
     service_stop || warn "停止服务失败"
 
-    # jq: set listen_port and password for shadowsocks
-    json_update "
+    # 使用 --arg 和 --argjson 正确传递变量
+    json_update --arg new_ss_psk "$new_ss_psk" --argjson new_ss_port "$new_ss_port" '
     .inbounds |= map(
-        if .type==\"shadowsocks\" then
-            .listen_port = ($new_ss_port|tonumber) |
-            .password = \$new_ss_psk
+        if .type=="shadowsocks" then
+            .listen_port = $new_ss_port |
+            .password = $new_ss_psk
         else .
         end
     )
-    " --arg new_ss_psk "$new_ss_psk" --arg new_ss_port "$new_ss_port"
+    '
 
     info "已更新 SS 端口($new_ss_port)与密码(隐藏)，正在启动服务..."
     service_start || warn "启动服务失败"
@@ -820,15 +820,15 @@ action_reset_hy2() {
     info "正在停止服务..."
     service_stop || warn "停止服务失败"
 
-    json_update "
+    json_update --arg new_hy2_psk "$new_hy2_psk" --argjson new_hy2_port "$new_hy2_port" '
     .inbounds |= map(
-        if .type==\"hysteria2\" then
-            .listen_port = ($new_hy2_port|tonumber) |
-            (.users[0].password) = \$new_hy2_psk
+        if .type=="hysteria2" then
+            .listen_port = $new_hy2_port |
+            (.users[0].password) = $new_hy2_psk
         else .
         end
     )
-    " --arg new_hy2_psk "$new_hy2_psk" --arg new_hy2_port "$new_hy2_port"
+    '
 
     info "已更新 HY2 端口($new_hy2_port)与密码(隐藏)，正在启动服务..."
     service_start || warn "启动服务失败"
@@ -845,22 +845,20 @@ action_reset_reality() {
     [ -z "$new_reality_port" ] && new_reality_port="$REALITY_PORT"
 
     read -p "输入新的 Reality UUID（回车随机生成）: " new_reality_uuid
-    if [ -z "$new_reality_uuid" ]; then
-        new_reality_uuid=$(cat /proc/sys/kernel/random/uuid)
-    fi
+    [ -z "$new_reality_uuid" ] && new_reality_uuid=$(cat /proc/sys/kernel/random/uuid)
 
     info "正在停止服务..."
     service_stop || warn "停止服务失败"
 
-    json_update "
+    json_update --arg new_reality_uuid "$new_reality_uuid" --argjson new_reality_port "$new_reality_port" '
     .inbounds |= map(
-        if .type==\"vless\" then
-            .listen_port = ($new_reality_port|tonumber) |
-            (.users[0].uuid) = \$new_reality_uuid
+        if .type=="vless" then
+            .listen_port = $new_reality_port |
+            (.users[0].uuid) = $new_reality_uuid
         else .
         end
     )
-    " --arg new_reality_uuid "$new_reality_uuid" --arg new_reality_port "$new_reality_port"
+    '
 
     info "已更新 Reality 端口($new_reality_port)与 UUID(隐藏)，正在启动服务..."
     service_start || warn "启动服务失败"
