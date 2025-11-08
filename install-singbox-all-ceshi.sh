@@ -642,8 +642,13 @@ rand_b64() {
 # encode only a small set of characters common in userinfo
 url_encode_min() {
     local s="$1"
-    printf "%s" "$s" | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's/+/%2B/g' -e 's/\//%2F/g' -e 's/=/%%3D/g'
+    printf "%s" "$s" | sed -e 's/%/%25/g' \
+                             -e 's/:/%3A/g' \
+                             -e 's/+/%2B/g' \
+                             -e 's/\//%2F/g' \
+                             -e 's/=/\%3D/g'
 }
+
 
 # read JSON fields from config using jq
 read_config_fields() {
