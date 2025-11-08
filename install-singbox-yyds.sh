@@ -925,7 +925,7 @@ action_generate_relay_script() {
 
     RELAY_SCRIPT_PATH="/tmp/relay-install.sh"
 
-    info "正在生成线路鸡脚本: $RELAY_SCRIPT_PATH"
+    info "正在生成线路机脚本: $RELAY_SCRIPT_PATH"
 
     cat > "$RELAY_SCRIPT_PATH" <<'RELAY_TEMPLATE'
 #!/usr/bin/env bash
@@ -975,7 +975,7 @@ info "Reality PK: $REALITY_PK"
 info "Reality PUB: $REALITY_PUB"
 info "Reality SID: $REALITY_SID"
 
-read -p "输入线路鸡监听端口（留空随机 20000-65000）: " USER_PORT
+read -p "输入线路机监听端口（留空随机 20000-65000）: " USER_PORT
 if [ -z "$USER_PORT" ]; then
     LISTEN_PORT=$(shuf -i 20000-65000 -n 1 2>/dev/null || echo $((RANDOM % 45001 + 20000)))
 else
