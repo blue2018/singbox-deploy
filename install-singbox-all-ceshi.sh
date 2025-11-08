@@ -704,7 +704,7 @@ generate_and_save_uris() {
     # percent encode minimal
     ss_encoded=$(url_encode_min "$ss_userinfo")
     ss_b64=$(printf "%s" "$ss_userinfo" | base64 -w0 2>/dev/null || printf "%s" "$ss_userinfo" | base64 | tr -d '\n')
-    hy2_encoded=$(url_encode_min "$PSK_HY2")
+    hy2_encoded=$(url_encode_min "$HY2_PSK")
     hy2_uri="hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com#singbox-hy2"
 
 
