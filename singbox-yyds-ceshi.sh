@@ -91,9 +91,10 @@ install_deps
 # 配置节点后缀名
 echo "请输入节点名称（留空则默认协议名）："
 read -r user_name
-# 如果用户输入非空，则添加后缀
+# 如果用户输入非空，则添加后缀并覆盖保存到文件
 if [[ -n "$user_name" ]]; then
     suffix="-${user_name}"
+    echo "$suffix" > /root/node_names.txt
 else
     suffix=""
 fi
@@ -714,6 +715,9 @@ generate_and_save_uris() {
 
     PUBLIC_IP=$(get_public_ip || true)
     [ -z "$PUBLIC_IP" ] && PUBLIC_IP="YOUR_SERVER_IP"
+    
+    # 读取文件内容作为节点后缀
+    node_suffix=$(cat /root/node_names.txt 2>/dev/null)
 
     # SS: two formats: percent-encoded userinfo and base64 userinfo
     ss_userinfo="${SS_METHOD}:${SS_PSK}"
@@ -721,7 +725,7 @@ generate_and_save_uris() {
     ss_encoded=$(url_encode_min "$ss_userinfo")
     ss_b64=$(printf "%s" "$ss_userinfo" | base64 -w0 2>/dev/null || printf "%s" "$ss_userinfo" | base64 | tr -d '\n')
     hy2_encoded=$(url_encode_min "$HY2_PSK")
-    hy2_uri="hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#hy2"
+    hy2_uri="hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#hy2${node_suffix}"
 
 
     # reality pubkey read file or from config (fallback)
@@ -733,12 +737,12 @@ generate_and_save_uris() {
         REALITY_PUB="${REALITY_PUB:-UNKNOWN}"
     fi
 
-    reality_uri="vless://${REALITY_UUID}@${PUBLIC_IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}#reality"
+    reality_uri="vless://${REALITY_UUID}@${PUBLIC_IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}#reality${node_suffix}"
 
     {
         echo "=== Shadowsocks (SS) ==="
-        echo "ss://${ss_encoded}@${PUBLIC_IP}:${SS_PORT}#ss"
-        echo "ss://${ss_b64}@${PUBLIC_IP}:${SS_PORT}#ss"
+        echo "ss://${ss_encoded}@${PUBLIC_IP}:${SS_PORT}#ss${node_suffix}"
+        echo "ss://${ss_b64}@${PUBLIC_IP}:${SS_PORT}#ss${node_suffix}"
         echo ""
         echo "=== Hysteria2 (HY2) ==="
         echo "$hy2_uri"
