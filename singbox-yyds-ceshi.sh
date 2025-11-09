@@ -928,6 +928,7 @@ action_uninstall() {
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
     rm -rf /etc/sing-box /var/log/sing-box* /usr/local/bin/sb "$BIN_PATH" >/dev/null 2>&1 || true
+    rm -f /root/node_names.txt >/dev/null 2>&1 || true
     info "卸载完成"
 }
 
