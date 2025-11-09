@@ -89,16 +89,14 @@ install_deps
 
 # -----------------------
 # 配置节点后缀名
-echo "请输入协议名称（留空则默认协议名）："
+echo "请输入节点名称（留空则默认协议名）："
 read -r user_name
-
 # 如果用户输入非空，则添加后缀
 if [[ -n "$user_name" ]]; then
     suffix="-${user_name}"
 else
     suffix=""
 fi
-
 
 # -----------------------
 # 配置端口和密码
@@ -571,8 +569,6 @@ info "正在创建 sb 管理脚本: $SB_PATH"
 cat > "$SB_PATH" <<'SB_SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
-# 用户输入的后缀
-SUFFIX="$suffix"
 
 # -----------------------
 # sb 管理面板（无 python3，使用 jq）
@@ -725,7 +721,7 @@ generate_and_save_uris() {
     ss_encoded=$(url_encode_min "$ss_userinfo")
     ss_b64=$(printf "%s" "$ss_userinfo" | base64 -w0 2>/dev/null || printf "%s" "$ss_userinfo" | base64 | tr -d '\n')
     hy2_encoded=$(url_encode_min "$HY2_PSK")
-    hy2_uri="hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#hy2\$SUFFIX"
+    hy2_uri="hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#hy2"
 
 
     # reality pubkey read file or from config (fallback)
@@ -737,12 +733,12 @@ generate_and_save_uris() {
         REALITY_PUB="${REALITY_PUB:-UNKNOWN}"
     fi
 
-    reality_uri="vless://${REALITY_UUID}@${PUBLIC_IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}#reality\$SUFFIX"
+    reality_uri="vless://${REALITY_UUID}@${PUBLIC_IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}#reality"
 
     {
         echo "=== Shadowsocks (SS) ==="
-        echo "ss://${ss_encoded}@${PUBLIC_IP}:${SS_PORT}#ss\$SUFFIX"
-        echo "ss://${ss_b64}@${PUBLIC_IP}:${SS_PORT}#ss\$SUFFIX"
+        echo "ss://${ss_encoded}@${PUBLIC_IP}:${SS_PORT}#ss"
+        echo "ss://${ss_b64}@${PUBLIC_IP}:${SS_PORT}#ss"
         echo ""
         echo "=== Hysteria2 (HY2) ==="
         echo "$hy2_uri"
