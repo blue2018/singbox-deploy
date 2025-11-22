@@ -349,9 +349,10 @@ install_singbox() {
 
     INSTALLED_VERSION=$(sing-box version 2>/dev/null | head -1 || echo "unknown")
     info "sing-box 安装成功: $INSTALLED_VERSION"
-}
-
+# 只调用一次
 install_singbox
+
+info "sing-box 安装完成，继续下一步..."
 
 # -----------------------
 # 生成 Reality 密钥对（必须在 sing-box 安装之后）
