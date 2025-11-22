@@ -91,7 +91,6 @@ if [[ -n "$user_name" ]]; then
     echo "$suffix" > /root/node_names.txt
 else
     suffix=""
-    echo "" > /root/node_names.txt
 fi
 
 # -----------------------
