@@ -1,6 +1,6 @@
 # Sing-box 多协议一键部署脚本
 
-一个强大的 Sing-box 自动化部署工具，支持SS2022/HY2/TUIC/VLESS Reality 部署和线路机 VLESS Reality 中转的完整解决方案。
+一个强大的 Sing-box 自动化部署工具，支持SS2022/HY2/TUIC/VLESS Reality 协议自选部署和线路机 VLESS Reality 中转的完整解决方案。
 
 ---
 
