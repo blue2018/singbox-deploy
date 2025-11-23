@@ -585,6 +585,10 @@ command_background="yes"
 output_log="/var/log/sing-box.log"
 error_log="/var/log/sing-box.err"
 
+# 自动拉起（程序崩溃、OOM、被 kill 后自动恢复）
+supervisor=supervise-daemon
+supervise_daemon_args="--respawn --respawn-delay 5"
+
 depend() {
     need net
     after firewall
@@ -1268,6 +1272,10 @@ command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
 pidfile="/run/sing-box.pid"
+# 自动拉起（程序崩溃、OOM、被 kill 后自动恢复）
+supervisor=supervise-daemon
+supervise_daemon_args="--respawn --respawn-delay 5"
+
 depend() { need net; }
 SVC
     chmod +x /etc/init.d/sing-box
@@ -1281,6 +1289,7 @@ After=network.target
 [Service]
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
+RestartSec=10s
 [Install]
 WantedBy=multi-user.target
 SYSTEMD
