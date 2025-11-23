@@ -586,8 +586,8 @@ output_log="/var/log/sing-box.log"
 error_log="/var/log/sing-box.err"
 
 # 自动拉起（程序崩溃、OOM、被 kill 后自动恢复）
-supervisor=supervise-daemon
-supervise_daemon_args="--respawn --respawn-delay 5"
+#supervisor=supervise-daemon
+#supervise_daemon_args="--respawn --respawn-delay 5"
 
 depend() {
     need net
