@@ -89,6 +89,20 @@ fi
 
 # -----------------------
 # 选择要部署的协议
+# 在第一次使用协议前，添加以下初始化
+REALITY_PK=""
+REALITY_PUB=""
+REALITY_SID=""
+PORT_REALITY=""
+UUID=""
+SS_PORT=""
+PSK_SS=""
+PORT_HY2=""
+PSK_HY2=""
+PORT_TUIC=""
+PSK_TUIC=""
+UUID_TUIC=""
+
 select_protocols() {
     info "=== 选择要部署的协议 ==="
     echo "1) Shadowsocks (SS)"
