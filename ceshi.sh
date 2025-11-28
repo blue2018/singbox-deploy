@@ -131,6 +131,12 @@ $ENABLE_HY2 && echo "  - Hysteria2"
 $ENABLE_TUIC && echo "  - TUIC"
 $ENABLE_REALITY && echo "  - VLESS Reality"
 
+# 导出为全局变量（确保后续脚本可以访问）
+export ENABLE_SS
+export ENABLE_HY2
+export ENABLE_TUIC
+export ENABLE_REALITY
+
 # 配置入站IP
 info "=== 配置节点连接IP ==="
 PUB_IP=$(get_public_ip || echo "")
