@@ -572,8 +572,13 @@ echo "   服务: $SERVICE_PATH"
 echo ""
 info "🔗 客户端链接:"
 generate_uris
-touch /etc/sing-box/uris.txt
-sed 's/^/   /' /etc/sing-box/uris.txt
+
+# 防止 sed 读取不存在文件导致脚本退出
+if [ -f /etc/sing-box/uris.txt ]; then
+    sed 's/^/   /' /etc/sing-box/uris.txt
+else
+    info "暂无可输出的链接（可能因为未启用任何需要生成 URI 的协议）"
+fi
 echo ""
 info "🔧 管理命令:"
 if [ "$OS" = "alpine" ]; then
