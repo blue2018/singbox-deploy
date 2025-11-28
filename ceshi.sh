@@ -901,7 +901,8 @@ action_generate_relay() {
             service_stop || warn "停止失败"
             
             cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
-            
+
+            # 添加SS inbound
             jq --argjson port "$SS_PORT" --arg psk "$SS_PSK" '
             .inbounds += [{
               "type": "shadowsocks",
@@ -913,21 +914,27 @@ action_generate_relay() {
             }]
             ' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
             
-            # 更新缓存
-            cat >> "$CACHE_FILE" <<CACHEEOF
-SS_PORT=$SS_PORT
-SS_PSK=$SS_PSK
-SS_METHOD=$SS_METHOD
-CACHEEOF
+            # 更新缓存和协议标记
+            sd -i 's/ENABLE_SS=false/ENABLE_SS=true/' "$CACHE_FILE" 2>/dev/null || echo "ENABLE_SS=true" >> "$CACHE_FILE"
+            echo "SS_PORT=$SS_PORT" >> "$CACHE_FILE"
+            echo "SS_PSK=$SS_PSK" >> "$CACHE_FILE"
+            echo "SS_METHOD=$SS_METHOD" >> "$CACHE_FILE"
             
-            # 更新协议文件
+            # 同步更新协议标记文件
             PROTOCOL_FILE="/etc/sing-box/.protocols"
-            sed -i 's/ENABLE_SS=false/ENABLE_SS=true/' "$PROTOCOL_FILE" 2>/dev/null || echo "ENABLE_SS=true" >> "$PROTOCOL_FILE"
-            
+            if [ -f "$PROTOCOL_FILE" ]; then
+                sed -i 's/ENABLE_SS=false/ENABLE_SS=true/' "$PROTOCOL_FILE"
+            else
+                echo "ENABLE_SS=true" >> "$PROTOCOL_FILE"
+            fi
+
+            # 更新当前会话变量
             ENABLE_SS=true
             info "SS 已部署 - 端口: $SS_PORT"
             service_start || warn "启动失败"
             sleep 1
+
+            # 重新读取配置
             read_config
         else
             err "取消生成线路机脚本"
