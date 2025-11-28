@@ -572,6 +572,7 @@ echo "   服务: $SERVICE_PATH"
 echo ""
 info "🔗 客户端链接:"
 generate_uris
+touch /etc/sing-box/uris.txt
 sed 's/^/   /' /etc/sing-box/uris.txt
 echo ""
 info "🔧 管理命令:"
