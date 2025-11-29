@@ -1039,7 +1039,7 @@ action_reset_ss() {
     .inbounds |= map(if .type=="shadowsocks" then .listen_port = $port else . end)
     ' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
     
-    info "已更新 SS 端口: $new_port"
+    info "已启动服务并更新 SS 端口: $new_port"
     service_start || warn "启动服务失败"
     sleep 1
     generate_uris || warn "生成 URI 失败"
@@ -1066,7 +1066,7 @@ action_reset_hy2() {
     .inbounds |= map(if .type=="hysteria2" then .listen_port = $port else . end)
     ' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
     
-    info "已更新 HY2 端口: $new_port"
+    info "已启动服务并更新 HY2 端口: $new_port"
     service_start || warn "启动服务失败"
     sleep 1
     generate_uris || warn "生成 URI 失败"
@@ -1093,7 +1093,7 @@ action_reset_tuic() {
     .inbounds |= map(if .type=="tuic" then .listen_port = $port else . end)
     ' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
     
-    info "已更新 TUIC 端口: $new_port"
+    info "已启动服务并更新 TUIC 端口: $new_port"
     service_start || warn "启动服务失败"
     sleep 1
     generate_uris || warn "生成 URI 失败"
@@ -1120,7 +1120,7 @@ action_reset_reality() {
     .inbounds |= map(if .type=="vless" then .listen_port = $port else . end)
     ' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
     
-    info "已更新 Reality 端口: $new_port"
+    info "已启动服务并更新 Reality 端口: $new_port"
     service_start || warn "启动服务失败"
     sleep 1
     generate_uris || warn "生成 URI 失败"
@@ -1159,7 +1159,7 @@ action_uninstall() {
         systemctl disable sing-box 2>/dev/null || true
         rm -f /etc/systemd/system/sing-box.service
         systemctl daemon-reload 2>/dev/null || true
-        apt purge -y sing-box 2>/dev/null || true
+        apt purge -y sing-box >/dev/null 2>&1 || true
     fi
     rm -rf /etc/sing-box /var/log/sing-box* /usr/local/bin/sb /usr/bin/sing-box /root/node_names.txt 2>/dev/null || true
     info "卸载完成"
