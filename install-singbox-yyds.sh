@@ -182,7 +182,7 @@ select_protocols
 # -----------------------
 # 在获取公网 IP 之前，询问连接ip和sni配置
 echo ""
-echo "请输入节点连接 IP或ddns域名（留空默认出口 IP）:"
+echo "请输入节点连接 IP 或 DDNS域名（留空默认出口 IP）:"
 read -r CUSTOM_IP
 CUSTOM_IP="$(echo "$CUSTOM_IP" | tr -d '[:space:]')"
 
@@ -808,13 +808,12 @@ else
     echo "   日志: journalctl -u sing-box -f"
 fi
 echo ""
-info "💡 管理面板: 输入 sb 命令打开管理面板"
 echo "=========================================="
 
 # -----------------------
 # 创建 sb 管理脚本
 SB_PATH="/usr/local/bin/sb"
-info "正在创建 sb 管理脚本: $SB_PATH"
+info "正在创建 sb 管理面板: $SB_PATH"
 
 cat > "$SB_PATH" <<'SB_SCRIPT'
 #!/usr/bin/env bash
@@ -1160,6 +1159,7 @@ action_uninstall() {
         systemctl disable sing-box 2>/dev/null || true
         rm -f /etc/systemd/system/sing-box.service
         systemctl daemon-reload 2>/dev/null || true
+        apt purge -y sing-box 2>/dev/null || true
     fi
     rm -rf /etc/sing-box /var/log/sing-box* /usr/local/bin/sb /usr/bin/sing-box /root/node_names.txt 2>/dev/null || true
     info "卸载完成"
@@ -1517,4 +1517,4 @@ done
 SB_SCRIPT
 
 chmod +x "$SB_PATH"
-info "✅ 管理脚本已创建,可输入 sb 打开管理面板"
+info "✅ 管理面板已创建,可输入 sb 打开管理面板"
