@@ -32,7 +32,7 @@
     <td align="center" width="220">
       <a href="https://console.alice.ws/" target="_blank">
         <img src="https://console.alice.ws/icon.png" width="100" alt="AliceNetworks" />
-        <br><sub><b>alicenetworks</b></sub>
+        <br><sub><b>AliceNetworks</b></sub>
       </a>
     </td>
     <td align="center" width="220">
