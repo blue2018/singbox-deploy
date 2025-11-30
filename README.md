@@ -31,7 +31,7 @@
   <tr>
     <td align="center" width="220">
       <a href="https://console.alice.ws/" target="_blank">
-        <img src="https://alicenetworks.net/assets/images/alice.png" width="100" alt="alicenetworks" />
+        <img src="[https://alicenetworks.net/assets/images/alice.png](https://console.alice.ws/icon.png)" width="100" alt="alicenetworks" />
         <br><sub><b>alicenetworks</b></sub>
       </a>
     </td>
