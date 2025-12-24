@@ -127,29 +127,16 @@ install_deps
 
 # -----------------------
 # 工具函数
-# 生成随机端口
 rand_port() {
-    local port
-    port=$(shuf -i 10000-60000 -n 1 2>/dev/null) || port=$((RANDOM % 50001 + 10000))
-    echo "$port"
+    shuf -i 10000-60000 -n 1 2>/dev/null || echo $((RANDOM % 50001 + 10000))
 }
 
-# 生成随机密码（已弃用，HY2使用UUID）
-rand_pass() {
-    local pass
-    pass=$(openssl rand -base64 16 2>/dev/null | tr -d '\n\r') || pass=$(head -c 16 /dev/urandom | base64 2>/dev/null | tr -d '\n\r')
-    echo "$pass"
-}
-
-# 生成UUID
 rand_uuid() {
-    local uuid
     if [ -f /proc/sys/kernel/random/uuid ]; then
-        uuid=$(cat /proc/sys/kernel/random/uuid)
+        cat /proc/sys/kernel/random/uuid
     else
-        uuid=$(openssl rand -hex 16 | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1\2\3\4-\5\6-\7\8-\9\10-\11\12\13\14\15\16/')
+        openssl rand -hex 16 | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1\2\3\4-\5\6-\7\8-\9\10-\11\12\13\14\15\16/'
     fi
-    echo "$uuid"
 }
 
 # -----------------------
@@ -176,19 +163,14 @@ ENABLE_HY2=$ENABLE_HY2
 EOF
 
 info "已选择协议: Hysteria2"
-
-# 导出为全局变量
 export ENABLE_HY2
 
 # -----------------------
-# 配置连接IP和端口
+# 配置连接IP
 echo ""
 echo "请输入节点连接 IP 或 DDNS域名（留空默认出口 IP）:"
 read -r CUSTOM_IP
 CUSTOM_IP="$(echo "$CUSTOM_IP" | tr -d '[:space:]')"
-
-# 写入缓存
-echo "CUSTOM_IP=$CUSTOM_IP" > /etc/sing-box/.config_cache
 
 # -----------------------
 # 配置端口和密码
@@ -251,7 +233,7 @@ install_singbox() {
 install_singbox
 
 # -----------------------
-# 生成 HY2 自签证书
+# 生成自签证书
 generate_cert() {
     info "生成 HY2 自签证书..."
     mkdir -p /etc/sing-box/certs
@@ -279,7 +261,6 @@ CONFIG_PATH="/etc/sing-box/config.json"
 
 create_config() {
     info "生成配置文件: $CONFIG_PATH"
-
     mkdir -p "$(dirname "$CONFIG_PATH")"
 
     cat > "$CONFIG_PATH" <<EOF
@@ -326,7 +307,6 @@ EOF
        && info "配置文件验证通过" \
        || warn "配置文件验证失败,但继续执行"
 
-    # 保存配置缓存
     cat > /etc/sing-box/.config_cache <<CACHEEOF
 ENABLE_HY2=$ENABLE_HY2
 HY2_PORT=$PORT_HY2
@@ -339,70 +319,9 @@ CACHEEOF
 
 create_config
 
-info "配置生成完成，准备设置服务..."
-
 # -----------------------
 # 设置服务
-setup_service
-
-# -----------------------
-# 系统内核优化
-optimize_system() {
-    info "优化系统内核参数..."
-    
-    # 备份原始配置
-    [ -f /etc/sysctl.conf ] && cp /etc/sysctl.conf /etc/sysctl.conf.bak
-    
-    cat >> /etc/sysctl.conf <<'SYSCTL'
-
-# ===== Sing-box Hysteria2 性能优化 =====
-# 增加 UDP 缓冲区
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.core.rmem_default = 1048576
-net.core.wmem_default = 1048576
-
-# 增加网络设备队列长度
-net.core.netdev_max_backlog = 16384
-
-# TCP 优化
-net.ipv4.tcp_congestion_control = bbr
-net.core.default_qdisc = fq
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_ecn = 1
-net.ipv4.tcp_ecn_fallback = 1
-
-# TCP 缓冲区优化
-net.ipv4.tcp_rmem = 4096 1048576 16777216
-net.ipv4.tcp_wmem = 4096 1048576 16777216
-
-# 连接队列优化
-net.core.somaxconn = 8192
-net.ipv4.tcp_max_syn_backlog = 8192
-
-# 减少 TIME_WAIT 连接
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_max_tw_buckets = 55000
-net.ipv4.tcp_tw_reuse = 1
-
-# 增加文件描述符限制
-fs.file-max = 1048576
-
-# 优化内存管理
-vm.swappiness = 10
-vm.dirty_ratio = 15
-vm.dirty_background_ratio = 5
-SYSCTL
-    
-    # 应用配置
-    sysctl -p >/dev/null 2>&1 || warn "部分内核参数应用失败（可能需要重启）"
-    
-    info "系统内核参数优化完成"
-}
-
-optimize_system() {
+setup_service() {
     info "配置系统服务..."
     
     if [ "$OS" = "alpine" ]; then
@@ -500,15 +419,51 @@ SYSTEMD
 setup_service
 
 # -----------------------
+# 系统内核优化
+optimize_system() {
+    info "优化系统内核参数..."
+    
+    [ -f /etc/sysctl.conf ] && cp /etc/sysctl.conf /etc/sysctl.conf.bak
+    
+    cat >> /etc/sysctl.conf <<'SYSCTL'
+
+# ===== Sing-box Hysteria2 性能优化 =====
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.core.netdev_max_backlog = 16384
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_ecn_fallback = 1
+net.ipv4.tcp_rmem = 4096 1048576 16777216
+net.ipv4.tcp_wmem = 4096 1048576 16777216
+net.core.somaxconn = 8192
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_max_tw_buckets = 55000
+net.ipv4.tcp_tw_reuse = 1
+fs.file-max = 1048576
+vm.swappiness = 10
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+SYSCTL
+    
+    sysctl -p >/dev/null 2>&1 || warn "部分内核参数应用失败（可能需要重启）"
+    info "系统内核参数优化完成"
+}
+
+optimize_system
+
+# -----------------------
 # 获取公网 IP
 get_public_ip() {
     local ip=""
-    for url in \
-        "https://api.ipify.org" \
-        "https://ipinfo.io/ip" \
-        "https://ifconfig.me" \
-        "https://icanhazip.com" \
-        "https://ipecho.net/plain"; do
+    for url in "https://api.ipify.org" "https://ipinfo.io/ip" "https://ifconfig.me" "https://icanhazip.com" "https://ipecho.net/plain"; do
         ip=$(curl -s --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
         if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "$ip"
@@ -518,7 +473,6 @@ get_public_ip() {
     return 1
 }
 
-# 如果用户提供了 CUSTOM_IP，则优先使用；否则自动检测出口 IP
 if [ -n "${CUSTOM_IP:-}" ]; then
     PUB_IP="$CUSTOM_IP"
     info "使用用户提供的连接IP或ddns域名: $PUB_IP"
@@ -596,7 +550,6 @@ CONFIG_PATH="/etc/sing-box/config.json"
 CACHE_FILE="/etc/sing-box/.config_cache"
 SERVICE_NAME="sing-box"
 
-# 检测系统
 detect_os() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -606,7 +559,6 @@ detect_os() {
         ID=""
         ID_LIKE=""
     fi
-
     if echo "$ID $ID_LIKE" | grep -qi "alpine"; then
         OS="alpine"
     elif echo "$ID $ID_LIKE" | grep -Ei "debian|ubuntu" >/dev/null; then
@@ -620,7 +572,6 @@ detect_os() {
 
 detect_os
 
-# 服务控制
 service_start() {
     [ "$OS" = "alpine" ] && rc-service "$SERVICE_NAME" start || systemctl start "$SERVICE_NAME"
 }
@@ -634,7 +585,6 @@ service_status() {
     [ "$OS" = "alpine" ] && rc-service "$SERVICE_NAME" status || systemctl status "$SERVICE_NAME" --no-pager
 }
 
-# 生成随机值
 rand_port() { shuf -i 10000-60000 -n 1 2>/dev/null || echo $((RANDOM % 50001 + 10000)); }
 rand_uuid() { 
     if [ -f /proc/sys/kernel/random/uuid ]; then
@@ -644,12 +594,10 @@ rand_uuid() {
     fi
 }
 
-# URL 编码
 url_encode() {
     printf "%s" "$1" | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's/+/%2B/g' -e 's/\//%2F/g' -e 's/=/%3D/g'
 }
 
-# 读取配置
 read_config() {
     if [ ! -f "$CONFIG_PATH" ]; then
         err "未找到配置文件: $CONFIG_PATH"
@@ -661,12 +609,10 @@ read_config() {
     fi
     
     CUSTOM_IP="${CUSTOM_IP:-}"
-    
     HY2_PORT=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .listen_port // empty' "$CONFIG_PATH" | head -n1)
     HY2_PSK=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .users[0].password // empty' "$CONFIG_PATH" | head -n1)
 }
 
-# 获取公网IP
 get_public_ip() {
     local ip=""
     for url in "https://api.ipify.org" "https://ipinfo.io/ip" "https://ifconfig.me"; do
@@ -676,30 +622,23 @@ get_public_ip() {
     echo "YOUR_SERVER_IP"
 }
 
-# 生成并保存URI
 generate_uris() {
     read_config || return 1
-
     if [ -n "${CUSTOM_IP:-}" ]; then
         PUBLIC_IP="$CUSTOM_IP"
     else
         PUBLIC_IP=$(get_public_ip)
     fi
-
     node_suffix=$(cat /root/node_names.txt 2>/dev/null || echo "")
-    
     URI_FILE="/etc/sing-box/uris.txt"
     > "$URI_FILE"
-    
     hy2_encoded=$(url_encode "$HY2_PSK")
     echo "=== Hysteria2 (HY2) ===" >> "$URI_FILE"
     echo "hy2://${hy2_encoded}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&alpn=h3&insecure=1#hy2${node_suffix}" >> "$URI_FILE"
     echo "" >> "$URI_FILE"
-    
     info "URI 已保存到: $URI_FILE"
 }
 
-# 查看URI
 action_view_uri() {
     info "正在生成并显示 URI..."
     generate_uris || { err "生成 URI 失败"; return 1; }
@@ -707,20 +646,16 @@ action_view_uri() {
     cat /etc/sing-box/uris.txt
 }
 
-# 查看配置路径
 action_view_config() {
     echo "$CONFIG_PATH"
 }
 
-# 编辑配置
 action_edit_config() {
     if [ ! -f "$CONFIG_PATH" ]; then
         err "配置文件不存在: $CONFIG_PATH"
         return 1
     fi
-    
     ${EDITOR:-nano} "$CONFIG_PATH" 2>/dev/null || ${EDITOR:-vi} "$CONFIG_PATH"
-    
     if command -v sing-box >/dev/null 2>&1; then
         if sing-box check -c "$CONFIG_PATH" >/dev/null 2>&1; then
             info "配置校验通过,已重启服务"
@@ -732,29 +667,20 @@ action_edit_config() {
     fi
 }
 
-# 重置HY2端口
 action_reset_hy2() {
     read_config || return 1
-    
     read -p "输入新的 HY2 端口(回车保持 $HY2_PORT): " new_port
     new_port="${new_port:-$HY2_PORT}"
-    
     info "正在停止服务..."
     service_stop || warn "停止服务失败"
-    
     cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
-    
-    jq --argjson port "$new_port" '
-    .inbounds |= map(if .type=="hysteria2" then .listen_port = $port else . end)
-    ' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
-    
+    jq --argjson port "$new_port" '.inbounds |= map(if .type=="hysteria2" then .listen_port = $port else . end)' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
     info "已启动服务并更新 HY2 端口: $new_port"
     service_start || warn "启动服务失败"
     sleep 1
     generate_uris || warn "生成 URI 失败"
 }
 
-# 更新sing-box
 action_update() {
     info "开始更新 sing-box..."
     if [ "$OS" = "alpine" ]; then
@@ -762,7 +688,6 @@ action_update() {
     else
         bash <(curl -fsSL https://sing-box.app/install.sh)
     fi
-    
     info "更新完成,已重启服务..."
     if command -v sing-box >/dev/null 2>&1; then
         NEW_VER=$(sing-box version 2>/dev/null | head -n1)
@@ -771,11 +696,9 @@ action_update() {
     fi
 }
 
-# 卸载
 action_uninstall() {
     read -p "确认卸载 sing-box?(y/N): " confirm
     [[ ! "$confirm" =~ ^[Yy]$ ]] && info "已取消" && return 0
-    
     info "正在卸载..."
     service_stop || true
     if [ "$OS" = "alpine" ]; then
