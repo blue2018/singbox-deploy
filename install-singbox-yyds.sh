@@ -46,6 +46,49 @@ check_root() {
 check_root
 
 # -----------------------
+# 更新系统
+update_system() {
+    info "更新系统软件包..."
+    
+    case "$OS" in
+        alpine)
+            apk update || { err "系统更新失败"; exit 1; }
+            apk upgrade || warn "部分软件包升级失败"
+            ;;
+        debian)
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y || { err "系统更新失败"; exit 1; }
+            apt-get upgrade -y || warn "部分软件包升级失败"
+            apt-get autoremove -y || true
+            apt-get autoclean -y || true
+            ;;
+        redhat)
+            yum update -y || { err "系统更新失败"; exit 1; }
+            yum autoremove -y || true
+            ;;
+        *)
+            warn "未识别的系统类型,跳过系统更新..."
+            ;;
+    esac
+    
+    info "系统更新完成"
+}
+
+# 询问是否更新系统
+echo ""
+echo "=========================================="
+echo "建议先更新系统以确保最佳兼容性和安全性"
+echo "=========================================="
+read -p "是否现在更新系统?(推荐) [Y/n]: " UPDATE_CHOICE
+UPDATE_CHOICE="${UPDATE_CHOICE:-Y}"
+
+if [[ "$UPDATE_CHOICE" =~ ^[Yy]$ ]]; then
+    update_system
+else
+    warn "跳过系统更新，继续安装..."
+fi
+
+# -----------------------
 # 安装依赖
 install_deps() {
     info "安装系统依赖..."
@@ -242,7 +285,7 @@ create_config() {
     cat > "$CONFIG_PATH" <<EOF
 {
   "log": {
-    "level": "info",
+    "level": "warn",
     "timestamp": true
   },
   "inbounds": [
@@ -256,6 +299,9 @@ create_config() {
           "password": "$PSK_HY2"
         }
       ],
+      "up_mbps": 1000,
+      "down_mbps": 1000,
+      "ignore_client_bandwidth": false,
       "tls": {
         "enabled": true,
         "alpn": ["h3"],
@@ -267,7 +313,10 @@ create_config() {
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct-out"
+      "tag": "direct-out",
+      "tcp_fast_open": true,
+      "tcp_multi_path": true,
+      "udp_fragment": true
     }
   ]
 }
@@ -294,7 +343,66 @@ info "配置生成完成，准备设置服务..."
 
 # -----------------------
 # 设置服务
-setup_service() {
+setup_service
+
+# -----------------------
+# 系统内核优化
+optimize_system() {
+    info "优化系统内核参数..."
+    
+    # 备份原始配置
+    [ -f /etc/sysctl.conf ] && cp /etc/sysctl.conf /etc/sysctl.conf.bak
+    
+    cat >> /etc/sysctl.conf <<'SYSCTL'
+
+# ===== Sing-box Hysteria2 性能优化 =====
+# 增加 UDP 缓冲区
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+
+# 增加网络设备队列长度
+net.core.netdev_max_backlog = 16384
+
+# TCP 优化
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_ecn_fallback = 1
+
+# TCP 缓冲区优化
+net.ipv4.tcp_rmem = 4096 1048576 16777216
+net.ipv4.tcp_wmem = 4096 1048576 16777216
+
+# 连接队列优化
+net.core.somaxconn = 8192
+net.ipv4.tcp_max_syn_backlog = 8192
+
+# 减少 TIME_WAIT 连接
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_max_tw_buckets = 55000
+net.ipv4.tcp_tw_reuse = 1
+
+# 增加文件描述符限制
+fs.file-max = 1048576
+
+# 优化内存管理
+vm.swappiness = 10
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+SYSCTL
+    
+    # 应用配置
+    sysctl -p >/dev/null 2>&1 || warn "部分内核参数应用失败（可能需要重启）"
+    
+    info "系统内核参数优化完成"
+}
+
+optimize_system() {
     info "配置系统服务..."
     
     if [ "$OS" = "alpine" ]; then
@@ -360,6 +468,10 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10s
 LimitNOFILE=1048576
+LimitNPROC=512
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=99
+Nice=-10
 
 [Install]
 WantedBy=multi-user.target
