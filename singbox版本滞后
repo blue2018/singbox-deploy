@@ -93,19 +93,8 @@ update_system() {
     info "系统更新完成"
 }
 
-# 询问是否更新系统
-echo ""
-echo "=========================================="
-echo "建议先更新系统以确保最佳兼容性和安全性"
-echo "=========================================="
-read -p "是否现在更新系统?(推荐) [Y/n]: " UPDATE_CHOICE
-UPDATE_CHOICE="${UPDATE_CHOICE:-Y}"
-
-if [[ "$UPDATE_CHOICE" =~ ^[Yy]$ ]]; then
-    update_system
-else
-    warn "跳过系统更新，继续安装..."
-fi
+# 直接更新系统
+update_system
 
 # -----------------------
 # 安装依赖
