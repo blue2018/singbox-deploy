@@ -711,28 +711,33 @@ action_update() {
     detect_os
     info "正在检查版本..."
 
-    # 获取本地版本 (存在则提取版本号，不存在则为0)
-    LOCAL_VER=$(sing-box version 2>/dev/null | head -n1 | awk '{print "v"$3}' || echo "v0")
+    # 获取本地版本并去掉 'v' (如 1.8.0)
+    LOCAL_VER=$(sing-box version 2>/dev/null | head -n1 | awk '{print $3}' | sed 's/^v//' || echo "0")
     
-    # 获取远程最新版本
-    REMOTE_TAG=$(curl -fsSL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name')
+    # 获取远程最新版本并去掉 'v' (如 1.10.1)
+    REMOTE_TAG=$(curl -fsSL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/^v//')
 
-    # 版本检查逻辑
+    # 验证远程版本合法性
     [[ -z "$REMOTE_TAG" || "$REMOTE_TAG" == "null" ]] && { err "获取远程版本失败"; return 1; }
-    [[ "$LOCAL_VER" == "$REMOTE_TAG" ]] && { info "✅ 已是最新版 ($LOCAL_VER)"; return 0; }
 
-    info "有新版本: $LOCAL_VER -> $REMOTE_TAG"
+    # 精准比对
+    if [[ "$LOCAL_VER" == "$REMOTE_TAG" ]]; then
+        info "✅ 当前已是最新版 (v$LOCAL_VER)，无需更新。"
+        return 0
+    fi
+
+    info "发现新版本: v$LOCAL_VER -> v$REMOTE_TAG"
     read -p "确认更新? (y/n): " confirm && [[ ! "$confirm" =~ ^[Yy]$ ]] && return 0
 
-    # 下载并安装 (一行流)
+    # 执行下载安装流程
     TMPDIR=$(mktemp -d)
-    info "正在下载更新..."
-    curl -fL "https://github.com/SagerNet/sing-box/releases/download/${REMOTE_TAG}/sing-box-${REMOTE_TAG#v}-linux-${SBOX_ARCH}.tar.gz" -o "$TMPDIR/sb.tar.gz" \
+    info "正在下载更新 v$REMOTE_TAG..."
+    curl -fL "https://github.com/SagerNet/sing-box/releases/download/v${REMOTE_TAG}/sing-box-${REMOTE_TAG}-linux-${SBOX_ARCH}.tar.gz" -o "$TMPDIR/sb.tar.gz" \
     && tar -xf "$TMPDIR/sb.tar.gz" -C "$TMPDIR" \
     && service_stop \
     && install -m 755 "$TMPDIR"/sing-box-*/sing-box /usr/bin/sing-box \
-    && info "🎉 更新成功: $(sing-box version | head -1)" \
-    || err "更新过程中出错"
+    && info "🎉 更新成功: v$REMOTE_TAG" \
+    || err "更新失败"
 
     rm -rf "$TMPDIR" && service_start
 }
