@@ -29,7 +29,7 @@ err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 # -----------------------
 # 检测系统类型
 detect_os() {
-    # 检测 OS
+    # OS 检测
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         ID="${ID:-}"
@@ -48,7 +48,7 @@ detect_os() {
         OS="unknown"
     fi
 
-    # 检测 CPU 架构
+    # CPU 架构检测
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64)    SBOX_ARCH="amd64" ;;
@@ -694,8 +694,7 @@ action_reset_hy2() {
 }
 
 action_update() {
-    detect_os
-
+    detect_os   # 确保 SBOX_ARCH 已经被定义
     info "从 GitHub Releases 更新 sing-box..."
 
     API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
