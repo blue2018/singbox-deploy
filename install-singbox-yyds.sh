@@ -327,9 +327,6 @@ create_config() {
       "users": [
         { "password": "$PSK_HY2" }
       ],
-      "recv_window": 67108864,
-      "send_window": 67108864,
-      "max_conn_client": 4096,
       "disable_mtu_discovery": false,
       $BANDWIDTH_CONFIG
       "tls": {
