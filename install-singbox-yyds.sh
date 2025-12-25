@@ -219,7 +219,7 @@ main_install() {
     echo "=========================================="
     info "🎉 Sing-box HY2 部署完成 (64MB 极限适配版)"
     echo "=========================================="
-    echo "链接: hy2://$PSK_HY2@$PUB_IP:$PORT_HY2/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#$(hostname)"
+    echo "hy2://$PSK_HY2@$PUB_IP:$PORT_HY2/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#$(hostname)"
     echo "=========================================="
 }
 
