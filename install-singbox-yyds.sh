@@ -291,11 +291,21 @@ while true; do
     read -p "请选择 [0-8]: " opt
     case "$opt" in
         1) 
+           # 提取配置信息
            PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
            PORT=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
-           IP=$(curl -s https://api.ipify.org || echo "IP")
-           SNI=$(jq -r '.inbounds[0].tls.certificate_path' /etc/sing-box/config.json | xargs openssl x509 -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/')
-           echo "hy2://$PSK@$IP:$PORT/?sni=$SNI&alpn=h3&insecure=1#HY2-$(hostname)" ;;
+           IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
+           
+           # 修复后的 SNI 提取逻辑：先获取路径，再直接解析
+           CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' /etc/sing-box/config.json)
+           if [ -f "$CERT_PATH" ]; then
+               SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/')
+           else
+               SNI="www.bing.com" # 如果找不到证书则使用默认值
+           fi
+           
+           echo "hy2://$PSK@$IP:$PORT/?sni=$SNI&alpn=h3&insecure=1#HY2-$(hostname)" 
+           ;;
         2) vi /etc/sing-box/config.json && service_ctrl restart ;;
         3) service_ctrl restart && info "已重启" ;;
         4) service_ctrl stop && info "已停止" ;;
