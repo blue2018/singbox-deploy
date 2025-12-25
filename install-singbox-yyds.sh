@@ -762,6 +762,8 @@ show_menu() {
 MENU
 }
 
+detect_os
+
 while true; do
     show_menu
     read -p "请输入选项: " opt
