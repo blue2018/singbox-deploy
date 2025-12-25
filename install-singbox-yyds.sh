@@ -708,25 +708,33 @@ action_reset_hy2() {
 }
 
 action_update() {
-    detect_os   # 确保 SBOX_ARCH 已经被定义
-    info "从 GitHub Releases 更新 sing-box..."
+    detect_os
+    info "正在检查版本..."
 
-    API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-    TAG=$(curl -fsSL "$API" | jq -r '.tag_name')
-    [ -z "$TAG" ] && err "获取最新版本失败" && return 1
+    # 获取本地版本 (存在则提取版本号，不存在则为0)
+    LOCAL_VER=$(sing-box version 2>/dev/null | head -n1 | awk '{print "v"$3}' || echo "v0")
+    
+    # 获取远程最新版本
+    REMOTE_TAG=$(curl -fsSL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name')
 
-    URL="https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${SBOX_ARCH}.tar.gz"
+    # 版本检查逻辑
+    [[ -z "$REMOTE_TAG" || "$REMOTE_TAG" == "null" ]] && { err "获取远程版本失败"; return 1; }
+    [[ "$LOCAL_VER" == "$REMOTE_TAG" ]] && { info "✅ 已是最新版 ($LOCAL_VER)"; return 0; }
 
+    info "有新版本: $LOCAL_VER -> $REMOTE_TAG"
+    read -p "确认更新? (y/n): " confirm && [[ ! "$confirm" =~ ^[Yy]$ ]] && return 0
+
+    # 下载并安装 (一行流)
     TMPDIR=$(mktemp -d)
-    curl -fL "$URL" -o "$TMPDIR/sb.tar.gz" || { err "下载失败"; return 1; }
-    tar -xf "$TMPDIR/sb.tar.gz" -C "$TMPDIR" || { err "解压失败"; return 1; }
+    info "正在下载更新..."
+    curl -fL "https://github.com/SagerNet/sing-box/releases/download/${REMOTE_TAG}/sing-box-${REMOTE_TAG#v}-linux-${SBOX_ARCH}.tar.gz" -o "$TMPDIR/sb.tar.gz" \
+    && tar -xf "$TMPDIR/sb.tar.gz" -C "$TMPDIR" \
+    && service_stop \
+    && install -m 755 "$TMPDIR"/sing-box-*/sing-box /usr/bin/sing-box \
+    && info "🎉 更新成功: $(sing-box version | head -1)" \
+    || err "更新过程中出错"
 
-    service_stop || true
-    install -m 755 "$TMPDIR"/sing-box-*/sing-box /usr/bin/sing-box
-    rm -rf "$TMPDIR"
-
-    info "更新完成: $(sing-box version | head -1)"
-    service_start
+    rm -rf "$TMPDIR" && service_start
 }
 
 action_uninstall() {
