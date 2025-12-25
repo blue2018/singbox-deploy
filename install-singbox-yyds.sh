@@ -240,26 +240,12 @@ install_singbox() {
         fi
     fi
 
-    case "$OS" in
-        alpine)
-            info "使用 Edge 仓库安装 sing-box"
-            apk update || { err "apk update 失败"; exit 1; }
-            apk add --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community sing-box || {
-                err "sing-box 安装失败"
-                exit 1
-            }
-            ;;
-        debian|redhat)
-            bash <(curl -fsSL https://sing-box.app/install.sh) || {
-                err "sing-box 安装失败"
-                exit 1
-            }
-            ;;
-        *)
-            err "未支持的系统,无法安装 sing-box"
-            exit 1
-            ;;
-    esac
+    # 统一使用官方安装脚本
+    info "使用官方脚本安装 sing-box..."
+    bash <(curl -fsSL https://sing-box.app/install.sh) || {
+        err "sing-box 安装失败"
+        exit 1
+    }
 
     if ! command -v sing-box >/dev/null 2>&1; then
         err "sing-box 安装后未找到可执行文件"
@@ -712,18 +698,22 @@ action_reset_hy2() {
 }
 
 action_update() {
-    info "开始更新 sing-box..."
-    if [ "$OS" = "alpine" ]; then
-        apk update && apk upgrade sing-box || bash <(curl -fsSL https://sing-box.app/install.sh)
-    else
-        bash <(curl -fsSL https://sing-box.app/install.sh)
+    CURRENT=$(sing-box version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -n1)
+    LATEST=$(curl -s --max-time 10 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oP '"tag_name":\s*"v?\K[\d.]+')
+    
+    echo "当前: ${CURRENT:-unknown} | 最新: ${LATEST:-unknown}"
+    
+    if [ "$CURRENT" = "$LATEST" ] && [ -n "$LATEST" ]; then
+        info "✅ 已是最新版本"
+        read -p "强制重装? (y/N): " f
+        [[ ! "$f" =~ ^[Yy]$ ]] && return 0
     fi
-    info "更新完成,已重启服务..."
-    if command -v sing-box >/dev/null 2>&1; then
-        NEW_VER=$(sing-box version 2>/dev/null | head -n1)
-        info "当前版本: $NEW_VER"
-        service_restart || warn "重启失败"
-    fi
+    
+    read -p "确认更新? (Y/n): " c
+    [[ "${c:-Y}" =~ ^[Yy]$ ]] || return 0
+    
+    info "更新中..."
+    bash <(curl -fsSL https://sing-box.app/install.sh) && service_restart && info "✅ 完成" || err "失败"
 }
 
 action_uninstall() {
