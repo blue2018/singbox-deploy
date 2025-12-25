@@ -161,15 +161,14 @@ rand_uuid() {
 }
 
 # -----------------------
-# 配置节点名称后缀
-echo "请输入节点名称(留空则默认协议名):"
-read -r user_name
-if [[ -n "$user_name" ]]; then
-    suffix="-${user_name}"
-    echo "$suffix" > /root/node_names.txt
-else
-    suffix=""
-fi
+# 自动设置节点名称（协议-服务器名）
+# 获取主机名作为服务器名称
+SERVER_NAME=$(hostname 2>/dev/null || echo "server")
+# 将名称保存到文件，去掉前面的横杠，只存名字
+echo "${SERVER_NAME}" > /root/node_names.txt
+# 这里的 suffix 用于安装完成时显示的备注：格式为 hy2-名字
+suffix="hy2-${SERVER_NAME}"
+info "节点备注已自动设置为: ${suffix}"
 
 # -----------------------
 # 创建配置目录
@@ -505,7 +504,8 @@ generate_uris() {
     local host="$PUB_IP"
     hy2_encoded=$(printf "%s" "$PSK_HY2" | sed 's/:/%3A/g; s/+/%2B/g; s/\//%2F/g; s/=/%3D/g')
     echo "=== Hysteria2 (HY2) ==="
-    echo "hy2://${hy2_encoded}@${host}:${PORT_HY2}/?sni=${TLS_DOMAIN}&alpn=h3&insecure=1#hy2${suffix}"
+    # 这里的 suffix 在前面已经定义为 "hy2-主机名"
+    echo "hy2://${hy2_encoded}@${host}:${PORT_HY2}/?sni=${TLS_DOMAIN}&alpn=h3&insecure=1#${suffix}"
     echo ""
 }
 
@@ -630,12 +630,18 @@ generate_uris() {
     else
         PUBLIC_IP=\$(get_public_ip)
     fi
-    node_suffix=\$(cat /root/node_names.txt 2>/dev/null || echo "")
+    
+    # 自动获取保存的服务器名称并构造备注
+    S_NAME=\$(cat /root/node_names.txt 2>/dev/null || hostname || echo "server")
+    REMARK="hy2-\${S_NAME}"
+    
     URI_FILE="/etc/sing-box/uris.txt"
     > "\$URI_FILE"
     hy2_encoded=\$(url_encode "\$HY2_PSK")
+    
     echo "=== Hysteria2 (HY2) ===" >> "\$URI_FILE"
-    echo "hy2://\${hy2_encoded}@\${PUBLIC_IP}:\${HY2_PORT}/?sni=www.bing.com&alpn=h3&insecure=1#hy2\${node_suffix}" >> "\$URI_FILE"
+    # 注意：TLS_DOMAIN 不加反斜杠，直接注入安装时选定的域名
+    echo "hy2://\${hy2_encoded}@\${PUBLIC_IP}:\${HY2_PORT}/?sni=${TLS_DOMAIN}&alpn=h3&insecure=1#\${REMARK}" >> "\$URI_FILE"
     echo "" >> "\$URI_FILE"
     info "URI 已保存到: \$URI_FILE"
 }
