@@ -230,6 +230,8 @@ info "HY2 密码(UUID)已自动生成"
 install_singbox() {
     info "开始安装 sing-box..."
 
+    BIN_PATH="/usr/local/bin/sing-box"
+
     if command -v sing-box >/dev/null 2>&1; then
         CURRENT_VERSION=$(sing-box version 2>/dev/null | head -1 || echo "unknown")
         warn "检测到已安装 sing-box: $CURRENT_VERSION"
@@ -238,14 +240,19 @@ install_singbox() {
             info "跳过安装/升级"
             return 0
         fi
+
+        # 只有升级才显示可升级版本号
+        LATEST_VER=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+        info "可升级版本: $LATEST_VER"
+    else
+        CURRENT_VERSION="none"
+        info "当前未安装 sing-box"
+        # 初装不显示可升级版本
     fi
 
     ARCH="amd64"
-    BIN_PATH="/usr/local/bin/sing-box"
-    LATEST_VER=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
-
-    info "正在下载 sing-box $LATEST_VER ..."
-    curl -Lo "$BIN_PATH" "https://github.com/SagerNet/sing-box/releases/download/$LATEST_VER/sing-box-linux-$ARCH"
+    info "正在下载 sing-box ..."
+    curl -Lo "$BIN_PATH" "https://github.com/SagerNet/sing-box/releases/download/${LATEST_VER:-v2.0.0}/sing-box-linux-$ARCH"
     chmod +x "$BIN_PATH"
 
     if ! command -v sing-box >/dev/null 2>&1; then
