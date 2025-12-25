@@ -751,94 +751,28 @@ action_reset_hy2() {
 }
 
 action_update() {
-    info "检查更新..."
+    # 获取版本
+    CUR=$(sing-box version 2>/dev/null | sed -n 's/.*version[[:space:]]*\([0-9.]*\).*/\1/p' | head -n1)
+    LAT=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\?\([0-9.]*\)".*/\1/p' | head -n1)
     
-    # 获取当前版本
-    if command -v sing-box >/dev/null 2>&1; then
-        CUR_OUTPUT=$(sing-box version 2>/dev/null | head -1)
-        CUR=$(extract_version_from_binary "$CUR_OUTPUT")
-    else
-        CUR=""
-    fi
+    echo "当前: ${CUR:-?} | 最新: ${LAT:-?}"
+    [ "$CUR" = "$LAT" ] && info "✅ 已是最新" && return 0
+    [ -z "$LAT" ] && err "获取版本失败" && return 1
     
-    # 获取最新版本
-    API_DATA=$(curl -s --max-time 10 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
-    LAT=$(extract_version "$API_DATA")
+    info "更新: $CUR → $LAT"
     
-    echo "当前版本: ${CUR:-未知}"
-    echo "最新版本: ${LAT:-未知}"
-    echo ""
+    # 下载更新
+    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv7l/armv7/;s/i686/386/')
+    URL="https://github.com/SagerNet/sing-box/releases/download/v${LAT}/sing-box-${LAT}-linux-${ARCH}.tar.gz"
     
-    if [ "$CUR" = "$LAT" ] && [ -n "$LAT" ]; then
-        info "✅ 已是最新版本，无需更新"
-        return 0
-    fi
-    
-    if [ -z "$LAT" ]; then
-        err "无法获取最新版本"
-        return 1
-    fi
-    
-    info "发现新版本: ${CUR:-未知} → $LAT"
-    info "开始自动更新..."
-    
-    # 检测架构
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64)  ARCH="amd64" ;;
-        aarch64) ARCH="arm64" ;;
-        armv7l)  ARCH="armv7" ;;
-        i686)    ARCH="386" ;;
-        *)       err "不支持的架构"; return 1 ;;
-    esac
-    
-    FILENAME="sing-box-${LAT}-linux-${ARCH}.tar.gz"
-    URL="https://github.com/SagerNet/sing-box/releases/download/v${LAT}/${FILENAME}"
-    
-    info "开始下载..."
-    if ! curl -L --progress-bar --max-time 300 "$URL" -o /tmp/sb.tar.gz; then
-        err "下载失败"
-        return 1
-    fi
-    
-    if [ ! -s /tmp/sb.tar.gz ]; then
-        err "下载的文件为空"
-        rm -f /tmp/sb.tar.gz
-        return 1
-    fi
-    
-    info "✅ 下载成功"
-    
-    # 停止服务
-    info "停止服务..."
     service_stop || true
-    
-    # 更新
-    info "正在更新..."
-    if tar -xzf /tmp/sb.tar.gz -C /tmp/ 2>/dev/null; then
-        BINARY=$(find /tmp -type f -name "sing-box" 2>/dev/null | head -n1)
-        if [ -n "$BINARY" ] && [ -f "$BINARY" ]; then
-            mv "$BINARY" /usr/bin/sing-box
-            chmod +x /usr/bin/sing-box
-            rm -rf /tmp/sb* /tmp/sing-box*
-            
-            NEW_VER_OUTPUT=$(sing-box version 2>/dev/null | head -1)
-            NEW_VER=$(extract_version_from_binary "$NEW_VER_OUTPUT")
-            info "✅ 更新完成: $NEW_VER"
-            
-            # 重启服务
-            info "重启服务..."
-            service_restart && info "✅ 服务已启动" || warn "服务启动失败"
-        else
-            err "更新失败：未找到可执行文件"
-            rm -rf /tmp/sb* /tmp/sing-box*
-            return 1
-        fi
-    else
-        err "更新失败：解压失败"
-        rm -rf /tmp/sb* /tmp/sing-box*
-        return 1
-    fi
+    curl -L "$URL" -o /tmp/sb.tar.gz && \
+    tar -xzf /tmp/sb.tar.gz -C /tmp/ && \
+    find /tmp -name "sing-box" -type f | head -n1 | xargs -I{} mv {} /usr/bin/sing-box && \
+    chmod +x /usr/bin/sing-box && \
+    rm -rf /tmp/sb* /tmp/sing-box* && \
+    info "✅ 完成: $(sing-box version 2>/dev/null | sed -n 's/.*version[[:space:]]*\([0-9.]*\).*/\1/p')" && \
+    service_restart && info "✅ 已重启" || { err "更新失败"; return 1; }
 }
 
 action_uninstall() {
