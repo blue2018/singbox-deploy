@@ -26,19 +26,6 @@ info() { echo -e "\033[1;34m[INFO]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 
-# 兼容 BusyBox 的版本提取
-extract_version() {
-    echo "$1" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\?\([0-9.]*\)".*/\1/p' | head -n1
-}
-
-extract_version_from_binary() {
-    echo "$1" | sed -n 's/.*version[[:space:]]*\([0-9][0-9.]*\).*/\1/p' | head -n1
-}
-
-CONFIG_PATH="/etc/sing-box/config.json"
-CACHE_FILE="/etc/sing-box/.config_cache"
-SERVICE_NAME="sing-box"
-
 # -----------------------
 # 检测系统类型
 detect_os() {
@@ -108,6 +95,7 @@ update_system() {
 
 # 直接更新系统
 update_system
+
 # -----------------------
 # 安装依赖
 install_deps() {
@@ -157,6 +145,18 @@ rand_uuid() {
     else
         openssl rand -hex 16 | sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1\2\3\4-\5\6-\7\8-\9\10-\11\12\13\14\15\16/'
     fi
+}
+
+detect_arch() {
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)   SBOX_ARCH="amd64" ;;
+        aarch64)  SBOX_ARCH="arm64" ;;
+        armv7l)   SBOX_ARCH="armv7" ;;
+        armv6l)   SBOX_ARCH="armv6" ;;
+        i386|i686) SBOX_ARCH="386" ;;
+        *) err "不支持的CPU架构: $ARCH"; exit 1 ;;
+    esac
 }
 
 # -----------------------
@@ -229,72 +229,28 @@ info "HY2 密码(UUID)已自动生成"
 # -----------------------
 # 安装 sing-box
 install_singbox() {
-    info "开始自动安装 sing-box..."
+    detect_arch
+    info "从 GitHub Releases 安装 sing-box ($SBOX_ARCH)..."
 
-    # 获取最新版本
-    API_DATA=$(curl -s --max-time 10 https://api.github.com/repos/SagerNet/sing-box/releases/latest)
-    VER=$(extract_version "$API_DATA")
-    
-    [ -z "$VER" ] && err "获取版本失败" && exit 1
-    info "最新版本: v${VER}"
-    
-    # 检测架构
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64)  ARCH="amd64" ;;
-        aarch64) ARCH="arm64" ;;
-        armv7l)  ARCH="armv7" ;;
-        i686)    ARCH="386" ;;
-        *)       err "不支持的架构: $ARCH"; exit 1 ;;
-    esac
-    
-    info "系统架构: $ARCH"
-    
-    # 直接使用 GitHub 官方源
-    FILENAME="sing-box-${VER}-linux-${ARCH}.tar.gz"
-    URL="https://github.com/SagerNet/sing-box/releases/download/v${VER}/${FILENAME}"
-    
-    info "开始下载..."
-    if ! curl -L --progress-bar --max-time 300 "$URL" -o /tmp/sb.tar.gz; then
-        err "下载失败"
-        exit 1
-    fi
-    
-    if [ ! -s /tmp/sb.tar.gz ]; then
-        err "下载的文件为空"
-        rm -f /tmp/sb.tar.gz
-        exit 1
-    fi
-    
-    info "✅ 下载成功"
-    
-    # 安装
-    info "正在安装..."
-    if ! tar -xzf /tmp/sb.tar.gz -C /tmp/ 2>/dev/null; then
-        err "解压失败"
-        rm -f /tmp/sb.tar.gz
-        exit 1
-    fi
-    
-    BINARY=$(find /tmp -type f -name "sing-box" 2>/dev/null | head -n1)
-    
-    if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
-        err "未找到可执行文件"
-        rm -rf /tmp/sb* /tmp/sing-box*
-        exit 1
-    fi
-    
-    mv "$BINARY" /usr/bin/sing-box
-    chmod +x /usr/bin/sing-box
-    rm -rf /tmp/sb* /tmp/sing-box*
-    
-    if command -v sing-box >/dev/null 2>&1; then
-        INSTALLED_VER=$(sing-box version 2>/dev/null | head -1)
-        info "✅ 安装成功: $INSTALLED_VER"
-    else
-        err "安装失败"
-        exit 1
-    fi
+    API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+    TAG=$(curl -fsSL "$API" | jq -r '.tag_name')
+
+    [ -z "$TAG" ] && err "获取 GitHub 最新版本失败" && exit 1
+
+    URL="https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${SBOX_ARCH}.tar.gz"
+
+    info "最新版本: $TAG"
+    TMPDIR=$(mktemp -d)
+
+    curl -fL "$URL" -o "$TMPDIR/sing-box.tar.gz" || { err "下载失败"; exit 1; }
+
+    tar -xf "$TMPDIR/sing-box.tar.gz" -C "$TMPDIR" || { err "解压失败"; exit 1; }
+
+    install -m 755 "$TMPDIR"/sing-box-*/sing-box /usr/bin/sing-box
+
+    rm -rf "$TMPDIR"
+
+    info "sing-box 安装完成: $(sing-box version | head -1)"
 }
 
 install_singbox
@@ -739,28 +695,27 @@ action_reset_hy2() {
 }
 
 action_update() {
-    # 获取版本
-    CUR=$(sing-box version 2>/dev/null | sed -n 's/.*version[[:space:]]*\([0-9.]*\).*/\1/p' | head -n1)
-    LAT=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\?\([0-9.]*\)".*/\1/p' | head -n1)
-    
-    echo "当前: ${CUR:-?} | 最新: ${LAT:-?}"
-    [ "$CUR" = "$LAT" ] && info "✅ 已是最新" && return 0
-    [ -z "$LAT" ] && err "获取版本失败" && return 1
-    
-    info "更新: $CUR → $LAT"
-    
-    # 下载更新
-    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/armv7l/armv7/;s/i686/386/')
-    URL="https://github.com/SagerNet/sing-box/releases/download/v${LAT}/sing-box-${LAT}-linux-${ARCH}.tar.gz"
-    
+    detect_arch
+
+    info "从 GitHub Releases 更新 sing-box..."
+
+    API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+    TAG=$(curl -fsSL "$API" | jq -r '.tag_name')
+
+    [ -z "$TAG" ] && err "获取最新版本失败" && return 1
+
+    URL="https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${SBOX_ARCH}.tar.gz"
+
+    TMPDIR=$(mktemp -d)
+    curl -fL "$URL" -o "$TMPDIR/sb.tar.gz" || { err "下载失败"; return 1; }
+    tar -xf "$TMPDIR/sb.tar.gz" -C "$TMPDIR" || { err "解压失败"; return 1; }
+
     service_stop || true
-    curl -L "$URL" -o /tmp/sb.tar.gz && \
-    tar -xzf /tmp/sb.tar.gz -C /tmp/ && \
-    find /tmp -name "sing-box" -type f | head -n1 | xargs -I{} mv {} /usr/bin/sing-box && \
-    chmod +x /usr/bin/sing-box && \
-    rm -rf /tmp/sb* /tmp/sing-box* && \
-    info "✅ 完成: $(sing-box version 2>/dev/null | sed -n 's/.*version[[:space:]]*\([0-9.]*\).*/\1/p')" && \
-    service_restart && info "✅ 已重启" || { err "更新失败"; return 1; }
+    install -m 755 "$TMPDIR"/sing-box-*/sing-box /usr/bin/sing-box
+    rm -rf "$TMPDIR"
+
+    info "更新完成: $(sing-box version | head -1)"
+    service_start
 }
 
 action_uninstall() {
