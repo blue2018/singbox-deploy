@@ -327,7 +327,6 @@ create_config() {
       "users": [
         { "password": "$PSK_HY2" }
       ],
-      "disable_mtu_discovery": false,
       $BANDWIDTH_CONFIG
       "tls": {
         "enabled": true,
