@@ -2,6 +2,25 @@
 set -euo pipefail
 
 # -----------------------
+# TLS 指纹随机池（抗被动聚类）
+TLS_DOMAIN_POOL=(
+  "www.bing.com"
+  "www.qq.com"
+  "www.aliyun.com"
+  "www.baidu.com"
+  "www.jd.com"
+  "www.taobao.com"
+  "www.mi.com"
+  "www.meituan.com"
+  "www.zhihu.com"
+  "www.bilibili.com"
+)
+pick_tls_domain() {
+  echo "${TLS_DOMAIN_POOL[$RANDOM % ${#TLS_DOMAIN_POOL[@]}]}"
+}
+TLS_DOMAIN="$(pick_tls_domain)"
+
+# -----------------------
 # 彩色输出函数
 info() { echo -e "\033[1;34m[INFO]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
@@ -264,7 +283,7 @@ generate_cert() {
           -keyout /etc/sing-box/certs/privkey.pem \
           -out /etc/sing-box/certs/fullchain.pem \
           -days 3650 \
-          -subj "/CN=www.bing.com" || {
+          -subj "/CN=$TLS_DOMAIN" || {
             err "证书生成失败"
             exit 1
         }
@@ -306,24 +325,27 @@ create_config() {
       "listen": "::",
       "listen_port": $PORT_HY2,
       "users": [
-        {
-          "password": "$PSK_HY2"
-        }
+        { "password": "$PSK_HY2" }
       ],
+      "recv_window": 67108864,
+      "send_window": 67108864,
+      "max_conn_client": 4096,
+      "disable_mtu_discovery": false,
       $BANDWIDTH_CONFIG
       "tls": {
         "enabled": true,
-        "alpn": ["h3"],
+        "alpn": ["h3","h2","http/1.1"],
         "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-        "key_path": "/etc/sing-box/certs/privkey.pem"
+        "key_path": "/etc/sing-box/certs/privkey.pem",
+        "fallback": {
+          "server": "www.cloudflare.com",
+          "server_port": 443
+        }
       }
     }
   ],
   "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct-out"
-    }
+    { "type": "direct", "tag": "direct-out" }
   ]
 }
 EOF
@@ -411,11 +433,12 @@ ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10s
-LimitNOFILE=1048576
 LimitNPROC=512
-CPUSchedulingPolicy=fifo
-CPUSchedulingPriority=99
-Nice=-10
+Nice=-5
+CPUSchedulingPolicy=other
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+LimitNOFILE=2097152
 
 [Install]
 WantedBy=multi-user.target
@@ -452,30 +475,20 @@ optimize_system() {
     
     cat >> /etc/sysctl.conf <<'SYSCTL'
 
-# ===== Sing-box Hysteria2 性能优化 =====
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.core.rmem_default = 1048576
-net.core.wmem_default = 1048576
-net.core.netdev_max_backlog = 16384
+# ===== HY2 QUIC EXTREME =====
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.ipv4.udp_mem = 65536 131072 262144
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+
+net.core.netdev_max_backlog = 250000
+net.core.somaxconn = 32768
+
 net.ipv4.tcp_congestion_control = bbr
 net.core.default_qdisc = fq
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_ecn = 1
-net.ipv4.tcp_ecn_fallback = 1
-net.ipv4.tcp_rmem = 4096 1048576 16777216
-net.ipv4.tcp_wmem = 4096 1048576 16777216
-net.core.somaxconn = 8192
-net.ipv4.tcp_max_syn_backlog = 8192
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_max_tw_buckets = 55000
-net.ipv4.tcp_tw_reuse = 1
-fs.file-max = 1048576
-vm.swappiness = 10
-vm.dirty_ratio = 15
-vm.dirty_background_ratio = 5
+
+fs.file-max = 2097152
 SYSCTL
     
     sysctl -p >/dev/null 2>&1 || warn "部分内核参数应用失败（可能需要重启）"
@@ -516,7 +529,7 @@ generate_uris() {
     local host="$PUB_IP"
     hy2_encoded=$(printf "%s" "$PSK_HY2" | sed 's/:/%3A/g; s/+/%2B/g; s/\//%2F/g; s/=/%3D/g')
     echo "=== Hysteria2 (HY2) ==="
-    echo "hy2://${hy2_encoded}@${host}:${PORT_HY2}/?sni=www.bing.com&alpn=h3&insecure=1#hy2${suffix}"
+    echo "hy2://${hy2_encoded}@${host}:${PORT_HY2}/?sni=${TLS_DOMAIN}&alpn=h3&insecure=1#hy2${suffix}"
     echo ""
 }
 
