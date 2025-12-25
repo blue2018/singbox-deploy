@@ -28,7 +28,10 @@ err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 
 # -----------------------
 # 检测系统类型
-detect_arch() {
+detect_os() {
+    # =========================
+    # CPU 架构检测（GitHub 用）
+    # =========================
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64)   SBOX_ARCH="amd64" ;;
@@ -36,11 +39,12 @@ detect_arch() {
         armv7l)   SBOX_ARCH="armv7" ;;
         armv6l)   SBOX_ARCH="armv6" ;;
         i386|i686) SBOX_ARCH="386" ;;
-        *) err "不支持的CPU架构: $ARCH"; return 1 ;;
+        *) err "不支持的CPU架构: $ARCH"; exit 1 ;;
     esac
-}
 
-detect_os() {
+    # =========================
+    # OS 类型检测（服务用）
+    # =========================
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         OS_ID="${ID:-}"
@@ -229,7 +233,7 @@ info "HY2 密码(UUID)已自动生成"
 # -----------------------
 # 安装 sing-box
 install_singbox() {
-    detect_arch
+    detect_os
     info "从 GitHub Releases 安装 sing-box ($SBOX_ARCH)..."
 
     API="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
@@ -695,7 +699,7 @@ action_reset_hy2() {
 }
 
 action_update() {
-    detect_arch
+    detect_os
 
     info "从 GitHub Releases 更新 sing-box..."
 
