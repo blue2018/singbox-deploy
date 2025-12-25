@@ -51,10 +51,10 @@ detect_os() {
     # 检测 CPU 架构
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)   SBOX_ARCH="amd64" ;;
-        aarch64)  SBOX_ARCH="arm64" ;;
-        armv7l)   SBOX_ARCH="armv7" ;;
-        armv6l)   SBOX_ARCH="armv6" ;;
+        x86_64)    SBOX_ARCH="amd64" ;;
+        aarch64)   SBOX_ARCH="arm64" ;;
+        armv7l)    SBOX_ARCH="armv7" ;;
+        armv6l)    SBOX_ARCH="armv6" ;;
         i386|i686) SBOX_ARCH="386" ;;
         *) err "不支持的 CPU 架构: $ARCH"; exit 1 ;;
     esac
