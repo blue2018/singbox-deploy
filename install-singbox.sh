@@ -362,35 +362,23 @@ show_info() {
 }
 
 
-# 创建 sb 管理脚本 (修正了路径丢失和 404 问题)
+# 创建 sb 管理脚本
 create_sb_tool() {
-    # 确保目录存在
     mkdir -p /etc/sing-box
-    
-    # 尝试备份当前脚本
-    if [ -f "$0" ]; then
-        cp -f "$0" "$SBOX_CORE" 2>/dev/null || touch "$SBOX_CORE"
+    if [ -f "$0" ] && grep -q "install_singbox" "$0"; then
+        cp -f "$0" "$SBOX_CORE"
     else
-        touch "$SBOX_CORE"
+        curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-singbox-64m.sh -o "$SBOX_CORE"
     fi
-    
-    # 确保文件存在后再执行 chmod
-    if [ -f "$SBOX_CORE" ]; then
-        chmod +x "$SBOX_CORE"
-    fi
+    chmod +x "$SBOX_CORE"
 
     local SB_PATH="/usr/local/bin/sb"
-    mkdir -p /usr/local/bin
-
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 CORE="/etc/sing-box/core_script.sh"
 
-if [ ! -s "$CORE" ]; then 
-    echo -e "\033[1;31m[ERR]\033[0m 核心脚本未就绪。请手动下载安装脚本到 /etc/sing-box/core_script.sh"
-    exit 1 
-fi
+if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
 
 source "$CORE" --detect-only
 
@@ -419,22 +407,24 @@ while true; do
         4) source "$CORE" --update-kernel ;;
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
-           read -p "是否确定卸载？输入 y 确认: " confirm
+           read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                service_ctrl stop
-               [ -f /etc/init.d/sing-box ] && rc-update del sing-box 2>/dev/null || true
+               [ -f /etc/init.d/sing-box ] && rc-update del sing-box
                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
                info "卸载完成！"
                exit 0
+           else
+               info "已取消卸载。"
            fi
            ;;
         0) exit 0 ;;
-        *) echo "输入错误" ;;
+        *) echo "输入错误，请重新输入" ;;
     esac
 done
 EOF
     chmod +x "$SB_PATH"
-    ln -sf "$SB_PATH" "/usr/local/bin/SB" 2>/dev/null || true
+    ln -sf "$SB_PATH" "/usr/local/bin/SB"
 }
 
 
