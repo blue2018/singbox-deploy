@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 预先捕获流（必须在脚本顶部，防止 read 命令干扰管道）
+RAW_INPUT=$( [[ ! -f "$0" ]] && cat /dev/stdin || cat "$0" ) 2>/dev/null || true
+
 # 变量声明与环境准备
 SBOX_ARCH=""
 OS_DISPLAY=""
@@ -291,8 +294,13 @@ show_info() {
 # 创建 sb 管理脚本
 create_sb_tool() {
     mkdir -p /etc/sing-box
-    cp -f "$0" "$SBOX_CORE"
-    chmod +x "$SBOX_CORE"
+    
+    # 核心自举：将脚本开头捕获的内容写入本地，实现不依赖 URL
+    if [ -n "$RAW_INPUT" ]; then
+        echo "$RAW_INPUT" > "$SBOX_CORE"
+    elif [ -f "$0" ]; then
+        cp -f "$0" "$SBOX_CORE"
+    fi
     chmod +x "$SBOX_CORE"
 
     local SB_PATH="/usr/local/bin/sb"
