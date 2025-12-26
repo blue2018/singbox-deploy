@@ -294,7 +294,7 @@ create_sb_tool() {
     if [ -f "$0" ] && grep -q "install_singbox" "$0"; then
         cp -f "$0" "$SBOX_CORE"
     else
-        curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-singbox-64m.sh -o "$SBOX_CORE"
+        curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-singbox.sh -o "$SBOX_CORE"
     fi
     chmod +x "$SBOX_CORE"
 
