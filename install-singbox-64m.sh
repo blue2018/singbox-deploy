@@ -242,12 +242,12 @@ show_info() {
 # 创建管理面板 (sb)
 create_sb_tool() {
     local SB_PATH="/usr/local/bin/sb"
+    local INSTALLER_PATH="$(realpath $0)" # 获取当前安装脚本的绝对路径
+
     cat > "$SB_PATH" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
-
-# 引用安装脚本中的变量和检测
-source \$0 --detect-only
+# 取消 set -e 避免误删导致的退出
+set -u 
 
 info() { echo -e "\033[1;34m[INFO]\033[0m \$*"; }
 
@@ -266,13 +266,13 @@ while true; do
     echo "=========================="
     read -p "请选择 [0-7]: " opt
     case "\$opt" in
-        1) source \$0 --show-only ;;
+        1) bash "$INSTALLER_PATH" --show-only ;;
         2) vi /etc/sing-box/config.json && service_ctrl restart ;;
         3) 
            read -p "请输入新端口: " NEW_PORT
-           source \$0 --reset-port "\$NEW_PORT"
+           bash "$INSTALLER_PATH" --reset-port "\$NEW_PORT"
            ;;
-        4) source \$0 --update-kernel ;;
+        4) bash "$INSTALLER_PATH" --update-kernel ;;
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
            if [ -f /etc/init.d/sing-box ]; then tail -n 50 /var/log/messages | grep sing-box
@@ -281,7 +281,6 @@ while true; do
         7) 
            service_ctrl stop
            [ -f /etc/init.d/sing-box ] && rc-update del sing-box
-           # 卸载时同时删除两个指令文件
            rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box
            info "卸载完成！"
            exit 0 ;;
@@ -291,7 +290,6 @@ while true; do
 done
 EOF
     chmod +x "$SB_PATH"
-    # 核心：创建大写指令的软链接
     ln -sf "$SB_PATH" "/usr/local/bin/SB"
 }
 
