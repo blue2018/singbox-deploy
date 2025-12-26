@@ -71,61 +71,79 @@ detect_os() {
 }
 
 
-# 系统内核优化 (针对 Alpine/OpenVZ 内存检测修复版)
+# 系统内核优化 (针对 64M/128M/256M 阶梯优化 - 兼容版)
 optimize_system() {
-    # --- 核心修复：多维度内存检测 ---
-    local mem_real=0
-    
-    # 1. 尝试从 Cgroup 获取容器真实限制 (最准)
-    if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
-        mem_real=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
-    elif [ -f /sys/fs/cgroup/memory.max ]; then
-        local m_max=$(cat /sys/fs/cgroup/memory.max)
-        if [[ "$m_max" =~ ^[0-9]+$ ]]; then
-            mem_real=$((m_max / 1024 / 1024))
-        fi
-    fi
-
-    # 2. 获取系统 free 命令数值 (宿主机显示)
+    # --- 1. 内存检测逻辑 (多路侦测) ---
+    local mem_total=64
+    local mem_cgroup=0
     local mem_free=$(free -m | awk '/Mem:/ {print $2}')
     
-    # 3. 逻辑合并：取最小值，并过滤掉异常值 (如 cgroup 未限制时会显示一个天文数字)
-    local mem_total=$mem_free
-    if [ "$mem_real" -gt 0 ] && [ "$mem_real" -lt "$mem_free" ]; then
-        mem_total=$mem_real
+    # 路径 A: Cgroup v1 (常用)
+    if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+        mem_cgroup=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
+    # 路径 B: Cgroup v2 (部分新版容器)
+    elif [ -f /sys/fs/cgroup/memory.max ]; then
+        local m_max=$(cat /sys/fs/cgroup/memory.max)
+        [[ "$m_max" =~ ^[0-9]+$ ]] && mem_cgroup=$((m_max / 1024 / 1024))
+    # 路径 C: /proc/meminfo (针对 OpenVZ 某些特定环境)
+    elif grep -q "MemTotal" /proc/meminfo; then
+        local m_proc=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        mem_cgroup=$((m_proc / 1024))
     fi
 
-    # 4. 最终兜底
-    if [ -z "$mem_total" ] || [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then 
-        mem_total=64
-    fi 
-    
-    info "检测到系统真实内存配额: ${mem_total}MB"
+    # 逻辑判断：如果 Cgroup 探测到了且数值在合理范围(>0且小于宿主机显示)，则以它为准
+    if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_free" ]; then
+        mem_total=$mem_cgroup
+    else
+        mem_total=$mem_free
+    fi
 
-    # --- 1. 阶梯变量设置 (从小到大) ---
+    # 兜底：防止极端情况获取到 0 或异常大值
+    if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=64; fi
+
+    info "检测到系统可用内存: ${mem_total}MB"
+
+    # --- 2. 阶梯变量设置 (从小到大逻辑) ---
     local go_limit="42MiB"
-    local udp_buffer="4194304" # 4MB
+    local udp_buffer="4194304" # 4MB (针对64M)
     local mem_level="64M"
 
     if [ "$mem_total" -ge 200 ]; then
         go_limit="180MiB"
-        udp_buffer="16777216"
+        udp_buffer="16777216" # 16MB (针对256M+)
         mem_level="256M+"
     elif [ "$mem_total" -ge 100 ]; then
         go_limit="85MiB"
-        udp_buffer="8388608"
+        udp_buffer="8388608"  # 8MB (针对128M)
         mem_level="128M"
     fi
 
     SBOX_GOLIMIT="$go_limit"
-    # 对于 Alpine，SBOX_MEM_MAX 主要用于提示，因为 OpenRC 没法像 Systemd 那样强制物理封顶
     SBOX_MEM_MAX="$((mem_total * 85 / 100))M"
-    info "应用 ${mem_level} 级别优化 (Go限制: $SBOX_GOLIMIT, 物理限制: $SBOX_MEM_MAX)"
+    info "应用 ${mem_level} 级别优化 (Go限制: $SBOX_GOLIMIT, 物理封顶: $SBOX_MEM_MAX)"
 
-    # --- 2. Swap 状态侦测 (保持原样) ---
-    # ... 原有代码 ...
-
-    # --- 3. 内核网络栈参数 (应用正确的 udp_buffer) ---
+    # --- 3. Swap 状态侦测与提示 (补全 Alpine 提示) ---
+    if [ "$OS" = "alpine" ]; then
+        info "Alpine 系统默认采用内存运行模式，跳过 Swap 处理。"
+    else
+        local swap_total=$(free -m | awk '/Swap:/ {print $2}')
+        if [ "$swap_total" -gt 10 ]; then
+            succ "检测到系统已存在 Swap (${swap_total}MB)，跳过创建。"
+        elif [ "$mem_total" -lt 150 ]; then
+            warn "内存极小 (${mem_total}MB) 且无虚拟内存，正在创建 128MB 救急 Swap..."
+            if fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null; then
+                chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+                grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+                succ "Swap 创建并挂载成功。"
+            else
+                err "Swap 创建失败 (可能是 OpenVZ/LXC 架构限制)。"
+            fi
+        else
+            info "内存尚可，系统未配置 Swap，保持现状。"
+        fi
+    fi
+    
+    # --- 4. 内核网络栈参数 ---
     modprobe tcp_bbr >/dev/null 2>&1 || true
     cat > /etc/sysctl.conf <<SYSCTL
 net.core.rmem_max = $udp_buffer
