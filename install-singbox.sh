@@ -293,17 +293,12 @@ create_sb_tool() {
     mkdir -p /etc/sing-box
 
     # --- 核心改进逻辑：解决 Alpine 管道安装和 GitHub 地址去中心化 ---
-    # 我们通过 shell 的 declare -f 导出所有已加载的函数到核心脚本中
-    # 这样不需要知道源文件在哪里，也能在本地生成完整的核心脚本
     echo "#!/usr/bin/env bash" > "$SBOX_CORE"
     echo "set -euo pipefail" >> "$SBOX_CORE"
-    # 导出所有全局变量
     echo "SBOX_CORE='$SBOX_CORE'" >> "$SBOX_CORE"
     echo "TLS_DOMAIN_POOL=(${TLS_DOMAIN_POOL[@]})" >> "$SBOX_CORE"
-    # 导出脚本中定义的所有函数
     declare -f >> "$SBOX_CORE"
     
-    # 追加主逻辑触发器
     cat >> "$SBOX_CORE" <<'EOF'
 # 自动检测逻辑入口
 if [[ "${1:-}" == "--detect-only" ]]; then
@@ -313,7 +308,13 @@ elif [[ "${1:-}" == "--show-only" ]]; then
 elif [[ "${1:-}" == "--reset-port" ]]; then
     detect_os && create_config "$2" && setup_service && show_info
 elif [[ "${1:-}" == "--update-kernel" ]]; then
-    detect_os && install_singbox "update" && setup_service
+    detect_os
+    if install_singbox "update"; then
+        setup_service
+        return 0
+    else
+        return 0
+    fi
 fi
 EOF
 
@@ -351,7 +352,11 @@ while true; do
            read -p "请输入新端口: " NEW_PORT
            source "$CORE" --reset-port "$NEW_PORT"
            ;;
-        4) source "$CORE" --update-kernel ;;
+        4) 
+           source "$CORE" --update-kernel || true
+           echo -e "\033[1;34m[按任意键返回菜单]\033[0m"
+           read -n 1
+           ;;
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
            read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
