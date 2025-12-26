@@ -397,13 +397,28 @@ while true; do
     read -p "请选择 [0-6]: " opt
     case "$opt" in
         1) source "$CORE" --show-only ;;
-        2) vi /etc/sing-box/config.json && service_ctrl restart ;;
+        2) 
+           vi /etc/sing-box/config.json && service_ctrl restart
+           echo -e "\n\033[1;32m[OK]\033[0m 配置已应用并重启服务。"
+           echo -e "按回车键返回菜单..."
+           read -r
+           ;;
         3) 
            read -p "请输入新端口: " NEW_PORT
            source "$CORE" --reset-port "$NEW_PORT"
+           echo -e "\n按回车键返回菜单..."
+           read -r
            ;;
-        4) source "$CORE" --update-kernel ;;
-        5) service_ctrl restart && info "服务已重启" ;;
+        4) 
+           source "$CORE" --update-kernel
+           echo -e "\n按回车键返回菜单..."
+           read -r
+           ;;
+        5) 
+           service_ctrl restart && info "服务已重启"
+           echo -e "\n按回车键返回菜单..."
+           read -r
+           ;;
         6) 
            read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
