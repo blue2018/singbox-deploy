@@ -350,11 +350,8 @@ create_sb_tool() {
     echo "#!/usr/bin/env bash" > "$SBOX_CORE"
     echo "set -euo pipefail" >> "$SBOX_CORE"
     echo "SBOX_CORE='$SBOX_CORE'" >> "$SBOX_CORE"
-    
-    # 将阶梯变量持久化写入核心脚本
     echo "SBOX_GOLIMIT='$SBOX_GOLIMIT'" >> "$SBOX_CORE"
     echo "SBOX_MEM_MAX='$SBOX_MEM_MAX'" >> "$SBOX_CORE"
-    
     echo "TLS_DOMAIN_POOL=(${TLS_DOMAIN_POOL[@]})" >> "$SBOX_CORE"
     declare -f >> "$SBOX_CORE"
     
@@ -369,8 +366,8 @@ elif [[ "${1:-}" == "--update-kernel" ]]; then
     detect_os
     if install_singbox "update"; then
         setup_service
+        echo -e "\033[1;32m[OK]\033[0m 内核已更新并重新应用内存优化"
     fi
-    return 0
 fi
 EOF
 
