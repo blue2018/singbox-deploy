@@ -74,21 +74,16 @@ optimize_system() {
     info "优化内核参数 (适配 64MB 极小内存 + 300Mbps 带宽)..."
 
     # 完美版 Swap 自动处理逻辑
-    # 逻辑：只有当系统不是 Alpine，且内存 < 100MB，且当前 Swap 为 0 时才创建
     if [ "$OS" != "alpine" ]; then
-        # 使用 awk 匹配行首并获取总计数值，适配更多版本的 free 命令
         local mem_total=$(free -m | grep -i "Mem:" | awk '{print $2}')
         local swap_total=$(free -m | grep -i "Swap:" | awk '{print $2}')
         
-        # 兜底逻辑：如果 free 命令获取失败则跳过，防止脚本报错
         if [ -n "$mem_total" ] && [ -n "$swap_total" ]; then
             if [ "$mem_total" -lt 100 ] && [ "$swap_total" -lt 10 ]; then
                 warn "检测到 Debian/Ubuntu 内存极小 ($mem_total MB)，正在创建 128MB 虚拟内存..."
-                # 优先使用高性能的 fallocate，失败则回退到 dd
                 fallocate -l 128M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=128
                 chmod 600 /swapfile
                 mkswap /swapfile && swapon /swapfile
-                # 检查是否已存在 fstab 条目，防止重复写入
                 if ! grep -q "/swapfile" /etc/fstab; then
                     echo "/swapfile none swap sw 0 0" >> /etc/fstab
                 fi
@@ -99,10 +94,8 @@ optimize_system() {
         info "检测到 Alpine 系统，保持内存运行模式，跳过 Swap 创建"
     fi
     
-    # 开启 BBR
     modprobe tcp_bbr >/dev/null 2>&1 || true
 
-    # 内核网络栈优化
     cat > /etc/sysctl.conf <<'SYSCTL'
 net.core.rmem_max = 4194304
 net.core.wmem_max = 4194304
@@ -131,7 +124,6 @@ install_singbox() {
     fi
     local REMOTE_VER="${LATEST_TAG#v}"
     
-    # 第4项更新功能的版本对比逻辑
     if [[ "$MODE" == "update" ]]; then
         local LOCAL_VER="未安装"
         if [ -f /usr/bin/sing-box ]; then
@@ -145,7 +137,7 @@ install_singbox() {
 
         if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then
             succ "内核已是最新版本，无需更新。"
-            return 1  # 特殊返回码：代表无需后续操作
+            return 1
         fi
         info "发现新版本，开始下载更新..."
     fi
@@ -201,7 +193,11 @@ create_config() {
     
     cat > "/etc/sing-box/config.json" <<EOF
 {
-  "log": { "level": "warn", "timestamp": true },
+  "log": {
+    "level": "warn",
+    "timestamp": true,
+    "output": "/var/log/sing-box.log"
+  },
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
@@ -340,12 +336,20 @@ while true; do
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
            echo "正在获取最新日志..."
-           if [ -f /var/log/messages ]; then
+           if [ -f /var/log/sing-box.log ]; then
+               tail -n 50 /var/log/sing-box.log
+               local log_size=$(du -h /var/log/sing-box.log | awk '{print $1}')
+               echo -e "\033[1;30m(当前日志文件大小: $log_size)\033[0m"
+           elif [ -f /var/log/messages ]; then
                tail -n 50 /var/log/messages | grep sing-box || echo "未发现相关日志"
            elif command -v journalctl >/dev/null; then
                journalctl -u sing-box -n 50 --no-pager
            else
-               dmesg | grep sing-box | tail -n 20 || echo "当前环境下无法获取日志"
+               if pgrep sing-box >/dev/null; then
+                   echo -e "\033[1;32m[OK]\033[0m 服务运行正常，暂无警告日志。"
+               else
+                   echo -e "\033[1;31m[ERR]\033[0m 服务未运行。"
+               fi
            fi
            ;;
         7) 
@@ -353,7 +357,7 @@ while true; do
            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                service_ctrl stop
                [ -f /etc/init.d/sing-box ] && rc-update del sing-box
-               rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
+               rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE" /var/log/sing-box.log
                info "卸载完成！"
                exit 0
            else
@@ -393,18 +397,13 @@ else
         redhat) yum install -y curl jq openssl ;;
     esac
 
-    # --- 恢复端口输入逻辑 ---
     echo -e "-----------------------------------------------"
     read -p "请输入 Hysteria2 运行端口 [直接回车随机生成]: " USER_PORT
-    # -----------------------------------------------
 
     optimize_system
     install_singbox "install"
     generate_cert
-    
-    # 将用户输入的端口传给配置生成函数
     create_config "$USER_PORT"
-    
     setup_service
     create_sb_tool
     show_info
