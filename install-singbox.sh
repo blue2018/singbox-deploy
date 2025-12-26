@@ -81,7 +81,7 @@ optimize_system() {
 
     info "优化内核参数 (当前检测到内存: ${mem_total}MB)..."
 
-    # 完美版 Swap 自动处理逻辑 (根据不同内存档位调整 Swap 大小)
+    # 判定系统类型与 Swap 逻辑 (逻辑修正：先判断系统，Alpine 不动磁盘)
     if [ "$OS" != "alpine" ]; then
         local swap_total=$(free -m | grep -i "Swap:" | awk '{print $2}')
         
@@ -284,16 +284,20 @@ setup_service() {
     if [ "$OS" = "alpine" ]; then
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
-name="sing-box"
+description="sing-box service"
 export GOGC=$gogc
 export GOMEMLIMIT=$gomemlimit
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
+depend() {
+    need net
+}
 EOF
         chmod +x /etc/init.d/sing-box
-        rc-update add sing-box default && rc-service sing-box restart
+        rc-update add sing-box default >/dev/null 2>&1
+        rc-service sing-box restart
     else
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
@@ -321,7 +325,8 @@ EOF
 
 # 显示信息
 show_info() {
-    local IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
+    # 增加备用 IP 获取方式，防止 curl 失败
+    local IP=$(curl -s --max-time 5 https://api.ipify.org || curl -s --max-time 5 https://ifconfig.me || echo "YOUR_IP")
     local VER_INFO=$(/usr/bin/sing-box version | head -n1)
     local CONFIG="/etc/sing-box/config.json"
     
@@ -350,14 +355,11 @@ show_info() {
 }
 
 
-# 创建 sb 管理脚本
+# 创建 sb 管理脚本 (修正了导致 404 的下载逻辑)
 create_sb_tool() {
     mkdir -p /etc/sing-box
-    if [ -f "$0" ] && grep -q "install_singbox" "$0"; then
-        cp -f "$0" "$SBOX_CORE"
-    else
-        curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-singbox-64m.sh -o "$SBOX_CORE"
-    fi
+    # 修正：不再从失效的 URL 下载，而是直接将当前脚本自身复制作为备份
+    cp "$0" "$SBOX_CORE" 2>/dev/null || true
     chmod +x "$SBOX_CORE"
 
     local SB_PATH="/usr/local/bin/sb"
