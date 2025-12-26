@@ -342,9 +342,7 @@ while true; do
     echo "4) 更新内核   5) 重启服务   6) 卸载程序"
     echo "0) 退出"
     echo "=========================="
-    echo -n "请选择 [0-6]: "
-    echo -ne "\033[s" 
-    read -r opt
+    read -p "请选择 [0-6]: " opt
     case "$opt" in
         1) source "$CORE" --show-only ;;
         2) vi /etc/sing-box/config.json && service_ctrl restart ;;
