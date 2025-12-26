@@ -311,10 +311,8 @@ elif [[ "${1:-}" == "--update-kernel" ]]; then
     detect_os
     if install_singbox "update"; then
         setup_service
-        return 0
-    else
-        return 0
     fi
+    return 0
 fi
 EOF
 
@@ -354,8 +352,6 @@ while true; do
            ;;
         4) 
            source "$CORE" --update-kernel || true
-           echo -e "\033[1;34m[按任意键返回菜单]\033[0m"
-           read -n 1
            ;;
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
