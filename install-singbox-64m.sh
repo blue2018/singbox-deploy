@@ -325,10 +325,10 @@ while true; do
     echo " Sing-box HY2 管理 (快捷键: sb)"
     echo "=========================="
     echo "1) 查看链接   2) 编辑配置   3) 重置端口"
-    echo "4) 更新内核   5) 重启服务   6) 查看日志"
-    echo "7) 卸载程序   0) 退出"
+    echo "4) 更新内核   5) 重启服务   6) 卸载程序"
+    echo "0) 退出"
     echo "=========================="
-    read -p "请选择 [0-7]: " opt
+    read -p "请选择 [0-6]: " opt
     case "$opt" in
         1) source "$CORE" --show-only ;;
         2) vi /etc/sing-box/config.json && service_ctrl restart ;;
@@ -339,16 +339,6 @@ while true; do
         4) source "$CORE" --update-kernel ;;
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
-           echo "正在获取最新日志..."
-           if [ -f /var/log/messages ]; then
-               tail -n 50 /var/log/messages | grep sing-box || echo "未发现相关日志"
-           elif command -v journalctl >/dev/null; then
-               journalctl -u sing-box -n 50 --no-pager
-           else
-               dmesg | grep sing-box | tail -n 20 || echo "当前环境下无法获取日志"
-           fi
-           ;;
-        7) 
            read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                service_ctrl stop
