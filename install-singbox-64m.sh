@@ -242,20 +242,56 @@ show_info() {
 # 创建管理面板 (sb)
 create_sb_tool() {
     local SB_PATH="/usr/local/bin/sb"
-    local INSTALLER_PATH="$(realpath $0)" # 获取当前安装脚本的绝对路径
-
-    cat > "$SB_PATH" <<EOF
+    
+    cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
-# 取消 set -e 避免误删导致的退出
-set -u 
+set -u
 
-info() { echo -e "\033[1;34m[INFO]\033[0m \$*"; }
+# --- 内部工具函数 ---
+info() { echo -e "\033[1;34m[INFO]\033[0m $*"; }
+err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 
 service_ctrl() {
-    if [ -f /etc/init.d/sing-box ]; then rc-service sing-box \$1
-    else systemctl \$1 sing-box; fi
+    if [ -f /etc/init.d/sing-box ]; then rc-service sing-box $1
+    else systemctl $1 sing-box; fi
 }
 
+# 1) 查看链接逻辑
+show_link() {
+    local IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
+    local CONFIG="/etc/sing-box/config.json"
+    if [ ! -f "$CONFIG" ]; then err "配置文件不存在"; return; fi
+    
+    local PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG")
+    local PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG")
+    local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG")
+    local SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/')
+    local LINK="hy2://$PSK@$IP:$PORT/?sni=$SNI&alpn=h3&insecure=1#$(hostname)"
+    
+    echo -e "\n\033[1;32m$LINK\033[0m\n"
+}
+
+# 4) 更新内核逻辑
+update_kernel() {
+    info "正在检查最新版本..."
+    local ARCH=$(uname -m)
+    local SBOX_ARCH="amd64"
+    [[ "$ARCH" == "aarch64" ]] && SBOX_ARCH="arm64"
+    
+    local LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+    local VERSION_NUM="${LATEST_TAG#v}"
+    local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${VERSION_NUM}-linux-${SBOX_ARCH}.tar.gz"
+    
+    local TMP_D=$(mktemp -d)
+    curl -fL "$URL" -o "$TMP_D/sb.tar.gz"
+    tar -xf "$TMP_D/sb.tar.gz" -C "$TMP_D"
+    install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box
+    rm -rf "$TMP_D"
+    service_ctrl restart
+    info "内核已更新至 $LATEST_TAG 并重启"
+}
+
+# --- 主菜单 ---
 while true; do
     echo "=========================="
     echo " Sing-box HY2 管理 (快捷键: sb)"
@@ -265,25 +301,32 @@ while true; do
     echo "7) 卸载程序   0) 退出"
     echo "=========================="
     read -p "请选择 [0-7]: " opt
-    case "\$opt" in
-        1) bash "$INSTALLER_PATH" --show-only ;;
+    case "$opt" in
+        1) show_link ;;
         2) vi /etc/sing-box/config.json && service_ctrl restart ;;
         3) 
-           read -p "请输入新端口: " NEW_PORT
-           bash "$INSTALLER_PATH" --reset-port "\$NEW_PORT"
-           ;;
-        4) bash "$INSTALLER_PATH" --update-kernel ;;
+            read -p "请输入新端口: " NEW_PORT
+            if [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then
+                tmp=$(mktemp)
+                jq ".inbounds[0].listen_port = $NEW_PORT" /etc/sing-box/config.json > "$tmp" && mv "$tmp" /etc/sing-box/config.json
+                service_ctrl restart
+                info "端口已重置为 $NEW_PORT"
+            else
+                err "无效端口"
+            fi
+            ;;
+        4) update_kernel ;;
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
-           if [ -f /etc/init.d/sing-box ]; then tail -n 50 /var/log/messages | grep sing-box
-           else journalctl -u sing-box -n 50 --no-pager; fi 
-           ;;
+            if [ -f /etc/init.d/sing-box ]; then tail -n 50 /var/log/messages | grep sing-box
+            else journalctl -u sing-box -n 50 --no-pager; fi 
+            ;;
         7) 
-           service_ctrl stop
-           [ -f /etc/init.d/sing-box ] && rc-update del sing-box
-           rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box
-           info "卸载完成！"
-           exit 0 ;;
+            service_ctrl stop
+            [ -f /etc/init.d/sing-box ] && rc-update del sing-box
+            rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box
+            info "卸载完成！"
+            exit 0 ;;
         0) exit 0 ;;
         *) echo "输入错误" ;;
     esac
