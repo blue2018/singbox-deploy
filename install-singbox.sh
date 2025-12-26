@@ -10,12 +10,12 @@ SBOX_MEM_MAX="55M"
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
-  "www.bing.com"
-  "www.microsoft.com"
-  "download.windowsupdate.com"
-  "www.icloud.com"
-  "gateway.icloud.com"
-  "cdn.staticfile.org"
+  "www.bing.com"                # 推荐：全球 IP 分布，合法性高
+  "www.microsoft.com"           # 推荐：系统更新流量，极具迷惑性
+  "download.windowsupdate.com" # 推荐：大流量 UDP 伪装的首选
+  "www.icloud.com"               # 推荐：苹果用户常态化出境流量
+  "gateway.icloud.com"           # 推荐：iCloud 同步流量
+  "cdn.staticfile.org"           # 推荐：国内知名的开源库加速，常去境外取回数据
 )
 pick_tls_domain() { echo "${TLS_DOMAIN_POOL[$RANDOM % ${#TLS_DOMAIN_POOL[@]}]}"; }
 TLS_DOMAIN="$(pick_tls_domain)"
