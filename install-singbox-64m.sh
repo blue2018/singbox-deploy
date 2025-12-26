@@ -116,7 +116,7 @@ install_singbox() {
 
         if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then
             succ "内核已是最新版本，无需更新。"
-            return 0
+            return 1  # 特殊返回码：代表无需后续操作
         fi
         info "发现新版本，开始下载更新..."
     fi
@@ -132,6 +132,7 @@ install_singbox() {
         install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box
         rm -rf "$TMP_D"
         succ "内核部署成功: $(/usr/bin/sing-box version | head -n1)"
+        return 0
     else
         rm -rf "$TMP_D"
         err "下载失败"
@@ -267,7 +268,6 @@ show_info() {
 # 创建 sb 管理脚本
 create_sb_tool() {
     mkdir -p /etc/sing-box
-    # 修复管道安装时的备份问题
     if [ -f "$0" ] && grep -q "install_singbox" "$0"; then
         cp -f "$0" "$SBOX_CORE"
     else
@@ -310,15 +310,27 @@ while true; do
         4) source "$CORE" --update-kernel ;;
         5) service_ctrl restart && info "服务已重启" ;;
         6) 
-           if [ -f /etc/init.d/sing-box ]; then tail -n 50 /var/log/messages | grep sing-box
-           else journalctl -u sing-box -n 50 --no-pager; fi 
+           echo "正在获取最新日志..."
+           if [ -f /var/log/messages ]; then
+               tail -n 50 /var/log/messages | grep sing-box || echo "未发现相关日志"
+           elif command -v journalctl >/dev/null; then
+               journalctl -u sing-box -n 50 --no-pager
+           else
+               dmesg | grep sing-box | tail -n 20 || echo "当前环境下无法获取日志"
+           fi
            ;;
         7) 
-           service_ctrl stop
-           [ -f /etc/init.d/sing-box ] && rc-update del sing-box
-           rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-           info "卸载完成！"
-           exit 0 ;;
+           read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
+           if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+               service_ctrl stop
+               [ -f /etc/init.d/sing-box ] && rc-update del sing-box
+               rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
+               info "卸载完成！"
+               exit 0
+           else
+               info "已取消卸载。"
+           fi
+           ;;
         0) exit 0 ;;
         *) echo "输入错误" ;;
     esac
@@ -337,7 +349,10 @@ elif [[ "${1:-}" == "--show-only" ]]; then
 elif [[ "${1:-}" == "--reset-port" ]]; then
     detect_os && create_config "$2" && setup_service && show_info
 elif [[ "${1:-}" == "--update-kernel" ]]; then
-    detect_os && install_singbox "update" && setup_service
+    detect_os
+    if install_singbox "update"; then
+        setup_service
+    fi
 else
     detect_os
     [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
