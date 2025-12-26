@@ -183,6 +183,7 @@ create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
+    # 端口处理保持不变
     if [ -z "$PORT_HY2" ]; then
         if [ -f /etc/sing-box/config.json ]; then
             PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
@@ -191,7 +192,20 @@ create_config() {
         fi
     fi
 
-    local PSK=$([ -f /etc/sing-box/config.json ] && jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json || openssl rand -hex 16)
+    # --- 核心改进：生成标准的 UUID 作为密码 ---
+    local PSK
+    if [ -f /etc/sing-box/config.json ]; then
+        # 如果已存在配置，保留原密码
+        PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
+    else
+        # 优先从系统内核读取 UUID，Alpine/Debian 通用
+        if [ -f /proc/sys/kernel/random/uuid ]; then
+            PSK=$(cat /proc/sys/kernel/random/uuid)
+        else
+            # 备选方案：通过复杂的随机数模拟 UUID 格式
+            PSK=$(printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
+        fi
+    fi
     
     cat > "/etc/sing-box/config.json" <<EOF
 {
