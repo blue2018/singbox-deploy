@@ -345,7 +345,7 @@ while true; do
            fi
            ;;
         0) exit 0 ;;
-        *) echo "输入错误，请重新输入" ;;
+        *) echo "输入有误，请重新输入" ;;
     esac
 done
 EOF
@@ -379,7 +379,7 @@ else
 
     # --- 恢复端口输入逻辑 ---
     echo -e "-----------------------------------------------"
-    read -p "请输入 Hysteria2 运行端口 [直接回车随机生成]: " USER_PORT
+    read -p "请输入 Hysteria2 运行端口 [回车随机生成]: " USER_PORT
     # -----------------------------------------------
 
     optimize_system
