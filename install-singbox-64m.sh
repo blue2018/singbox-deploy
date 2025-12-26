@@ -364,10 +364,18 @@ else
         redhat) yum install -y curl jq openssl ;;
     esac
 
+    # --- 恢复端口输入逻辑 ---
+    echo -e "-----------------------------------------------"
+    read -p "请输入 Hysteria2 运行端口 [直接回车随机生成]: " USER_PORT
+    # -----------------------------------------------
+
     optimize_system
     install_singbox "install"
     generate_cert
-    create_config ""
+    
+    # 将用户输入的端口传给配置生成函数
+    create_config "$USER_PORT"
+    
     setup_service
     create_sb_tool
     show_info
