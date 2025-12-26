@@ -8,12 +8,12 @@ SBOX_CORE="/etc/sing-box/core_script.sh"
 
 # TLS 域名随机池 (针对中国大陆环境优化，避免跨区伪装风险)
 TLS_DOMAIN_POOL=(
-  "www.bing.com"
-  "www.microsoft.com"
-  "download.windowsupdate.com"
-  "www.icloud.com"
-  "gateway.icloud.com"
-  "cdn.staticfile.org"
+  "www.bing.com"                # 推荐：全球 IP 分布，合法性高
+  "www.microsoft.com"           # 推荐：系统更新流量，极具迷惑性
+  "download.windowsupdate.com" # 推荐：大流量 UDP 伪装的首选
+  "www.icloud.com"               # 推荐：苹果用户常态化出境流量
+  "gateway.icloud.com"           # 推荐：iCloud 同步流量
+  "cdn.staticfile.org"           # 推荐：国内知名的开源库加速，常去境外取回数据
 )
 pick_tls_domain() { echo "${TLS_DOMAIN_POOL[$RANDOM % ${#TLS_DOMAIN_POOL[@]}]}"; }
 TLS_DOMAIN="$(pick_tls_domain)"
@@ -69,26 +69,43 @@ detect_os() {
 }
 
 
-# 系统内核优化
+# 系统内核优化 (改进：支持 64M/128M/256M 分级优化)
 optimize_system() {
-    info "优化内核参数 (适配 64MB 极小内存 + 300Mbps 带宽)..."
+    # 获取物理内存总量
+    local mem_total
+    if [ "$OS" = "alpine" ]; then
+        mem_total=$(free -m | grep "Mem" | awk '{print $2}')
+    else
+        mem_total=$(free -m | grep -i "Mem:" | awk '{print $2}')
+    fi
 
-    # 完美版 Swap 自动处理逻辑
+    info "优化内核参数 (当前检测到内存: ${mem_total}MB)..."
+
+    # 完美版 Swap 自动处理逻辑 (根据不同内存档位调整 Swap 大小)
     if [ "$OS" != "alpine" ]; then
-        local mem_total=$(free -m | grep -i "Mem:" | awk '{print $2}')
         local swap_total=$(free -m | grep -i "Swap:" | awk '{print $2}')
         
-        if [ -n "$mem_total" ] && [ -n "$swap_total" ]; then
-            if [ "$mem_total" -lt 100 ] && [ "$swap_total" -lt 10 ]; then
-                warn "检测到 Debian/Ubuntu 内存极小 ($mem_total MB)，正在创建 128MB 虚拟内存..."
-                fallocate -l 128M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=128
-                chmod 600 /swapfile
-                mkswap /swapfile && swapon /swapfile
-                if ! grep -q "/swapfile" /etc/fstab; then
-                    echo "/swapfile none swap sw 0 0" >> /etc/fstab
-                fi
-                succ "虚拟内存创建成功"
+        # 只有当 Swap 近乎为 0 时才创建
+        if [ "$swap_total" -lt 10 ]; then
+            local swap_size=128
+            if [ "$mem_total" -le 80 ]; then
+                swap_size=128  # 64M VPS
+            elif [ "$mem_total" -le 150 ]; then
+                swap_size=256  # 128M VPS
+            elif [ "$mem_total" -le 300 ]; then
+                swap_size=512  # 256M VPS
+            else
+                swap_size=512  # 默认档位
             fi
+
+            warn "检测到内存较小，正在创建 ${swap_size}MB 虚拟内存..."
+            fallocate -l ${swap_size}M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$swap_size
+            chmod 600 /swapfile
+            mkswap /swapfile && swapon /swapfile
+            if ! grep -q "/swapfile" /etc/fstab; then
+                echo "/swapfile none swap sw 0 0" >> /etc/fstab
+            fi
+            succ "虚拟内存创建成功"
         fi
     else
         info "检测到 Alpine 系统，保持内存运行模式，跳过 Swap 创建"
@@ -97,7 +114,7 @@ optimize_system() {
     # 开启 BBR
     modprobe tcp_bbr >/dev/null 2>&1 || true
 
-    # 内核网络栈优化
+    # 内核网络栈优化 (带宽保持 300Mbps 优化)
     cat > /etc/sysctl.conf <<'SYSCTL'
 net.core.rmem_max = 4194304
 net.core.wmem_max = 4194304
@@ -108,7 +125,7 @@ net.core.netdev_max_backlog = 2000
 net.core.somaxconn = 1024
 net.core.default_qdisc = fq_codel
 net.ipv4.tcp_congestion_control = bbr
-vm.swappiness = 10
+vm.swappiness = 15
 SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 }
@@ -126,6 +143,7 @@ install_singbox() {
     fi
     local REMOTE_VER="${LATEST_TAG#v}"
     
+    # 第4项更新功能的版本对比逻辑
     if [[ "$MODE" == "update" ]]; then
         local LOCAL_VER="未安装"
         if [ -f /usr/bin/sing-box ]; then
@@ -139,7 +157,7 @@ install_singbox() {
 
         if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then
             succ "内核已是最新版本，无需更新。"
-            return 1
+            return 1  # 特殊返回码：代表无需后续操作
         fi
         info "发现新版本，开始下载更新..."
     fi
@@ -178,11 +196,19 @@ generate_cert() {
 }
 
 
-# 生成 Sing-box 配置文件
+# 生成 Sing-box 配置文件 (改进：支持协议级动态 TFO 优化)
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
+    # 自动获取内存总量用于决策
+    local mem_total
+    if [ "$OS" = "alpine" ]; then
+        mem_total=$(free -m | grep "Mem" | awk '{print $2}')
+    else
+        mem_total=$(free -m | grep -i "Mem:" | awk '{print $2}')
+    fi
+
     if [ -z "$PORT_HY2" ]; then
         if [ -f /etc/sing-box/config.json ]; then
             PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
@@ -193,6 +219,12 @@ create_config() {
 
     local PSK=$([ -f /etc/sing-box/config.json ] && jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json || openssl rand -hex 16)
     
+    # 协议级优化：64M 环境下关闭 TCP Fast Open 以节省内核套接字空间
+    local tfo="true"
+    if [ "$mem_total" -le 80 ]; then
+        tfo="false"
+    fi
+
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -203,6 +235,7 @@ create_config() {
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": true,
+    "tcp_fast_open": $tfo,
     "tls": {
       "enabled": true,
       "alpn": ["h3"],
@@ -216,19 +249,48 @@ EOF
 }
 
 
-# 配置系统服务
+# 配置系统服务 (改进：适配不同内存环境的运行时限制)
 setup_service() {
-    info "配置系统服务并启动..."
+    # 获取物理内存总量
+    local mem_total
     if [ "$OS" = "alpine" ]; then
-        cat > /etc/init.d/sing-box <<'EOF'
+        mem_total=$(free -m | grep "Mem" | awk '{print $2}')
+    else
+        mem_total=$(free -m | grep -i "Mem:" | awk '{print $2}')
+    fi
+
+    # 默认值 (64M 档位)
+    local gogc=45
+    local gomemlimit="40MiB"
+    local mem_max="52M"
+
+    # 分级调整优化策略
+    if [ "$mem_total" -le 80 ]; then
+        # 64MB 环境
+        gogc=45; gomemlimit="40MiB"; mem_max="52M"
+    elif [ "$mem_total" -le 150 ]; then
+        # 128MB 环境
+        gogc=70; gomemlimit="85MiB"; mem_max="110M"
+    elif [ "$mem_total" -le 300 ]; then
+        # 256MB 环境
+        gogc=100; gomemlimit="180MiB"; mem_max="220M"
+    else
+        # 512MB 及以上
+        gogc=100; gomemlimit="350MiB"; mem_max="450M"
+    fi
+
+    info "配置系统服务 (应用策略: GOGC=$gogc, Limit=$gomemlimit)..."
+
+    if [ "$OS" = "alpine" ]; then
+        cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
-export GOGC=50
-export GOMEMLIMIT=42MiB
+export GOGC=$gogc
+export GOMEMLIMIT=$gomemlimit
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
-pidfile="/run/${RC_SVCNAME}.pid"
+pidfile="/run/\${RC_SVCNAME}.pid"
 EOF
         chmod +x /etc/init.d/sing-box
         rc-update add sing-box default && rc-service sing-box restart
@@ -242,11 +304,11 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/etc/sing-box
-Environment=GOGC=50
-Environment=GOMEMLIMIT=42MiB
+Environment=GOGC=$gogc
+Environment=GOMEMLIMIT=$gomemlimit
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
-MemoryMax=55M
+MemoryMax=$mem_max
 LimitNOFILE=1000000
 
 [Install]
@@ -345,7 +407,7 @@ while true; do
            fi
            ;;
         0) exit 0 ;;
-        *) echo "输入错误，请重新输入" ;;
+        *) echo "输入错误" ;;
     esac
 done
 EOF
