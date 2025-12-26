@@ -281,7 +281,8 @@ while true; do
         7) 
            service_ctrl stop
            [ -f /etc/init.d/sing-box ] && rc-update del sing-box
-           rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /etc/systemd/system/sing-box.service /etc/init.d/sing-box
+           # 卸载时同时删除两个指令文件
+           rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box
            info "卸载完成！"
            exit 0 ;;
         0) exit 0 ;;
@@ -290,6 +291,8 @@ while true; do
 done
 EOF
     chmod +x "$SB_PATH"
+    # 核心：创建大写指令的软链接
+    ln -sf "$SB_PATH" "/usr/local/bin/SB"
 }
 
 
