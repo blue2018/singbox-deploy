@@ -25,13 +25,18 @@ succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 # ==========================================
 install_deps() {
     if [ -f /etc/os-release ]; then
+        # 修复 unbound variable 报错的关键
         set +u
         . /etc/os-release
         set -u
         local _id="${ID:-}"
         local _id_like="${ID_LIKE:-}"
         OS_DISPLAY="${PRETTY_NAME:-$_id}"
-        [[ "$_id" =~ "alpine" ]] || [[ "$_id_like" =~ "alpine" ]] && OS_TYPE="alpine" || OS_TYPE="debian"
+        if [[ "$_id" =~ "alpine" ]] || [[ "$_id_like" =~ "alpine" ]]; then
+            OS_TYPE="alpine"
+        else
+            OS_TYPE="debian"
+        fi
     else
         OS_DISPLAY="Generic Linux"
         OS_TYPE="debian"
@@ -56,7 +61,7 @@ install_deps() {
 }
 
 # ==========================================
-# 2. 优化模块
+# 2. 优化模块 (LXC/OpenVZ 专用)
 # ==========================================
 optimize_system() {
     info "正在针对虚化环境执行优化..."
@@ -74,11 +79,11 @@ optimize_system() {
     export SBOX_GOLIMIT="$go_limit"
     export SBOX_GOGC="$gogc"
 
-    # 尝试 Swap (静默失败)
+    # 尝试 Swap 但允许失败
     if ! free | grep -i "swap" | grep -qv "0" 2>/dev/null; then
         (dd if=/dev/zero of=/swapfile bs=1M count=256 2>/dev/null && \
          chmod 600 /swapfile && mkswap /swapfile && \
-         swapon /swapfile 2>/dev/null) && info "Swap 激活" || warn "虚化环境禁止 Swap"
+         swapon /swapfile 2>/dev/null) && info "Swap 激活" || warn "虚化环境禁止创建 Swap，已改用影子内存回收方案"
     fi
 
     {
@@ -90,7 +95,7 @@ optimize_system() {
 }
 
 # ==========================================
-# 3. 安装与服务
+# 3. 安装与服务生成
 # ==========================================
 install_singbox() {
     local LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
@@ -130,7 +135,6 @@ EOF
 
 setup_service() {
     if [ "$OS_TYPE" = "alpine" ]; then
-        # 修正：减少对容器中不存在服务的依赖
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 description="Sing-box Service"
@@ -166,7 +170,7 @@ EOF
 }
 
 # ==========================================
-# 4. 重要补全：sb 管理工具
+# 4. 管理工具补全
 # ==========================================
 create_sb_tool() {
     cat > /usr/local/bin/sb <<'EOF'
@@ -186,7 +190,6 @@ while true; do
 done
 EOF
     chmod +x /usr/local/bin/sb
-    # 备份脚本用于后续查看信息
     cp "$0" /etc/sing-box/core.sh && chmod +x /etc/sing-box/core.sh
 }
 
@@ -204,14 +207,17 @@ show_info() {
 }
 
 # ==========================================
-# 5. 主流程入口
+# 5. 主程序入口
 # ==========================================
 if [[ "${1:-}" == "--show" ]]; then
-    # 简单模拟环境变量显示看板
-    SBOX_OPTIMIZE_LEVEL="已加载"
+    # 加载系统变量显示看板
+    if [ -f /etc/os-release ]; then . /etc/os-release; fi
+    SBOX_OPTIMIZE_LEVEL="已激活"
     show_info
     exit 0
 fi
+
+[ "$(id -u)" != "0" ] && err "需 root 权限" && exit 1
 
 install_deps
 optimize_system
@@ -221,4 +227,4 @@ create_config "${USER_PORT:-}"
 setup_service
 create_sb_tool
 show_info
-succ "安装成功！输入 'sb' 调出管理菜单。"
+succ "全部安装完成！输入 'sb' 调出管理菜单。"
