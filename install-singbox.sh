@@ -411,7 +411,17 @@ while true; do
     echo "4) 更新内核   5) 重启服务   6) 卸载程序"
     echo "0) 退出"
     echo "=========================="
-    read -p "请选择 [0-6]: " opt
+    # 这里的 -r 防止转义，-e 允许在某些环境下更智能地处理输入
+    read -r -p "请选择 [0-6]: " opt
+    # 移除输入值前后的空格 (清理粘贴残留的空格/换行)
+    opt=$(echo "$opt" | xargs echo -n 2>/dev/null || echo "$opt")
+    # 逻辑判断：如果输入为空（包括删除字符后回车、或纯空格回车）
+    if [[ -z "$opt" ]]; then
+        echo -e "\033[1;31m输入有误，请重新输入\033[0m"
+        sleep 1  # 停顿一秒让用户看清提示
+        continue
+    fi
+    
     case "$opt" in
         1) source "$CORE" --show-only ;;
         2) 
