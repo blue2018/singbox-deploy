@@ -8,9 +8,6 @@ SBOX_ARCH=""
 OS_TYPE=""
 OS_DISPLAY=""
 SBOX_OPTIMIZE_LEVEL="未检测"
-INSTALL_MODE=1
-ARGO_TOKEN=""
-ARGO_DOMAIN=""
 ARGO_PORT=8001
 TLS_DOMAIN="www.microsoft.com"
 
@@ -25,7 +22,6 @@ succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 # ==========================================
 install_deps() {
     if [ -f /etc/os-release ]; then
-        # 修复 unbound variable 报错的关键
         set +u
         . /etc/os-release
         set -u
@@ -61,7 +57,7 @@ install_deps() {
 }
 
 # ==========================================
-# 2. 优化模块 (LXC/OpenVZ 专用)
+# 2. 优化模块 (针对 LXC 内存回收调优)
 # ==========================================
 optimize_system() {
     info "正在针对虚化环境执行优化..."
@@ -79,13 +75,14 @@ optimize_system() {
     export SBOX_GOLIMIT="$go_limit"
     export SBOX_GOGC="$gogc"
 
-    # 尝试 Swap 但允许失败
+    # 尝试创建 Swap (静默失败)
     if ! free | grep -i "swap" | grep -qv "0" 2>/dev/null; then
         (dd if=/dev/zero of=/swapfile bs=1M count=256 2>/dev/null && \
          chmod 600 /swapfile && mkswap /swapfile && \
-         swapon /swapfile 2>/dev/null) && info "Swap 激活" || warn "虚化环境禁止创建 Swap，已改用影子内存回收方案"
+         swapon /swapfile 2>/dev/null) && info "Swap 激活" || warn "虚化环境禁止创建 Swap，已强化内存 GC 策略"
     fi
 
+    # 内核参数修改 (静默处理权限报错)
     {
         echo "net.core.default_qdisc = fq"
         echo "net.ipv4.tcp_congestion_control = bbr"
@@ -95,7 +92,7 @@ optimize_system() {
 }
 
 # ==========================================
-# 3. 安装与服务生成
+# 3. 安装与配置生成
 # ==========================================
 install_singbox() {
     local LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
@@ -170,53 +167,58 @@ EOF
 }
 
 # ==========================================
-# 4. 管理工具补全
+# 4. 管理工具 sb (包含完整展示逻辑)
 # ==========================================
 create_sb_tool() {
-    cat > /usr/local/bin/sb <<'EOF'
+    cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
 service_op() { 
-    if command -v rc-service >/dev/null; then rc-service sing-box $1; else systemctl $1 sing-box; fi
+    if command -v rc-service >/dev/null; then rc-service sing-box \$1; else systemctl \$1 sing-box; fi
 }
+
+show_info() {
+    local IP=\$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
+    local CONF="/etc/sing-box/config.json"
+    local VER=\$(/usr/bin/sing-box version 2>/dev/null | head -n1 || echo "unknown")
+    
+    echo -e "\n\033[1;34m==========================================\033[0m"
+    echo -e "系统环境: \033[1;33m$OS_DISPLAY\033[0m"
+    echo -e "内核版本: \033[1;33m\$VER\033[0m"
+    echo -e "优化等级: \033[1;32m$SBOX_OPTIMIZE_LEVEL\033[0m"
+    echo -e "公网地址: \033[1;33m\$IP\033[0m"
+    
+    if [ -f "\$CONF" ]; then
+        local P=\$(jq -r '.inbounds[0].listen_port' "\$CONF")
+        local K=\$(jq -r '.inbounds[0].users[0].password' "\$CONF")
+        echo -e "------------------------------------------"
+        echo -e "Hy2 端口: \033[1;33m\$P\033[0m"
+        echo -e "Hy2 链接: \033[1;32mhy2://\$K@\$IP:\$P/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#$OS_TYPE\033[0m"
+    fi
+    echo -e "\033[1;34m==========================================\033[0m"
+}
+
+if [[ "\${1:-}" == "--info" ]]; then
+    show_info
+    exit 0
+fi
+
 while true; do
     echo -e "\n1) 查看链接  2) 重启服务  3) 卸载节点  0) 退出"
-    read -p "选择操作: " opt
-    case "$opt" in
-        1) /etc/sing-box/core.sh --show ;;
-        2) service_op restart && echo "已重启" ;;
-        3) service_op stop; rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb; echo "已卸载"; exit 0 ;;
+    read -p "请选择: " opt
+    case "\$opt" in
+        1) show_info ;;
+        2) service_op restart && echo "服务已重启" ;;
+        3) service_op stop; rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb; echo "已彻底清理"; exit 0 ;;
         0) exit 0 ;;
     esac
 done
 EOF
     chmod +x /usr/local/bin/sb
-    cp "$0" /etc/sing-box/core.sh && chmod +x /etc/sing-box/core.sh
-}
-
-show_info() {
-    local IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
-    local CONF="/etc/sing-box/config.json"
-    echo -e "\n\033[1;34m==========================================\033[0m"
-    echo -e "优化级别: \033[1;32m$SBOX_OPTIMIZE_LEVEL\033[0m"
-    if [ -f "$CONF" ]; then
-        local P=$(jq -r '.inbounds[0].listen_port' "$CONF")
-        local K=$(jq -r '.inbounds[0].users[0].password' "$CONF")
-        echo -e "Hy2 链接: \033[1;32mhy2://$K@$IP:$P/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#Alpine_LXC\033[0m"
-    fi
-    echo -e "\033[1;34m==========================================\033[0m"
 }
 
 # ==========================================
-# 5. 主程序入口
+# 5. 主流程
 # ==========================================
-if [[ "${1:-}" == "--show" ]]; then
-    # 加载系统变量显示看板
-    if [ -f /etc/os-release ]; then . /etc/os-release; fi
-    SBOX_OPTIMIZE_LEVEL="已激活"
-    show_info
-    exit 0
-fi
-
 [ "$(id -u)" != "0" ] && err "需 root 权限" && exit 1
 
 install_deps
@@ -226,5 +228,8 @@ read -p "Hy2 端口 (回车随机): " USER_PORT
 create_config "${USER_PORT:-}"
 setup_service
 create_sb_tool
-show_info
-succ "全部安装完成！输入 'sb' 调出管理菜单。"
+
+# 安装完成后自动展示
+succ "安装完成！"
+/usr/local/bin/sb --info
+info "后续可输入 'sb' 随时管理。"
