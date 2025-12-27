@@ -149,9 +149,14 @@ EOF
 }
 
 # ==========================================
-# 4. 管理工具 sb
+# 4. 管理工具 sb (彻底修复变量引用)
 # ==========================================
 create_sb_tool() {
+    # 将需要的外部变量先固化
+    local tag="$OS_TYPE"
+    local domain="$ARGO_DOMAIN"
+    local optimize="$SBOX_OPTIMIZE_LEVEL"
+
     cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
 service_op() { if command -v rc-service >/dev/null; then rc-service sing-box \$1; else systemctl \$1 sing-box; fi; }
@@ -159,16 +164,19 @@ show_info() {
     local IP=\$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
     local CONF="/etc/sing-box/config.json"
     echo -e "\n\033[1;34m================ 看板信息 ================\033[0m"
+    echo -e "优化等级: $optimize"
     if [ -f "\$CONF" ]; then
+        # 探测 Hy2
         if jq -e '.inbounds[] | select(.type=="hysteria2")' "\$CONF" >/dev/null 2>&1; then
             local HP=\$(jq -r '.inbounds[] | select(.type=="hysteria2") | .listen_port' "\$CONF")
             local HK=\$(jq -r '.inbounds[] | select(.type=="hysteria2") | .users[0].password' "\$CONF")
-            echo -e "Hy2 链接: \033[1;32mhy2://\$HK@\$IP:\$HP/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#$OS_TYPE_Hy2\033[0m"
+            echo -e "Hy2 链接: \033[1;32mhy2://\$HK@\$IP:\$HP/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#$tag\033[0m"
         fi
+        # 探测 VLESS (Argo)
         if jq -e '.inbounds[] | select(.type=="vless")' "\$CONF" >/dev/null 2>&1; then
             local VU=\$(jq -r '.inbounds[] | select(.type=="vless") | .users[0].uuid' "\$CONF")
-            echo -e "Argo 域名: \033[1;33m$ARGO_DOMAIN\033[0m"
-            echo -e "VLESS 链接: \033[1;32mvless://\$VU@$ARGO_DOMAIN:443?encryption=none&security=tls&sni=$ARGO_DOMAIN&type=grpc&serviceName=grpc-query#$OS_TYPE_Argo\033[0m"
+            echo -e "Argo 域名: \033[1;33m$domain\033[0m"
+            echo -e "VLESS 链接: \033[1;32mvless://\$VU@$domain:443?encryption=none&security=tls&sni=$domain&type=grpc&serviceName=grpc-query#${tag}_Argo\033[0m"
         fi
     fi
     echo -e "\033[1;34m==========================================\033[0m"
@@ -189,19 +197,18 @@ EOF
 }
 
 # ==========================================
-# 5. 主流程 (交互增强)
+# 5. 主流程
 # ==========================================
 [ "$(id -u)" != "0" ] && err "需 root 权限" && exit 1
 install_deps
 
-# 强制交互循环：直到获取正确的模式选择
 while true; do
     echo -e "\n请选择安装模式:"
     echo -e "1) 仅 Hysteria2"
     echo -e "2) 仅 VLESS + Argo"
     echo -e "3) 双协议共存"
     read -p "请输入数字 [1-3]: " INSTALL_MODE < /dev/tty
-    [[ "$INSTALL_MODE" =~ ^[1-3]$ ]] && break || warn "输入无效，请重新输入。"
+    [[ "$INSTALL_MODE" =~ ^[1-3]$ ]] && break || warn "输入无效。"
 done
 
 if [[ "$INSTALL_MODE" =~ [23] ]]; then
