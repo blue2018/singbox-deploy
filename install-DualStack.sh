@@ -53,7 +53,7 @@ install_deps() {
 }
 
 # ==========================================
-# 2. LXC 内存优化策略
+# 2. 内存优化策略
 # ==========================================
 optimize_system() {
     info "正在执行虚化环境优化..."
@@ -68,19 +68,10 @@ optimize_system() {
     fi
 
     export SBOX_GOLIMIT="$go_limit"; export SBOX_GOGC="$gogc"
-
-    if ! free | grep -i "swap" | grep -qv "0" 2>/dev/null; then
-        (dd if=/dev/zero of=/swapfile bs=1M count=256 2>/dev/null && \
-         chmod 600 /swapfile && mkswap /swapfile && \
-         swapon /swapfile 2>/dev/null) && info "Swap 激活" || warn "虚化环境禁止 Swap"
-    fi
-
-    { echo "net.core.default_qdisc = fq"; echo "net.ipv4.tcp_congestion_control = bbr"; } > /tmp/sysctl_sbox.conf
-    sysctl -p /tmp/sysctl_sbox.conf >/dev/null 2>&1 || true
 }
 
 # ==========================================
-# 3. 安装与配置生成 (修复模式判断)
+# 3. 安装与配置生成
 # ==========================================
 install_singbox() {
     local LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
@@ -92,8 +83,8 @@ install_singbox() {
 }
 
 create_config() {
-    local USER_PORT="${1:-}"
-    local PORT_HY2="${USER_PORT:-$((RANDOM % 50000 + 10000))}"
+    local USER_PORT_HY2="${1:-}"
+    local PORT_HY2="${USER_PORT_HY2:-$((RANDOM % 50000 + 10000))}"
     local PSK_HY2=$(openssl rand -hex 12)
     local UUID_VLESS=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
     
@@ -113,7 +104,6 @@ create_config() {
 {"log":{"level":"warn"},"inbounds":[$inbounds],"outbounds":[{"type":"direct"}]}
 EOF
 
-    # 只有涉及 Hy2 时才生成证书，避免模式 2 报错
     if [[ "$INSTALL_MODE" =~ [13] ]]; then
         openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem
         openssl req -new -x509 -days 3650 -key /etc/sing-box/certs/privkey.pem -out /etc/sing-box/certs/fullchain.pem -subj "/CN=$TLS_DOMAIN"
@@ -121,6 +111,7 @@ EOF
 }
 
 setup_service() {
+    # 同样将 Go 环境参数写入服务启动脚本
     if [ "$OS_TYPE" = "alpine" ]; then
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
@@ -154,7 +145,7 @@ EOF
 }
 
 # ==========================================
-# 4. 管理工具 sb
+# 4. 管理工具 sb (固化 Argo 变量)
 # ==========================================
 create_sb_tool() {
     local tag="$OS_TYPE"
@@ -168,7 +159,6 @@ show_info() {
     local IP=\$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
     local CONF="/etc/sing-box/config.json"
     echo -e "\n\033[1;34m================ 看板信息 ================\033[0m"
-    echo -e "优化等级: $optimize"
     if [ -f "\$CONF" ]; then
         if jq -e '.inbounds[] | select(.type=="hysteria2")' "\$CONF" >/dev/null 2>&1; then
             local HP=\$(jq -r '.inbounds[] | select(.type=="hysteria2") | .listen_port' "\$CONF")
@@ -199,7 +189,7 @@ EOF
 }
 
 # ==========================================
-# 5. 主流程 (修复逻辑分支)
+# 5. 主流程 (交互增强)
 # ==========================================
 [ "$(id -u)" != "0" ] && err "需 root 权限" && exit 1
 install_deps
@@ -213,21 +203,21 @@ while true; do
     [[ "$INSTALL_MODE" =~ ^[1-3]$ ]] && break || warn "输入无效。"
 done
 
-# 如果包含 Argo 模式，输入相关信息
 if [[ "$INSTALL_MODE" =~ [23] ]]; then
     while [ -z "$ARGO_TOKEN" ]; do read -p "请输入 Argo Token: " ARGO_TOKEN < /dev/tty; done
     while [ -z "$ARGO_DOMAIN" ]; do read -p "请输入 Argo 域名: " ARGO_DOMAIN < /dev/tty; done
+    read -p "请输入 Argo 映射端口 (回车默认 8001): " USER_ARGO_PORT < /dev/tty
+    ARGO_PORT="${USER_ARGO_PORT:-8001}"
 fi
 
-# 只有模式 1 和 3 才需要 Hy2 端口
-LOCAL_USER_PORT=""
+LOCAL_USER_PORT_HY2=""
 if [[ "$INSTALL_MODE" =~ [13] ]]; then
-    read -p "Hy2 端口 (回车随机): " LOCAL_USER_PORT < /dev/tty
+    read -p "Hy2 端口 (回车随机): " LOCAL_USER_PORT_HY2 < /dev/tty
 fi
 
 optimize_system
 install_singbox
-create_config "$LOCAL_USER_PORT"
+create_config "$LOCAL_USER_PORT_HY2"
 setup_service
 create_sb_tool
 succ "安装完成！"
