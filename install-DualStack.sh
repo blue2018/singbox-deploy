@@ -187,7 +187,8 @@ show_info() {
         fi
         if jq -e '.inbounds[] | select(.type=="vless")' "\$CONF" >/dev/null 2>&1; then
             local VU=\$(jq -r '.inbounds[] | select(.type=="vless") | .users[0].uuid' "\$CONF")
-            echo -e "VLESS (WS+Argo): \033[1;32mvless://\$VU@$domain:443?encryption=none&security=tls&sni=$domain&type=ws&path=%2Fargo#$tag\033[0m"
+            # 补充 host=$domain (伪装域名) 和 fp=chrome (指纹)
+            echo -e "VLESS (WS+Argo): \033[1;32mvless://\$VU@$domain:443?encryption=none&security=tls&sni=$domain&type=ws&host=$domain&path=%2Fargo&fp=chrome#$tag\033[0m"
         fi
     fi
     echo -e "\033[1;34m==========================================\033[0m"
