@@ -6,7 +6,7 @@ Hy2：
 ```bash
 bash -c "$(curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-singbox.sh)"
 ```
-Hy2 / VLESS + gRPC + Argo：
+Hy2 / VLESS + gRPC + Argo：(testing)
 ```bash
 bash -c "$(curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-DualStack.sh)"
 ```
