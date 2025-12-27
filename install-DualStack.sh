@@ -5,6 +5,7 @@ set -euo pipefail
 # 变量初始化
 # ==========================================
 SBOX_ARCH=""
+CLOUDFLARED_ARCH=""
 OS_TYPE=""
 OS_DISPLAY=""
 SBOX_OPTIMIZE_LEVEL="未检测"
@@ -21,7 +22,7 @@ err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 
 # ==========================================
-# 1. 环境检测与依赖
+# 1. 环境检测与架构识别
 # ==========================================
 install_deps() {
     if [ -f /etc/os-release ]; then
@@ -42,36 +43,55 @@ install_deps() {
         apk update && apk add --no-cache bash curl jq openssl openrc iproute2 iputils
     else
         [ -f /usr/bin/apt-get ] && apt-get update && apt-get install -y curl jq openssl iproute2 || true
-        [ -f /usr/bin/yum ] && yum install -y curl jq openssl iproute2 || true
     fi
 
     case "$(uname -m)" in
-        x86_64) SBOX_ARCH="amd64" ;;
-        aarch64) SBOX_ARCH="arm64" ;;
-        *) err "不支持的架构: $(uname -m)"; exit 1 ;;
+        x86_64) SBOX_ARCH="amd64"; CLOUDFLARED_ARCH="amd64" ;;
+        aarch64) SBOX_ARCH="arm64"; CLOUDFLARED_ARCH="arm64" ;;
+        *) err "不支持的架构"; exit 1 ;;
     esac
 }
 
 # ==========================================
-# 2. 内存优化策略
+# 2. 安装 Cloudflared (隧道客户端)
 # ==========================================
-optimize_system() {
-    info "正在执行虚化环境优化..."
-    local mem_total=$(free -m | awk '/Mem:/ {print $2}')
-    [ -z "$mem_total" ] && mem_total=128
+install_argo_client() {
+    info "正在安装 Cloudflared 客户端..."
+    local URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CLOUDFLARED_ARCH}"
+    curl -fL "$URL" -o /usr/bin/cloudflared
+    chmod +x /usr/bin/cloudflared
 
-    local go_limit="45MiB"; local gogc="50"
-    if [ "$mem_total" -lt 150 ]; then
-        go_limit="40MiB"; gogc="40"; SBOX_OPTIMIZE_LEVEL="LXC 极限版"
+    if [ "$OS_TYPE" = "alpine" ]; then
+        cat > /etc/init.d/cloudflared <<EOF
+#!/sbin/openrc-run
+description="Cloudflared Tunnel"
+command="/usr/bin/cloudflared"
+command_args="tunnel --no-autoupdate run --token ${ARGO_TOKEN}"
+command_background="yes"
+pidfile="/run/\${RC_SVCNAME}.pid"
+depend() { need networking; }
+EOF
+        chmod +x /etc/init.d/cloudflared
+        rc-update add cloudflared default
+        rc-service cloudflared restart
     else
-        go_limit="90MiB"; gogc="65"; SBOX_OPTIMIZE_LEVEL="LXC 均衡版"
+        cat > /etc/systemd/system/cloudflared.service <<EOF
+[Unit]
+Description=Cloudflared Tunnel
+After=network.target
+[Service]
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run --token ${ARGO_TOKEN}
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload && systemctl enable cloudflared --now
     fi
-
-    export SBOX_GOLIMIT="$go_limit"; export SBOX_GOGC="$gogc"
+    succ "Cloudflared 服务已拉起，请检查 CF 面板状态。"
 }
 
 # ==========================================
-# 3. 安装与配置生成
+# 3. 安装 Sing-box 与 配置
 # ==========================================
 install_singbox() {
     local LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
@@ -89,7 +109,6 @@ create_config() {
     local UUID_VLESS=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
     
     mkdir -p /etc/sing-box/certs
-    
     local hy2_in='{"type":"hysteria2","tag":"hy2-in","listen":"::","listen_port":'$PORT_HY2',"users":[{"password":"'$PSK_HY2'"}],"tls":{"enabled":true,"alpn":["h3"],"certificate_path":"/etc/sing-box/certs/fullchain.pem","key_path":"/etc/sing-box/certs/privkey.pem"}}'
     local vless_in='{"type":"vless","tag":"vless-in","listen":"127.0.0.1","listen_port":'$ARGO_PORT',"users":[{"uuid":"'$UUID_VLESS'"}],"transport":{"type":"grpc","service_name":"grpc-query"}}'
 
@@ -111,14 +130,10 @@ EOF
 }
 
 setup_service() {
-    # 同样将 Go 环境参数写入服务启动脚本
     if [ "$OS_TYPE" = "alpine" ]; then
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 description="Sing-box"
-export GOGC=$SBOX_GOGC
-export GOMEMLIMIT=$SBOX_GOLIMIT
-export GODEBUG=madvdontneed=1
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
@@ -132,9 +147,6 @@ EOF
 [Unit]
 Description=Sing-box
 [Service]
-Environment=GOGC=$SBOX_GOGC
-Environment=GOMEMLIMIT=$SBOX_GOLIMIT
-Environment=GODEBUG=madvdontneed=1
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
 [Install]
@@ -145,16 +157,19 @@ EOF
 }
 
 # ==========================================
-# 4. 管理工具 sb (固化 Argo 变量)
+# 4. 管理工具 sb
 # ==========================================
 create_sb_tool() {
-    local tag="$OS_TYPE"
     local domain="$ARGO_DOMAIN"
-    local optimize="$SBOX_OPTIMIZE_LEVEL"
-
     cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
-service_op() { if command -v rc-service >/dev/null; then rc-service sing-box \$1; else systemctl \$1 sing-box; fi; }
+service_op() { 
+    if command -v rc-service >/dev/null; then 
+        rc-service sing-box \$1; [ -f /etc/init.d/cloudflared ] && rc-service cloudflared \$1; 
+    else 
+        systemctl \$1 sing-box; systemctl list-unit-files | grep -q cloudflared && systemctl \$1 cloudflared;
+    fi
+}
 show_info() {
     local IP=\$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
     local CONF="/etc/sing-box/config.json"
@@ -163,12 +178,12 @@ show_info() {
         if jq -e '.inbounds[] | select(.type=="hysteria2")' "\$CONF" >/dev/null 2>&1; then
             local HP=\$(jq -r '.inbounds[] | select(.type=="hysteria2") | .listen_port' "\$CONF")
             local HK=\$(jq -r '.inbounds[] | select(.type=="hysteria2") | .users[0].password' "\$CONF")
-            echo -e "Hy2 链接: \033[1;32mhy2://\$HK@\$IP:\$HP/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#$tag\033[0m"
+            echo -e "Hy2 链接: \033[1;32mhy2://\$HK@\$IP:\$HP/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#Alpine_Hy2\033[0m"
         fi
         if jq -e '.inbounds[] | select(.type=="vless")' "\$CONF" >/dev/null 2>&1; then
             local VU=\$(jq -r '.inbounds[] | select(.type=="vless") | .users[0].uuid' "\$CONF")
             echo -e "Argo 域名: \033[1;33m$domain\033[0m"
-            echo -e "VLESS 链接: \033[1;32mvless://\$VU@$domain:443?encryption=none&security=tls&sni=$domain&type=grpc&serviceName=grpc-query#${tag}_Argo\033[0m"
+            echo -e "VLESS 链接: \033[1;32mvless://\$VU@$domain:443?encryption=none&security=tls&sni=$domain&type=grpc&serviceName=grpc-query#Alpine_Argo\033[0m"
         fi
     fi
     echo -e "\033[1;34m==========================================\033[0m"
@@ -179,8 +194,8 @@ while true; do
     read -p "选择: " opt < /dev/tty
     case "\$opt" in
         1) show_info ;;
-        2) service_op restart && echo "已重启" ;;
-        3) service_op stop; rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb; echo "已卸载"; exit 0 ;;
+        2) service_op restart && echo "服务已重启" ;;
+        3) service_op stop; rc-update del cloudflared default 2>/dev/null; rm -rf /etc/sing-box /usr/bin/sing-box /usr/bin/cloudflared /usr/local/bin/sb; echo "已卸载"; exit 0 ;;
         0) exit 0 ;;
     esac
 done
@@ -189,18 +204,15 @@ EOF
 }
 
 # ==========================================
-# 5. 主流程 (交互增强)
+# 5. 执行流程
 # ==========================================
 [ "$(id -u)" != "0" ] && err "需 root 权限" && exit 1
 install_deps
 
 while true; do
-    echo -e "\n请选择安装模式:"
-    echo -e "1) 仅 Hysteria2"
-    echo -e "2) 仅 VLESS + Argo"
-    echo -e "3) 双协议共存"
-    read -p "请输入数字 [1-3]: " INSTALL_MODE < /dev/tty
-    [[ "$INSTALL_MODE" =~ ^[1-3]$ ]] && break || warn "输入无效。"
+    echo -e "\n1) 仅 Hysteria2\n2) 仅 VLESS + Argo\n3) 双协议共存"
+    read -p "选择模式: " INSTALL_MODE < /dev/tty
+    [[ "$INSTALL_MODE" =~ ^[1-3]$ ]] && break || warn "无效输入。"
 done
 
 if [[ "$INSTALL_MODE" =~ [23] ]]; then
@@ -215,10 +227,15 @@ if [[ "$INSTALL_MODE" =~ [13] ]]; then
     read -p "Hy2 端口 (回车随机): " LOCAL_USER_PORT_HY2 < /dev/tty
 fi
 
-optimize_system
 install_singbox
 create_config "$LOCAL_USER_PORT_HY2"
 setup_service
+
+# 如果涉及 Argo，则安装并配置客户端
+if [[ "$INSTALL_MODE" =~ [23] ]]; then
+    install_argo_client
+fi
+
 create_sb_tool
-succ "安装完成！"
+succ "全量安装完成！"
 /usr/local/bin/sb --info
