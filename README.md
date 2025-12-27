@@ -8,4 +8,4 @@ Hy2：
 bash -c "$(curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-singbox.sh)"
 
 Hy2 / VLESS + gRPC + Argo
-bash -c "$(curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/DualStack.sh)"
+bash -c "$(curl -fsSL https://github.com/blue2018/sb-dp/raw/refs/heads/main/install-DualStack.sh)"
