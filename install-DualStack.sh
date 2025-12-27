@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 开启严格模式，但对未定义变量使用更安全的处理方式
 set -euo pipefail
 
 # ==========================================
@@ -24,13 +25,17 @@ err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 
 # ==========================================
-# 1. 自动识别系统与安装依赖
+# 1. 自动识别系统与安装依赖 (修复 ID_LIKE 报错)
 # ==========================================
 install_deps() {
     if [ -f /etc/os-release ]; then
+        # 修复 unbound variable 报错：给变量赋初始空值
+        local ID="" ID_LIKE="" PRETTY_NAME=""
         . /etc/os-release
         OS_DISPLAY="${PRETTY_NAME:-$ID}"
-        [[ "$ID $ID_LIKE" =~ "alpine" ]] && OS_TYPE="alpine" || OS_TYPE="debian"
+        # 安全读取 ID_LIKE，防止报错
+        local id_check="${ID} ${ID_LIKE:-}"
+        [[ "$id_check" =~ "alpine" ]] && OS_TYPE="alpine" || OS_TYPE="debian"
     else
         OS_DISPLAY="Linux"
         OS_TYPE="debian"
@@ -51,12 +56,12 @@ install_deps() {
 }
 
 # ==========================================
-# 2. 深度优化逻辑 (针对虚化小鸡适配)
+# 2. 深度优化逻辑 (针对虚化/分割小鸡适配)
 # ==========================================
 optimize_system() {
     info "正在针对虚化环境进行深度优化..."
     
-    # 内存探测 (兼容 BusyBox)
+    # 内存探测 (兼容 BusyBox，处理空值)
     local mem_total=$(free -m | awk '/Mem:/ {print $2}')
     [ -z "$mem_total" ] && mem_total=128
 
@@ -75,30 +80,30 @@ optimize_system() {
         SBOX_OPTIMIZE_LEVEL="标准性能版"
     fi
 
-    # 静默尝试 Swap (LXC 报错将自动忽略)
+    # 虚拟内存 (Swap) 优化：虚化小鸡禁止死磕
     if ! free | grep -i "swap" | grep -qv "0" 2>/dev/null; then
-        warn "尝试创建虚拟内存..."
-        dd if=/dev/zero of=/swapfile bs=1M count=256 2>/dev/null && \
-        chmod 600 /swapfile && mkswap /swapfile && \
-        swapon /swapfile 2>/dev/null && info "Swap 激活成功" || warn "虚化环境禁止 Swap，已强化回收策略"
+        warn "检测到无 Swap，尝试创建救急分区..."
+        # 静默执行 dd 和 swapon，报错不中断脚本
+        (dd if=/dev/zero of=/swapfile bs=1M count=256 2>/dev/null && \
+         chmod 600 /swapfile && mkswap /swapfile && \
+         swapon /swapfile 2>/dev/null) && info "Swap 激活成功" || warn "容器环境禁止创建 Swap，已改用内存频繁回收策略"
     fi
 
-    # 内核参数 (静默执行)
+    # 内核参数优化 (使用 || true 忽略 LXC 权限报错)
     {
         echo "net.core.default_qdisc = fq"
         echo "net.ipv4.tcp_congestion_control = bbr"
-        echo "net.ipv4.tcp_fastopen = 3"
         echo "vm.swappiness = 5"
     } > /tmp/sysctl_sbox.conf
     sysctl -p /tmp/sysctl_sbox.conf >/dev/null 2>&1 || true
 
-    # 初始窗口优化
+    # 初始窗口优化 (BDP 调优)
     local dr=$(ip route show default | head -n1)
     [[ $dr == *"via"* ]] && ip route change $dr initcwnd 15 initrwnd 15 2>/dev/null || true
 }
 
 # ==========================================
-# 3. 安装与配置模块
+# 3. 安装、配置与服务管理
 # ==========================================
 install_singbox() {
     local LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
@@ -126,13 +131,14 @@ create_config() {
     cat > /etc/sing-box/config.json <<EOF
 {"log":{"level":"warn"},"inbounds":[$inbounds],"outbounds":[{"type":"direct","tag":"direct"}]}
 EOF
-    # 自签名证书
+    # 自签名证书生成
     openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem
     openssl req -new -x509 -days 3650 -key /etc/sing-box/certs/privkey.pem -out /etc/sing-box/certs/fullchain.pem -subj "/CN=$TLS_DOMAIN"
 }
 
 setup_service() {
     if [ "$OS_TYPE" = "alpine" ]; then
+        # Alpine OpenRC 适配
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 description="Sing-box"
@@ -148,6 +154,7 @@ EOF
         chmod +x /etc/init.d/sing-box
         rc-update add sing-box default && rc-service sing-box restart
     else
+        # Debian Systemd 适配
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box
@@ -166,11 +173,11 @@ EOF
 }
 
 # ==========================================
-# 4. 信息看板与管理工具
+# 4. 信息看板与管理工具 (sb)
 # ==========================================
 show_info() {
     local IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
-    local VER=$(/usr/bin/sing-box version | head -n1)
+    local VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 || echo "unknown")
     local CONF="/etc/sing-box/config.json"
 
     echo -e "\n\033[1;34m==========================================\033[0m"
@@ -179,7 +186,7 @@ show_info() {
     echo -e "优化级别: \033[1;32m$SBOX_OPTIMIZE_LEVEL\033[0m"
     echo -e "公网地址: \033[1;33m$IP\033[0m"
     
-    if jq -e '.inbounds[] | select(.type=="hysteria2")' "$CONF" >/dev/null 2>&1; then
+    if [ -f "$CONF" ] && jq -e '.inbounds[] | select(.type=="hysteria2")' "$CONF" >/dev/null 2>&1; then
         local P=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .listen_port' "$CONF")
         local K=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .users[0].password' "$CONF")
         echo -e "运行端口: \033[1;33m$P\033[0m (Hy2)"
@@ -194,11 +201,11 @@ create_sb_tool() {
 service_op() { if command -v rc-service >/dev/null; then rc-service sing-box $1; else systemctl $1 sing-box; fi; }
 while true; do
     echo -e "\n1) 查看链接  2) 重启服务  3) 卸载  0) 退出"
-    read -p "选择: " opt
+    read -p "请选择: " opt
     case "$opt" in
         1) /etc/sing-box/core.sh --show ;;
         2) service_op restart && echo "已重启" ;;
-        3) service_op stop; rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb; exit 0 ;;
+        3) service_op stop; rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb; echo "已卸载"; exit 0 ;;
         0) exit 0 ;;
     esac
 done
@@ -208,18 +215,20 @@ EOF
 }
 
 # ==========================================
-# 主流程
+# 主程序入口
 # ==========================================
 if [[ "${1:-}" == "--show" ]]; then
-    detect_and_install_deps >/dev/null
-    optimize_system >/dev/null
+    # 看板模式静默初始化变量
+    if [ -f /etc/os-release ]; then . /etc/os-release; OS_DISPLAY="${PRETTY_NAME:-$ID}"; fi
+    SBOX_OPTIMIZE_LEVEL="已加载"
     show_info
     exit 0
 fi
 
-[ "$(id -u)" != "0" ] && err "需 root 权限" && exit 1
+[ "$(id -u)" != "0" ] && err "需使用 root 权限运行" && exit 1
+
 install_deps
-echo -e "1) Hysteria2\n2) VLESS + Argo\n3) 双协议共存"
+echo -e "1) 仅 Hysteria2\n2) 仅 VLESS + Argo\n3) 双协议共存"
 read -p "选择模式: " INSTALL_MODE
 [[ "$INSTALL_MODE" =~ [23] ]] && { read -p "Argo Token: " ARGO_TOKEN; read -p "Argo 域名: " ARGO_DOMAIN; }
 read -p "Hy2 端口 (回车随机): " USER_PORT
@@ -230,4 +239,4 @@ create_config "${USER_PORT:-}"
 setup_service
 create_sb_tool
 show_info
-succ "安装成功！输入 sb 进入管理菜单。"
+succ "安装完成！输入 'sb' 调出管理菜单。"
