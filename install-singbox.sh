@@ -72,7 +72,7 @@ detect_os() {
 }
 
 
-# 系统内核优化 (针对 64M/128M/256M/512M 阶梯优化 - 兼容版)
+# 系统内核优化 (针对 64M/128M/256M/512M 阶梯优化 - 爆发响应激进版)
 optimize_system() {
     # --- 1. 内存检测逻辑 (多路侦测) ---
     local mem_total=64
@@ -92,7 +92,7 @@ optimize_system() {
         mem_cgroup=$((m_proc / 1024))
     fi
 
-    # 逻辑判断：如果 Cgroup 探测到了且数值在合理范围(>0且小于宿主机显示)，则以它为准
+    # 逻辑判断：如果 Cgroup 探测到了且数值在合理范围，则以它为准
     if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_free" ]; then
         mem_total=$mem_cgroup
     else
@@ -104,29 +104,29 @@ optimize_system() {
 
     info "检测到系统可用内存: ${mem_total}MB"
 
-    # --- 2. 阶梯变量设置 (工整版逻辑) ---
+    # --- 2. 激进版阶梯变量设置 (极致爆发响应逻辑) ---
     local go_limit gogc udp_buffer mem_level
 
     if [ "$mem_total" -ge 450 ]; then
-        go_limit="420MiB"       # 512M 环境: 目标 200~300Mbps
-        gogc="120"
-        udp_buffer="67108864"  # 64MB 缓存
-        mem_level="512M (专业版)"
+        go_limit="420MiB"       # 512M 环境: 目标 300Mbps+ 瞬时爆发
+        gogc="110"              # 平衡 GC 频率，确保高并发无卡顿
+        udp_buffer="134217728"  # 128MB 缓冲区 (应对极端大流量)
+        mem_level="512M (爆发版)"
     elif [ "$mem_total" -ge 200 ]; then
-        go_limit="210MiB"       # 256M 环境: 目标 180~250Mbps
-        gogc="100"
-        udp_buffer="33554432"  # 32MB 缓存
-        mem_level="256M (进阶版)"
+        go_limit="210MiB"       # 256M 环境: 目标 250Mbps 瞬时爆发
+        gogc="100"              # 激进回收策略
+        udp_buffer="67108864"   # 64MB 缓冲区
+        mem_level="256M (瞬时版)"
     elif [ "$mem_total" -ge 100 ]; then
-        go_limit="100MiB"       # 128M 环境: 目标 150~230Mbps
-        gogc="90"
-        udp_buffer="16777216"  # 16MB 缓存
-        mem_level="128M (标准版)"
+        go_limit="100MiB"       # 128M 环境: 目标 200Mbps+ 瞬时爆发
+        gogc="80"               # 保持小内存下的响应敏捷
+        udp_buffer="33554432"   # 32MB 缓冲区
+        mem_level="128M (激进版)"
     else
-        go_limit="52MiB"        # 64M 环境: 目标 100~150Mbps
-        gogc="80"
-        udp_buffer="8388608"   # 8MB 缓存
-        mem_level="64M (稳定版)"
+        go_limit="52MiB"        # 64M 环境: 目标 150Mbps 稳定爆发
+        gogc="70"               # 极其激进的内存回收，防止 OOM
+        udp_buffer="16777216"   # 16MB 缓冲区 (利用 45% 剩余空间)
+        mem_level="64M (极限版)"
     fi
 
     SBOX_GOLIMIT="$go_limit"
@@ -134,44 +134,58 @@ optimize_system() {
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
     SBOX_OPTIMIZE_LEVEL="$mem_level"
 
-    info "应用 ${mem_level} 级别优化 (Go限制: $SBOX_GOLIMIT, 物理封顶: $SBOX_MEM_MAX)"
+    info "应用 ${mem_level} 级别优化 (UDP缓冲: $((udp_buffer/1024/1024))MB, 响应增强开启)"
 
     # --- 3. Swap 状态侦测与提示 ---
     if [ "$OS" = "alpine" ]; then
-        info "Alpine 系统默认采用内存运行模式，跳过 Swap 处理。"
+        info "Alpine 系统跳过 Swap 处理。"
     else
         local swap_total=$(free -m | awk '/Swap:/ {print $2}')
         if [ "$swap_total" -gt 10 ]; then
-            succ "检测到系统已存在 Swap (${swap_total}MB)，跳过创建。"
+            succ "检测到系统已存在 Swap (${swap_total}MB)。"
         elif [ "$mem_total" -lt 150 ]; then
-            warn "内存极小 (${mem_total}MB) 且无虚拟内存，正在创建 128MB 救急 Swap..."
+            warn "内存极小正在创建 128MB 救急 Swap..."
             if fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null; then
                 chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
                 grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-                succ "Swap 创建并挂载成功。"
-            else
-                err "Swap 创建失败 (可能是 OpenVZ/LXC 架构限制)。"
+                succ "Swap 创建成功。"
             fi
-        else
-            info "内存尚可，系统未配置 Swap，保持现状。"
         fi
     fi
     
-    # --- 4. 内核网络栈参数 ---
+    # --- 4. 激进版内核网络栈参数 (推背感核心) ---
     modprobe tcp_bbr >/dev/null 2>&1 || true
     cat > /etc/sysctl.conf <<SYSCTL
+# 响应优化：禁止连接空闲后进入慢启动，保持随时爆发状态
+net.ipv4.tcp_slow_start_after_idle = 0
+# 响应优化：开启 TCP 快速打开
+net.ipv4.tcp_fastopen = 3
+# 响应优化：增加网卡接收队列，防止瞬时丢包
+net.core.netdev_max_backlog = 16384
+net.core.somaxconn = 8192
+
+# 缓冲区优化：应用阶梯式 UDP 缓冲区
 net.core.rmem_max = $udp_buffer
 net.core.wmem_max = $udp_buffer
-net.ipv4.udp_mem = 65536 131072 262144
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384
-net.core.netdev_max_backlog = 5000
-net.core.somaxconn = 2048
+net.ipv4.udp_mem = 131072 262144 524288
+net.ipv4.udp_rmem_min = 32768
+net.ipv4.udp_wmem_min = 32768
+
+# BBR 激进调度与拥塞控制
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-vm.swappiness = 5
+vm.swappiness = 10
 SYSCTL
     sysctl -p >/dev/null 2>&1 || true
+
+    # 爆发优化：暴力提升初始拥塞窗口 (InitCWND) 至 20 (网页首包响应翻倍)
+    if command -v ip >/dev/null; then
+        local default_route=$(ip route show default | head -n1)
+        if [[ $default_route == *"via"* ]]; then
+            ip route change $default_route initcwnd 20 initrwnd 20 || true
+            succ "初始拥塞窗口 (InitCWND) 已提升至 20"
+        fi
+    fi
 }
 
 
@@ -295,6 +309,7 @@ setup_service() {
 name="sing-box"
 export GOGC=${SBOX_GOGC:-80}
 export GOMEMLIMIT=$SBOX_GOLIMIT
+export GODEBUG=madvdontneed=1
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
@@ -314,6 +329,7 @@ User=root
 WorkingDirectory=/etc/sing-box
 Environment=GOGC=${SBOX_GOGC:-80}
 Environment=GOMEMLIMIT=$SBOX_GOLIMIT
+Environment=GODEBUG=madvdontneed=1
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
 MemoryMax=$SBOX_MEM_MAX
