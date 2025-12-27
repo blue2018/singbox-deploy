@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# 开启严格模式：-e 报错即止，-u 检查未定义变量
 set -euo pipefail
 
 # ==========================================
@@ -22,41 +21,26 @@ err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 
 # ==========================================
-# 1. 深度修复：系统识别函数
+# 1. 系统识别与依赖安装
 # ==========================================
 install_deps() {
-    # 核心修复点：使用 ${VAR:-} 语法处理所有外部读取变量
     if [ -f /etc/os-release ]; then
-        # 临时禁用 -u 以便安全加载可能不完整的系统文件
         set +u
         . /etc/os-release
         set -u
-        
-        # 使用冒号赋值，确保即使变量不存在也不报错
         local _id="${ID:-}"
         local _id_like="${ID_LIKE:-}"
-        local _pretty="${PRETTY_NAME:-$_id}"
-        
-        OS_DISPLAY="$_pretty"
-        
-        # 判断是否为 Alpine
-        if [[ "$_id" =~ "alpine" ]] || [[ "$_id_like" =~ "alpine" ]]; then
-            OS_TYPE="alpine"
-        else
-            OS_TYPE="debian"
-        fi
+        OS_DISPLAY="${PRETTY_NAME:-$_id}"
+        [[ "$_id" =~ "alpine" ]] || [[ "$_id_like" =~ "alpine" ]] && OS_TYPE="alpine" || OS_TYPE="debian"
     else
         OS_DISPLAY="Generic Linux"
         OS_TYPE="debian"
     fi
 
-    info "系统识别: $OS_DISPLAY ($OS_TYPE)"
-
-    # 根据系统安装依赖
+    info "系统检测: $OS_DISPLAY"
     if [ "$OS_TYPE" = "alpine" ]; then
         apk update && apk add --no-cache bash curl jq openssl openrc iproute2 iputils
     else
-        # 兼容 Debian/Ubuntu/CentOS
         if command -v apt-get >/dev/null; then
             apt-get update && apt-get install -y curl jq openssl iproute2
         elif command -v yum >/dev/null; then
@@ -64,7 +48,6 @@ install_deps() {
         fi
     fi
 
-    # 架构识别
     case "$(uname -m)" in
         x86_64) SBOX_ARCH="amd64" ;;
         aarch64) SBOX_ARCH="arm64" ;;
@@ -73,39 +56,31 @@ install_deps() {
 }
 
 # ==========================================
-# 2. 针对虚化小鸡 (LXC/OpenVZ) 的优化模块
+# 2. 优化模块
 # ==========================================
 optimize_system() {
     info "正在针对虚化环境执行优化..."
-    
-    # 探测内存并设定变量
     local mem_total=$(free -m | awk '/Mem:/ {print $2}')
     [ -z "$mem_total" ] && mem_total=128
 
     local go_limit="45MiB"
     local gogc="50"
-    
     if [ "$mem_total" -lt 150 ]; then
         go_limit="40MiB"; gogc="40"; SBOX_OPTIMIZE_LEVEL="LXC 极限版"
-    elif [ "$mem_total" -lt 400 ]; then
-        go_limit="90MiB"; gogc="65"; SBOX_OPTIMIZE_LEVEL="LXC 均衡版"
     else
-        go_limit="200MiB"; gogc="100"; SBOX_OPTIMIZE_LEVEL="标准版"
+        go_limit="90MiB"; gogc="65"; SBOX_OPTIMIZE_LEVEL="LXC 均衡版"
     fi
 
-    # 导出服务使用的变量
     export SBOX_GOLIMIT="$go_limit"
     export SBOX_GOGC="$gogc"
 
-    # 尝试创建 Swap (LXC 报错会自动忽略)
+    # 尝试 Swap (静默失败)
     if ! free | grep -i "swap" | grep -qv "0" 2>/dev/null; then
-        warn "尝试创建救急虚拟内存..."
         (dd if=/dev/zero of=/swapfile bs=1M count=256 2>/dev/null && \
          chmod 600 /swapfile && mkswap /swapfile && \
-         swapon /swapfile 2>/dev/null) && info "Swap 成功" || warn "虚化环境禁止 Swap"
+         swapon /swapfile 2>/dev/null) && info "Swap 激活" || warn "虚化环境禁止 Swap"
     fi
 
-    # 内核调优 (使用 || true 避免容器权限报错导致脚本退出)
     {
         echo "net.core.default_qdisc = fq"
         echo "net.ipv4.tcp_congestion_control = bbr"
@@ -115,7 +90,7 @@ optimize_system() {
 }
 
 # ==========================================
-# 3. 安装与服务生成
+# 3. 安装与服务
 # ==========================================
 install_singbox() {
     local LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
@@ -129,42 +104,36 @@ install_singbox() {
 create_config() {
     local PORT_HY2="${1:-$((RANDOM % 50000 + 10000))}"
     local PSK=$(openssl rand -hex 16)
-    local UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 12)
-    
     mkdir -p /etc/sing-box/certs
-    
     cat > /etc/sing-box/config.json <<EOF
 {
   "log": {"level": "warn"},
-  "inbounds": [
-    {
+  "inbounds": [{
       "type": "hysteria2",
       "tag": "hy2-in",
       "listen": "::",
       "listen_port": $PORT_HY2,
       "users": [{"password": "$PSK"}],
-      "ignore_client_bandwidth": true,
       "tls": {
         "enabled": true,
         "alpn": ["h3"],
         "certificate_path": "/etc/sing-box/certs/fullchain.pem",
         "key_path": "/etc/sing-box/certs/privkey.pem"
       }
-    }
-  ],
-  "outbounds": [{"type": "direct", "tag": "direct"}]
+  }],
+  "outbounds": [{"type": "direct"}]
 }
 EOF
-    # 生成证书
     openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem
     openssl req -new -x509 -days 3650 -key /etc/sing-box/certs/privkey.pem -out /etc/sing-box/certs/fullchain.pem -subj "/CN=$TLS_DOMAIN"
 }
 
 setup_service() {
     if [ "$OS_TYPE" = "alpine" ]; then
+        # 修正：减少对容器中不存在服务的依赖
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
-description="Sing-box"
+description="Sing-box Service"
 export GOGC=$SBOX_GOGC
 export GOMEMLIMIT=$SBOX_GOLIMIT
 export GODEBUG=madvdontneed=1
@@ -172,7 +141,9 @@ command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
-depend() { need net; }
+depend() {
+    after firewall
+}
 EOF
         chmod +x /etc/init.d/sing-box
         rc-update add sing-box default && rc-service sing-box restart
@@ -194,49 +165,60 @@ EOF
     fi
 }
 
+# ==========================================
+# 4. 重要补全：sb 管理工具
+# ==========================================
+create_sb_tool() {
+    cat > /usr/local/bin/sb <<'EOF'
+#!/usr/bin/env bash
+service_op() { 
+    if command -v rc-service >/dev/null; then rc-service sing-box $1; else systemctl $1 sing-box; fi
+}
+while true; do
+    echo -e "\n1) 查看链接  2) 重启服务  3) 卸载节点  0) 退出"
+    read -p "选择操作: " opt
+    case "$opt" in
+        1) /etc/sing-box/core.sh --show ;;
+        2) service_op restart && echo "已重启" ;;
+        3) service_op stop; rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb; echo "已卸载"; exit 0 ;;
+        0) exit 0 ;;
+    esac
+done
+EOF
+    chmod +x /usr/local/bin/sb
+    # 备份脚本用于后续查看信息
+    cp "$0" /etc/sing-box/core.sh && chmod +x /etc/sing-box/core.sh
+}
+
 show_info() {
     local IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
-    local VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 || echo "unknown")
     local CONF="/etc/sing-box/config.json"
-
     echo -e "\n\033[1;34m==========================================\033[0m"
-    echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
-    echo -e "内核信息: \033[1;33m$VER\033[0m"
     echo -e "优化级别: \033[1;32m$SBOX_OPTIMIZE_LEVEL\033[0m"
-    echo -e "公网地址: \033[1;33m$IP\033[0m"
-    
     if [ -f "$CONF" ]; then
-        local P=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .listen_port' "$CONF")
-        local K=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .users[0].password' "$CONF")
-        echo -e "运行端口: \033[1;33m$P\033[0m (Hy2)"
-        echo -e "节点链接: \033[1;32mhy2://$K@$IP:$P/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#$OS_TYPE\033[0m"
+        local P=$(jq -r '.inbounds[0].listen_port' "$CONF")
+        local K=$(jq -r '.inbounds[0].users[0].password' "$CONF")
+        echo -e "Hy2 链接: \033[1;32mhy2://$K@$IP:$P/?sni=$TLS_DOMAIN&alpn=h3&insecure=1#Alpine_LXC\033[0m"
     fi
     echo -e "\033[1;34m==========================================\033[0m"
 }
 
 # ==========================================
-# 主程序入口
+# 5. 主流程入口
 # ==========================================
 if [[ "${1:-}" == "--show" ]]; then
-    # 看板模式静默初始化变量
-    if [ -f /etc/os-release ]; then . /etc/os-release; OS_DISPLAY="${PRETTY_NAME:-$ID}"; fi
+    # 简单模拟环境变量显示看板
     SBOX_OPTIMIZE_LEVEL="已加载"
     show_info
     exit 0
 fi
 
-[ "$(id -u)" != "0" ] && err "需使用 root 权限运行" && exit 1
-
 install_deps
-echo -e "1) 仅 Hysteria2\n2) 仅 VLESS + Argo\n3) 双协议共存"
-read -p "选择模式: " INSTALL_MODE
-[[ "$INSTALL_MODE" =~ [23] ]] && { read -p "Argo Token: " ARGO_TOKEN; read -p "Argo 域名: " ARGO_DOMAIN; }
-read -p "Hy2 端口 (回车随机): " USER_PORT
-
 optimize_system
 install_singbox
+read -p "Hy2 端口 (回车随机): " USER_PORT
 create_config "${USER_PORT:-}"
 setup_service
 create_sb_tool
 show_info
-succ "安装完成！输入 'sb' 调出管理菜单。"
+succ "安装成功！输入 'sb' 调出管理菜单。"
