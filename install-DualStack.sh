@@ -56,8 +56,10 @@ detect_env() {
     ${LINUX_UPDATE[$n]}
     ${LINUX_INSTALL[$n]} curl jq openssl tar bash procps iproute2
 
-    IPV4=$(curl -s4 --max-time 3 api.ipify.org || echo "")
-    IPV6=$(curl -s6 --max-time 3 api.ipify.org || echo "")
+    # --- 快速 IP 检测 (灵敏版) ---
+    info "正在抓取公网 IP..."
+    IPV4=$(curl -s4m 3 https://1.1.1.1/cdn-cgi/trace | awk -F= '/ip/ {print $2}' || curl -s4m 3 api.ipify.org || echo "")
+    IPV6=$(curl -s6m 3 https://[2606:4700:4700::1111]/cdn-cgi/trace | awk -F= '/ip/ {print $2}' || curl -s6m 3 api6.ipify.org || echo "")
 }
 
 # ==========================================
@@ -246,6 +248,10 @@ show_nodes() {
 # 7. sb 管理工具生成
 # ==========================================
 create_manager() {
+    # 提取函数内容并保留注释（使用 sed 去掉每一行前可能的空格，保持格式）
+    local SHOW_NODES_CODE=$(declare -f show_nodes)
+    local INSTALL_KERNEL_CODE=$(declare -f install_sbox_kernel)
+
     cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
 CONFIG_FILE="/etc/sing-box/config.json"
@@ -253,20 +259,22 @@ SBOX_ARCH="$SBOX_ARCH"
 OS_DISPLAY="$OS_DISPLAY"
 SBOX_OPTIMIZE_LEVEL="$SBOX_OPTIMIZE_LEVEL"
 
-$(declare -f show_nodes)
-$(declare -f install_sbox_kernel)
+# 日志输出函数（供内核更新使用）
+info() { echo -e "\033[1;34m[INFO]\033[0m \$*"; }
+
+$SHOW_NODES_CODE
+
+$INSTALL_KERNEL_CODE
 
 restart_svc() {
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart sing-box
-    else
-        rc-service sing-box restart
-    fi
+    command -v systemctl >/dev/null && systemctl restart sing-box || rc-service sing-box restart
 }
 
 while true; do
-    IPV4=\$(curl -s4 --max-time 2 api.ipify.org || echo "")
-    IPV6=\$(curl -s6 --max-time 2 api.ipify.org || echo "")
+    # 快速获取 IP (灵敏版)
+    IPV4=\$(curl -s4m 2 https://1.1.1.1/cdn-cgi/trace | awk -F= '/ip/ {print \$2}' || echo "")
+    IPV6=\$(curl -s6m 2 https://[2606:4700:4700::1111]/cdn-cgi/trace | awk -F= '/ip/ {print \$2}' || echo "")
+    
     echo -e "\n\033[1;36m==============================\033[0m"
     echo "    Sing-box 管理面板 (sb)"
     echo "=============================="
@@ -308,15 +316,10 @@ while true; do
         3)
             echo "1. Hy2 端口"
             echo "2. Argo 端口"
-            echo "0. 返回"
             read -p "选择: " p_opt
-            [ "\$p_opt" == "0" ] && continue
             read -p "新端口: " NP
-            if [ "\$p_opt" == "1" ]; then
-                jq "(.inbounds[] | select(.tag==\"hy2-in\") | .listen_port) = \$NP" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
-            else
-                jq "(.inbounds[] | select(.tag==\"vless-in\") | .listen_port) = \$NP" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
-            fi
+            [ "\$p_opt" == "1" ] && tag="hy2-in" || tag="vless-in"
+            jq "(.inbounds[] | select(.tag==\"\$tag\") | .listen_port) = \$NP" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
             restart_svc
             ;;
         4) install_sbox_kernel && restart_svc && read -p "回车继续..." ;;
@@ -333,8 +336,9 @@ EOF
 # 8. 主程序逻辑
 # ==========================================
 main() {
-    detect_env
     clear
+    detect_env
+    
     echo "1. Hysteria2"
     echo "2. VLESS+Argo"
     read -p "模式: " INSTALL_MODE
@@ -342,9 +346,7 @@ main() {
     optimize_system
     install_sbox_kernel
 
-    if [ "$INSTALL_MODE" == "2" ]; then
-        curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${SBOX_ARCH}" -o /usr/bin/cloudflared && chmod +x /usr/bin/cloudflared
-    fi
+    [ "$INSTALL_MODE" == "2" ] && (curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${SBOX_ARCH}" -o /usr/bin/cloudflared && chmod +x /usr/bin/cloudflared)
 
     local UUID=$(cat /proc/sys/kernel/random/uuid)
     local B_PORT=$((RANDOM % 50000 + 10000))
