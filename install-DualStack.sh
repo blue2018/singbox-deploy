@@ -91,7 +91,53 @@ install_sbox_kernel() {
 }
 
 # ==========================================
-# 4. 动态加载优化配置 (保留原版精髓与注释)
+# 4. 系统工具函数 (端口校验、Argo捕获、ECC证书)
+# ==========================================
+# 端口规范检测
+read_port() {
+    local prompt=$1
+    local default=$2
+    local port
+    while true; do
+        read -p "$prompt (直接回车随机 $default): " port
+        port=${port:-$default}
+        if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+            echo "$port"
+            return 0
+        else
+            err "输入有误！请输入 1-65535 之间的数字。"
+        fi
+    done
+}
+
+# 生成 ECC P-256 高性能证书 (替代 RSA)
+generate_ecc_cert() {
+    mkdir -p /etc/sing-box/certs
+    info "生成 ECC P-256 高性能 TLS 证书..."
+    openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem
+    openssl req -new -x509 -days 3650 -key /etc/sing-box/certs/privkey.pem -out /etc/sing-box/certs/fullchain.pem -subj "/CN=$(pick_tls_domain)"
+}
+
+# 动态捕获 Argo 域名
+wait_argo_domain() {
+    local count=0
+    info "正在建立 Argo 隧道并捕获域名..."
+    while [ $count -lt 15 ]; do
+        local domain=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "$ARGO_LOG" | head -1 | sed 's#https://##')
+        if [ -n "$domain" ]; then
+            echo "$domain" > /etc/sing-box/argo_domain.txt
+            succ "Argo 域名捕获成功: $domain"
+            return 0
+        fi
+        sleep 2
+        count=$((count+1))
+    done
+    err "Argo 域名捕获超时，请稍后输入 sb 选项 2 查看。"
+    return 1
+}
+
+# ==========================================
+# 5. 动态加载优化配置 (保留原版精髓与注释)
 # ==========================================
 optimize_system() {
     # --- A. 内存多路侦测 ---
@@ -171,7 +217,68 @@ EOF
 }
 
 # ==========================================
-# 5. 系统服务配置
+# 6. 单一节点显示函数 (增量显示专用)
+# ==========================================
+show_single_node() {
+    local tag=$1
+    local SNI=$(openssl x509 -in /etc/sing-box/certs/fullchain.pem -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "unknown")
+
+    if [ "$tag" == "hy2-in" ]; then
+        local H_PORT=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .listen_port' $CONFIG_FILE)
+        local H_PASS=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .users[0].password' $CONFIG_FILE)
+        echo -e "\n\033[1;36m[Hysteria2 节点配置]\033[0m"
+        echo -e "端口: \033[1;33m$H_PORT\033[0m"
+        [ -n "$IPV4" ] && echo -e "IPv4 链接:\nhy2://$H_PASS@$IPV4:$H_PORT/?sni=$SNI&alpn=h3&insecure=1#Hy2_v4"
+        [ -n "$IPV6" ] && echo -e "IPv6 链接:\nhy2://$H_PASS@[$IPV6]:$H_PORT/?sni=$SNI&alpn=h3&insecure=1#Hy2_v6"
+    fi
+
+    if [ "$tag" == "vless-in" ]; then
+        local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' $CONFIG_FILE)
+        local A_UUID=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .users[0].uuid' $CONFIG_FILE)
+        local A_DOM=$(cat /etc/sing-box/argo_domain.txt 2>/dev/null || echo "等待捕获...")
+        echo -e "\n\033[1;36m[VLESS+Argo 节点配置]\033[0m"
+        echo -e "转发端口: \033[1;33m$A_PORT\033[0m"
+        echo -e "Argo链接:\nvless://$A_UUID@$A_DOM:443?encryption=none&security=tls&sni=$A_DOM&type=ws&host=$A_DOM&path=%2Fargo#VLESS_Argo"
+    fi
+}
+
+# ==========================================
+# 7. 信息展示面板 (全量显示)
+# ==========================================
+show_nodes() {
+    local SB_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}' || echo "未安装")
+    local SNI=$(openssl x509 -in /etc/sing-box/certs/fullchain.pem -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "unknown")
+
+    echo -e "\n\033[1;34m==========================================\033[0m"
+    echo -e "        \033[1;37mSing-box 节点配置信息\033[0m"
+    echo -e "\033[1;34m==========================================\033[0m"
+    echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
+    echo -e "SingBox内核: \033[1;33mv$SB_VER\033[0m | 内存优化: \033[1;33m$SBOX_OPTIMIZE_LEVEL\033[0m"
+    echo -e "公网IPv4: \033[1;33m${IPV4:-检测失败}\033[0m"
+    echo -e "公网IPv6: \033[1;33m${IPV6:-检测失败}\033[0m"
+    echo -e "\033[1;34m------------------------------------------\033[0m"
+
+    local H_PORT=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .listen_port' $CONFIG_FILE 2>/dev/null || echo "")
+    if [ -n "$H_PORT" ]; then
+        local H_PASS=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .users[0].password' $CONFIG_FILE)
+        echo -e "\033[1;36m[Hysteria2]\033[0m 端口: \033[1;33m$H_PORT\033[0m"
+        [ -n "$IPV4" ] && echo -e "IPv4 链接:\nhy2://$H_PASS@$IPV4:$H_PORT/?sni=$SNI&alpn=h3&insecure=1#Hy2_v4"
+        [ -n "$IPV6" ] && echo -e "IPv6 链接:\nhy2://$H_PASS@[$IPV6]:$H_PORT/?sni=$SNI&alpn=h3&insecure=1#Hy2_v6"
+        echo ""
+    fi
+
+    local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' $CONFIG_FILE 2>/dev/null || echo "")
+    if [ -n "$A_PORT" ]; then
+        local A_UUID=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .users[0].uuid' $CONFIG_FILE)
+        local A_DOM=$(cat /etc/sing-box/argo_domain.txt 2>/dev/null || echo "等待捕获...")
+        echo -e "\033[1;36m[VLESS+Argo]\033[0m 转发端口: \033[1;33m$A_PORT\033[0m"
+        echo -e "Argo链接:\nvless://$A_UUID@$A_DOM:443?encryption=none&security=tls&sni=$A_DOM&type=ws&host=$A_DOM&path=%2Fargo#VLESS_Argo"
+    fi
+    echo -e "\033[1;34m==========================================\033[0m"
+}
+
+# ==========================================
+# 8. 系统服务配置
 # ==========================================
 setup_service() {
     info "写入系统服务单元 (配额: $SBOX_MEM_MAX)..."
@@ -212,46 +319,14 @@ EOF
 }
 
 # ==========================================
-# 6. 信息展示面板
-# ==========================================
-show_nodes() {
-    local SB_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}' || echo "未安装")
-    local SNI=$(openssl x509 -in /etc/sing-box/certs/fullchain.pem -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "unknown")
-
-    echo -e "\n\033[1;34m==========================================\033[0m"
-    echo -e "        \033[1;37mSing-box 节点配置信息\033[0m"
-    echo -e "\033[1;34m==========================================\033[0m"
-    echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
-    echo -e "SingBox内核: \033[1;33mv$SB_VER\033[0m | 内存优化: \033[1;32m$SBOX_OPTIMIZE_LEVEL\033[0m"
-    echo -e "公网IPv4: \033[1;33m${IPV4:-检测失败}\033[0m"
-    echo -e "公网IPv6: \033[1;33m${IPV6:-检测失败}\033[0m"
-    echo -e "\033[1;34m------------------------------------------\033[0m"
-
-    local H_PORT=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .listen_port' $CONFIG_FILE 2>/dev/null || echo "")
-    if [ -n "$H_PORT" ]; then
-        local H_PASS=$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .users[0].password' $CONFIG_FILE)
-        echo -e "\033[1;36m[Hysteria2]\033[0m 端口: $H_PORT"
-        [ -n "$IPV4" ] && echo -e "IPv4: \033[1;32mhy2://$H_PASS@$IPV4:$H_PORT/?sni=$SNI&alpn=h3&insecure=1#Hy2_v4\033[0m"
-        [ -n "$IPV6" ] && echo -e "IPv6: \033[1;32mhy2://$H_PASS@[$IPV6]:$H_PORT/?sni=$SNI&alpn=h3&insecure=1#Hy2_v6\033[0m"
-        echo ""
-    fi
-
-    local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' $CONFIG_FILE 2>/dev/null || echo "")
-    if [ -n "$A_PORT" ]; then
-        local A_UUID=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .users[0].uuid' $CONFIG_FILE)
-        local A_DOM=$(cat /etc/sing-box/argo_domain.txt 2>/dev/null || echo "等待捕获...")
-        echo -e "\033[1;36m[VLESS+Argo]\033[0m 转发端口: $A_PORT"
-        echo -e "Argo链接: \033[1;32mvless://$A_UUID@$A_DOM:443?encryption=none&security=tls&sni=$A_DOM&type=ws&host=$A_DOM&path=%2Fargo#VLESS_Argo\033[0m"
-    fi
-    echo -e "\033[1;34m==========================================\033[0m"
-}
-
-# ==========================================
-# 7. sb 管理工具生成
+# 9. sb 管理工具生成
 # ==========================================
 create_manager() {
     local SHOW_NODES_CODE=$(declare -f show_nodes)
+    local SHOW_SINGLE_CODE=$(declare -f show_single_node)
     local INSTALL_KERNEL_CODE=$(declare -f install_sbox_kernel)
+    local READ_PORT_CODE=$(declare -f read_port)
+    local ARGO_WAIT_CODE=$(declare -f wait_argo_domain)
 
     cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
@@ -261,12 +336,16 @@ OS_DISPLAY="$OS_DISPLAY"
 SBOX_OPTIMIZE_LEVEL="$SBOX_OPTIMIZE_LEVEL"
 IPV4="$IPV4"
 IPV6="$IPV6"
+ARGO_LOG="/etc/sing-box/argo.log"
 
 info() { echo -e "\033[1;34m[INFO]\033[0m \$*"; }
+err()  { echo -e "\033[1;31m[ERR]\033[0m \$*" >&2; }
 
 $SHOW_NODES_CODE
-
+$SHOW_SINGLE_CODE
 $INSTALL_KERNEL_CODE
+$READ_PORT_CODE
+$ARGO_WAIT_CODE
 
 restart_svc() {
     command -v systemctl >/dev/null && systemctl restart sing-box || rc-service sing-box restart
@@ -293,49 +372,68 @@ while true; do
             [ -z "\$HAS_HY2" ] && echo "1. Hysteria2"
             [ -z "\$HAS_ARGO" ] && echo "2. VLESS+Argo"
             echo "0. 返回上级"
-            read -p "选择: " add_opt
-            [ "\$add_opt" == "0" ] && continue
             
-            UUID=\$(jq -r '.inbounds[0].users[0].password // .inbounds[0].users[0].uuid' \$CONFIG_FILE 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-            
-            if [ "\$add_opt" == "1" ]; then
-                read -p "设置端口 (默认随机): " NP && NP=\${NP:-\$((RANDOM % 50000 + 10000))}
-                jq ".inbounds += [{\"type\":\"hysteria2\",\"tag\":\"hy2-in\",\"listen\":\"::\",\"listen_port\":\$NP,\"users\":[{\"password\":\"\$UUID\"}],\"tls\":{\"enabled\":true,\"alpn\":[\"h3\"],\"certificate_path\":\"/etc/sing-box/certs/fullchain.pem\",\"key_path\":\"/etc/sing-box/certs/privkey.pem\"}}]" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
-                restart_svc && echo "Hy2 添加成功"
-            elif [ "\$add_opt" == "2" ]; then
-                AP=\$((RANDOM % 50000 + 10000))
-                curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-\$SBOX_ARCH" -o /usr/bin/cloudflared && chmod +x /usr/bin/cloudflared
-                jq ".inbounds += [{\"type\":\"vless\",\"tag\":\"vless-in\",\"listen\":\"127.0.0.1\",\"listen_port\":\$AP,\"users\":[{\"uuid\":\"\$UUID\"}],\"transport\":{\"type\":\"ws\",\"path\":\"/argo\"}}]" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
-                nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:\$AP --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
-                restart_svc && echo "Argo 隧道启动成功"
-            fi
-            read -p "按回车返回菜单..." ;;
-        2) show_nodes && read -p "按回车返回菜单..." ;;
+            while true; do
+                read -p "选择: " add_opt
+                [ "\$add_opt" == "0" ] && break
+                if [[ "\$add_opt" == "1" && -z "\$HAS_HY2" ]]; then
+                    NP=\$(read_port "设置端口" "\$((RANDOM % 50000 + 10000))")
+                    UUID=\$(jq -r '.inbounds[0].users[0].password // .inbounds[0].users[0].uuid' \$CONFIG_FILE 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+                    jq ".inbounds += [{\"type\":\"hysteria2\",\"tag\":\"hy2-in\",\"listen\":\"::\",\"listen_port\":\$NP,\"users\":[{\"password\":\"\$UUID\"}],\"tls\":{\"enabled\":true,\"alpn\":[\"h3\"],\"certificate_path\":\"/etc/sing-box/certs/fullchain.pem\",\"key_path\":\"/etc/sing-box/certs/privkey.pem\"}}]" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
+                    restart_svc && show_single_node "hy2-in"
+                    break
+                elif [[ "\$add_opt" == "2" && -z "\$HAS_ARGO" ]]; then
+                    AP=\$(read_port "设置端口" "\$((RANDOM % 50000 + 10000))")
+                    UUID=\$(jq -r '.inbounds[0].users[0].password // .inbounds[0].users[0].uuid' \$CONFIG_FILE 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+                    curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-\$SBOX_ARCH" -o /usr/bin/cloudflared && chmod +x /usr/bin/cloudflared
+                    jq ".inbounds += [{\"type\":\"vless\",\"tag\":\"vless-in\",\"listen\":\"127.0.0.1\",\"listen_port\":\$AP,\"users\":[{\"uuid\":\"\$UUID\"}],\"transport\":{\"type\":\"ws\",\"path\":\"/argo\"}}]" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
+                    pkill cloudflared || true
+                    nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:\$AP --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
+                    wait_argo_domain && restart_svc && show_single_node "vless-in"
+                    break
+                else
+                    err "输入有误或协议已安装，请重新输入。"
+                fi
+            done
+            read -p "按回车继续..." ;;
+        2) show_nodes && read -p "按回车继续..." ;;
         3)
             echo -e "\n--- 更改已安装协议端口 ---"
             HAS_HY2=\$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .tag' \$CONFIG_FILE 2>/dev/null || echo "")
             HAS_ARGO=\$(jq -r '.inbounds[] | select(.tag=="vless-in") | .tag' \$CONFIG_FILE 2>/dev/null || echo "")
+            opts=(); [ -n "\$HAS_HY2" ] && echo "1. Hysteria2 端口" && opts+=(1); [ -n "\$HAS_ARGO" ] && echo "2. Argo 端口" && opts+=(2); echo "0. 返回上级"
             
-            opts=()
-            [ -n "\$HAS_HY2" ] && echo "1. Hysteria2 端口" && opts+=(1)
-            [ -n "\$HAS_ARGO" ] && echo "2. Argo 端口" && opts+=(2)
-            echo "0. 返回上级"
-            
-            read -p "选择: " p_opt
-            [ "\$p_opt" == "0" ] && continue
-            
-            # 动态校验选择合法性
-            [[ ! " \${opts[@]} " =~ " \$p_opt " ]] && echo "无效选择：该协议尚未安装" && continue
-
-            read -p "请输入新端口号: " NP
-            [ "\$p_opt" == "1" ] && tag="hy2-in" || tag="vless-in"
-            jq "(.inbounds[] | select(.tag==\"\$tag\") | .listen_port) = \$NP" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
-            restart_svc && echo "端口更新成功，服务已重启"
-            read -p "按回车返回菜单..." ;;
-        4) install_sbox_kernel && restart_svc; read -p "按回车返回菜单..." ;;
-        5) restart_svc && echo "SingBox 服务已重启" && read -p "按回车返回菜单..." ;;
-        6) rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb && echo "SingBox 已从系统中彻底卸载。" && exit 0 ;;
+            while true; do
+                read -p "选择: " p_opt
+                [ "\$p_opt" == "0" ] && break
+                if [[ " \${opts[@]} " =~ " \$p_opt " ]]; then
+                    NP=\$(read_port "请输入新端口号" "\$((RANDOM % 50000 + 10000))")
+                    [ "\$p_opt" == "1" ] && tag="hy2-in" || tag="vless-in"
+                    jq "(.inbounds[] | select(.tag==\"\$tag\") | .listen_port) = \$NP" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
+                    if [ "\$tag" == "vless-in" ]; then
+                        pkill cloudflared || true
+                        nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:\$NP --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
+                        wait_argo_domain
+                    fi
+                    restart_svc && show_single_node "\$tag"
+                    break
+                else
+                    err "无效选择，请重新输入。"
+                fi
+            done
+            read -p "按回车继续..." ;;
+        4) install_sbox_kernel && restart_svc; read -p "按回车继续..." ;;
+        5) restart_svc && echo "SingBox 服务已重启" && read -p "按回车继续..." ;;
+        6)
+            read -p "确定要彻底卸载吗？[y/N]: " un_confirm
+            [[ ! "\$un_confirm" =~ ^[Yy]$ ]] && continue
+            systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true
+            pkill cloudflared || true
+            rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/bin/cloudflared /etc/systemd/system/sing-box.service /etc/init.d/sing-box /etc/sysctl.d/99-singbox-*.conf
+            sysctl --system >/dev/null 2>&1
+            echo "SingBox 已彻底卸载。" && exit 0 ;;
         0) exit 0 ;;
+        *) err "无效选项，请重新输入。" ;;
     esac
 done
 EOF
@@ -343,7 +441,7 @@ EOF
 }
 
 # ==========================================
-# 8. 主程序逻辑
+# 10. 主程序逻辑
 # ==========================================
 main() {
     # 不使用 clear，保留安装过程中的上下文信息
@@ -353,23 +451,29 @@ main() {
     echo -e "\n--- 请选择部署模式 ---"
     echo "1. 部署 Hysteria2 (UDP 高速协议)"
     echo "2. 部署 VLESS+Argo (WS 隧道协议)"
-    read -p "选择 [1-2]: " INSTALL_MODE
+    while true; do
+        read -p "选择 [1-2]: " INSTALL_MODE
+        [[ "$INSTALL_MODE" =~ ^[12]$ ]] && break
+        err "输入有误，请重新输入 1 或 2。"
+    done
 
     optimize_system
     install_sbox_kernel
-
+    
+    # 初始安装流程
     [ "$INSTALL_MODE" == "2" ] && (info "正在获取 Cloudflared 组件..." && curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${SBOX_ARCH}" -o /usr/bin/cloudflared && chmod +x /usr/bin/cloudflared)
 
     local UUID=$(cat /proc/sys/kernel/random/uuid)
-    local B_PORT=$((RANDOM % 50000 + 10000))
-    mkdir -p /etc/sing-box/certs
+    local B_PORT=$(read_port "设置初始协议端口" "$((RANDOM % 50000 + 10000))")
     
-    info "生成 TLS 自签名证书..."
-    openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/sing-box/certs/privkey.pem -out /etc/sing-box/certs/fullchain.pem -days 3650 -subj "/CN=$(pick_tls_domain)"
+    # 使用增强的 ECC P-256 证书生成
+    generate_ecc_cert
 
     local JSON='{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct"}]}'
     [ "$INSTALL_MODE" == "1" ] && JSON=$(echo "$JSON" | jq ".inbounds += [{\"type\":\"hysteria2\",\"tag\":\"hy2-in\",\"listen\":\"::\",\"listen_port\":$B_PORT,\"users\":[{\"password\":\"$UUID\"}],\"tls\":{\"enabled\":true,\"alpn\":[\"h3\"],\"certificate_path\":\"/etc/sing-box/certs/fullchain.pem\",\"key_path\":\"/etc/sing-box/certs/privkey.pem\"}}]")
     [ "$INSTALL_MODE" == "2" ] && JSON=$(echo "$JSON" | jq ".inbounds += [{\"type\":\"vless\",\"tag\":\"vless-in\",\"listen\":\"127.0.0.1\",\"listen_port\":$B_PORT,\"users\":[{\"uuid\":\"$UUID\"}],\"transport\":{\"type\":\"ws\",\"path\":\"/argo\"}}]")
+    
+    mkdir -p /etc/sing-box
     echo "$JSON" | jq . > "$CONFIG_FILE"
 
     setup_service
@@ -377,8 +481,7 @@ main() {
     if [ "$INSTALL_MODE" == "2" ]; then
         info "正在建立 Argo 隧道连接..."
         nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$B_PORT --no-autoupdate > "$ARGO_LOG" 2>&1 &
-        sleep 5
-        grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "$ARGO_LOG" | head -1 | sed 's#https://##' > /etc/sing-box/argo_domain.txt || true
+        wait_argo_domain || true
     fi
 
     create_manager
