@@ -385,7 +385,7 @@ $SHOW_SINGLE_CODE
 $INSTALL_KERNEL_CODE
 $READ_PORT_CODE
 $ARGO_WAIT_CODE
-$REFRESH_CODE
+$REFRESH_ARGO_CODE
 
 restart_svc() {
     command -v systemctl >/dev/null && systemctl restart sing-box || rc-service sing-box restart
