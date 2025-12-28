@@ -364,7 +364,7 @@ create_manager() {
     local INSTALL_KERNEL_CODE=$(declare -f install_sbox_kernel)
     local READ_PORT_CODE=$(declare -f read_port)
     local ARGO_WAIT_CODE=$(declare -f wait_argo_domain)
-    local REFRESH_ARGO_CODE=$(declare -f refresh_argo_context)
+    local REFRESH_CODE=$(declare -f refresh_argo_context)
 
     cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
