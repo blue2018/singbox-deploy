@@ -283,20 +283,10 @@ show_nodes() {
 # 8. 系统服务配置
 # ==========================================
 setup_service() {
-    info "写入系统服务单元 (配额: $SBOX_MEM_MAX)..."
-    local env_vars="GOGC=${SBOX_GOGC:-80} GOMEMLIMIT=$SBOX_GOLIMIT GODEBUG=madvdontneed=1"
-    
-    # --- 新增：提取 Argo 端口逻辑 ---
-    local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' $CONFIG_FILE 2>/dev/null || echo "")
-    local ARGO_CMD=""
-    # 如果检测到配置了 Argo 端口，则准备启动命令
-    if [[ -n "$A_PORT" && "$A_PORT" != "null" ]]; then
-        ARGO_CMD="ExecStartPost=/usr/bin/bash -c 'pkill cloudflared || true; nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$A_PORT --no-autoupdate > /etc/sing-box/argo.log 2>&1 &'"
-    fi
-    # ----------------------------
-
-    if [[ "$OS_DISPLAY" == *"Alpine"* ]]; then
-        cat > /etc/init.d/sing-box <<EOF
+    info "写入系统服务单元 (配额: $SBOX_MEM_MAX)..."
+    local env_vars="GOGC=${SBOX_GOGC:-80} GOMEMLIMIT=$SBOX_GOLIMIT GODEBUG=madvdontneed=1"
+    if [[ "$OS_DISPLAY" == *"Alpine"* ]]; then
+        cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
 export $env_vars
@@ -304,17 +294,11 @@ command="/usr/bin/sing-box"
 command_args="run -c $CONFIG_FILE"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
-# Alpine 环境下的自动拉起逻辑
-start_post() {
-    [ -n "$A_PORT" ] && pkill cloudflared || true
-    [ -n "$A_PORT" ] && nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$A_PORT --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
-    return 0
-}
 EOF
-        chmod +x /etc/init.d/sing-box
-        rc-update add sing-box default && rc-service sing-box restart
-    else
-        cat > /etc/systemd/system/sing-box.service <<EOF
+        chmod +x /etc/init.d/sing-box
+        rc-update add sing-box default && rc-service sing-box restart
+    else
+        cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service
 After=network.target
@@ -325,8 +309,6 @@ User=root
 WorkingDirectory=/etc/sing-box
 Environment=$env_vars
 ExecStart=/usr/bin/sing-box run -c $CONFIG_FILE
-$ARGO_CMD
-ExecStopPost=/usr/bin/pkill cloudflared
 Restart=on-failure
 MemoryMax=$SBOX_MEM_MAX
 LimitNOFILE=1000000
@@ -334,8 +316,8 @@ LimitNOFILE=1000000
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload && systemctl enable sing-box --now
-    fi
+        systemctl daemon-reload && systemctl enable sing-box --now
+    fi
 }
 
 # ==========================================
