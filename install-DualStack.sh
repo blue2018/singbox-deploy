@@ -285,6 +285,15 @@ show_nodes() {
 setup_service() {
     info "写入系统服务单元 (配额: $SBOX_MEM_MAX)..."
     local env_vars="GOGC=${SBOX_GOGC:-80} GOMEMLIMIT=$SBOX_GOLIMIT GODEBUG=madvdontneed=1"
+    
+    # 提取当前配置中的 Argo 端口（如果存在）
+    local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' "$CONFIG_FILE" 2>/dev/null || echo "")
+    local ARGO_CMD=""
+    if [[ -n "$A_PORT" && "$A_PORT" != "null" ]]; then
+        # 注意：这里我们预先清理旧进程，防止端口冲突
+        ARGO_CMD="ExecStartPost=/usr/bin/bash -c 'pkill cloudflared || true; nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$A_PORT --no-autoupdate > /etc/sing-box/argo.log 2>&1 &'"
+    fi
+
     if [[ "$OS_DISPLAY" == *"Alpine"* ]]; then
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
@@ -294,6 +303,16 @@ command="/usr/bin/sing-box"
 command_args="run -c $CONFIG_FILE"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
+
+start_post() {
+    [ -n "$A_PORT" ] && pkill cloudflared || true
+    [ -n "$A_PORT" ] && nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$A_PORT --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
+    return 0
+}
+
+stop_post() {
+    pkill cloudflared || true
+}
 EOF
         chmod +x /etc/init.d/sing-box
         rc-update add sing-box default && rc-service sing-box restart
@@ -309,6 +328,8 @@ User=root
 WorkingDirectory=/etc/sing-box
 Environment=$env_vars
 ExecStart=/usr/bin/sing-box run -c $CONFIG_FILE
+$ARGO_CMD
+ExecStopPost=/usr/bin/pkill cloudflared
 Restart=on-failure
 MemoryMax=$SBOX_MEM_MAX
 LimitNOFILE=1000000
