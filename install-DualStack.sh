@@ -330,7 +330,7 @@ create_manager() {
     local READ_PORT_CODE=$(declare -f read_port)
     local ARGO_WAIT_CODE=$(declare -f wait_argo_domain)
 
-    cat > /usr/local/bin/sb <<EOF
+    cat > /usr/local/bin/sb <<'EOF'
 #!/usr/bin/env bash
 CONFIG_FILE="/etc/sing-box/config.json"
 SBOX_ARCH="$SBOX_ARCH"
