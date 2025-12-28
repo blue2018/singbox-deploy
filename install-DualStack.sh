@@ -365,7 +365,16 @@ while true; do
     echo "5) 重启服务"
     echo "6) 卸载脚本"
     echo "0) 退出"
-    read -p "选择 [0-6]: " opt
+    read -r -p "请选择 [0-6]: " opt
+        # 优化建议：使用 Bash 原生方式剔除前后空格，比 xargs 更快且无需担心子 shell 环境问题
+        opt="${opt#"${opt%%[![:space:]]*}"}"
+        opt="${opt%"${opt##*[![:space:]]}"}"
+        # 逻辑判断：如果输入为空
+        if [[ -z "$opt" ]]; then
+            echo -e "\033[1;31m输入有误，请重新输入\033[0m"
+            sleep 1
+            continue
+        fi
 
     case "\$opt" in
         1)
