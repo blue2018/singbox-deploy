@@ -365,6 +365,7 @@ while true; do
     echo "5) 重启服务"
     echo "6) 卸载脚本"
     echo "0) 退出"
+    # 这里的 -r 防止转义，-e 允许在某些环境下更智能地处理输入
     read -r -p "请选择 [0-6]: " opt
         # 优化建议：使用 Bash 原生方式剔除前后空格，比 xargs 更快且无需担心子 shell 环境问题
         opt="${opt#"${opt%%[![:space:]]*}"}"
