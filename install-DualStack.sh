@@ -320,6 +320,41 @@ EOF
     fi
 }
 
+# 智能恢复并显示 Argo 状态
+refresh_argo_context() {
+    # 1. 从 JSON 提取端口 (tag 需对应你配置里的 tag)
+    local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' $CONFIG_FILE 2>/dev/null || echo "")
+
+    # 2. 判断是否安装了 cloudflared 且配置了端口
+    if [[ -f "/usr/bin/cloudflared" && -n "$A_PORT" && "$A_PORT" != "null" ]]; then
+        echo -e "\n${CYAN}[Argo 隧道管理]${NC}"
+        info "检测到 Argo 端口 $A_PORT，正在重新建立临时隧道..."
+        
+        # 彻底清理旧进程
+        pkill -9 cloudflared >/dev/null 2>&1 || true
+        rm -f /etc/sing-box/argo.log
+        
+        # 启动新隧道
+        nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$A_PORT --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
+        
+        # 3. 提示并捕获新域名
+        info "临时 Argo 隧道已重新启动，正在获取新链接..."
+        
+        # 调用你脚本中原有的等待域名函数 (比如之前定义的 wait_argo_domain)
+        if [[ $(type -t wait_argo_domain) == "function" ]]; then
+            wait_argo_domain
+        else
+            # 如果没有该函数，则简单等待并抓取
+            sleep 3
+            local NEW_DOMAIN=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /etc/sing-box/argo.log | head -1 | sed 's#https://##')
+            if [[ -n "$NEW_DOMAIN" ]]; then
+                success "临时隧道已重新生成: $NEW_DOMAIN"
+                # 这里可以补上显示节点链接的逻辑
+            fi
+        fi
+    fi
+}
+
 # ==========================================
 # 9. sb 管理工具生成 (修复版)
 # ==========================================
@@ -453,7 +488,20 @@ while true; do
             ret_code=\$?
             [ "\$ret_code" -eq 0 ] && restart_svc
             read -p "按回车继续..." ;;
-        5) restart_svc && succ "SingBox 服务已重启" && read -p "按回车继续..." ;;
+        5)
+            info "正在重启 sing-box 系统服务..."
+            if [[ "$OS_DISPLAY" == *"Alpine"* ]]; then
+                rc-service sing-box restart
+            else
+                systemctl restart sing-box
+            fi
+            
+            # --- 关键：重启完立即执行 Argo 检查与恢复 ---
+            refresh_argo_context
+            
+            echo -e "\n${YELLOW}按 Enter 返回菜单...${NC}"
+            read
+            ;;
         6) 
             read -r -p "确认卸载？[y/N]: " un_confirm
             if [[ "\$un_confirm" =~ ^[Yy]$ ]]; then
