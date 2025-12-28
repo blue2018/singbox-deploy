@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==========================================
-# 1. 变量声明与环境准备 (融合代码B的底层架构)
+# 1. 变量声明与环境准备
 # ==========================================
 SBOX_ARCH=""
 OS_DISPLAY=""
@@ -26,7 +26,7 @@ succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 
 # ==========================================
-# 2. 系统环境检测 (集成 Alpine 支持)
+# 2. 系统环境检测
 # ==========================================
 detect_env() {
     if [ -f /etc/os-release ]; then
@@ -48,61 +48,134 @@ detect_env() {
     done
     [ $n -eq 5 ] && n=0
     ${LINUX_UPDATE[$n]} >/dev/null 2>&1
-    ${LINUX_INSTALL[$n]} curl jq openssl tar bash procps >/dev/null 2>&1
+    ${LINUX_INSTALL[$n]} curl jq openssl tar bash procps iproute2 >/dev/null 2>&1
 
     IPV4=$(curl -s4 --max-time 3 api.ipify.org || echo "")
     IPV6=$(curl -s6 --max-time 3 api.ipify.org || echo "")
 }
 
+# ==========================================
+# 3. 动态加载优化配置 (完全还原你提供的版本)
+# ==========================================
 optimize_system() {
-    local mem_total=$(free -m | awk '/Mem:/ {print $2}')
+    # --- A. 内存多路侦测 ---
+    local mem_total=64
+    local mem_free=$(free -m | awk '/Mem:/ {print $2}')
+    local mem_cgroup=0
+    
     if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
-        local mem_cg=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
-        [ "$mem_cg" -gt 0 ] && [ "$mem_cg" -lt "$mem_total" ] && mem_total=$mem_cg
+        mem_cgroup=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
+    elif [ -f /sys/fs/cgroup/memory.max ]; then
+        local m_max=$(cat /sys/fs/cgroup/memory.max)
+        [[ "$m_max" =~ ^[0-9]+$ ]] && mem_cgroup=$((m_max / 1024 / 1024))
     fi
+    if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_free" ]; then mem_total=$mem_cgroup; else mem_total=$mem_free; fi
+    [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ] && mem_total=64
 
+    # --- B. 阶梯变量设定 ---
+    local udp_buffer
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOLIMIT="420MiB"; SBOX_GOGC="110"; SBOX_OPTIMIZE_LEVEL="512M (爆发版)"
+        SBOX_GOLIMIT="420MiB"; SBOX_GOGC="110"; udp_buffer="134217728"; SBOX_OPTIMIZE_LEVEL="512M (爆发版)"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"; SBOX_OPTIMIZE_LEVEL="256M (瞬时版)"
+        SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"; udp_buffer="67108864"; SBOX_OPTIMIZE_LEVEL="256M (瞬时版)"
+    elif [ "$mem_total" -ge 100 ]; then
+        SBOX_GOLIMIT="100MiB"; SBOX_GOGC="80";  udp_buffer="33554432"; SBOX_OPTIMIZE_LEVEL="128M (激进版)"
     else
-        SBOX_GOLIMIT="52MiB";  SBOX_GOGC="70";  SBOX_OPTIMIZE_LEVEL="128M (极限版)"
+        SBOX_GOLIMIT="52MiB";  SBOX_GOGC="70";  udp_buffer="16777216"; SBOX_OPTIMIZE_LEVEL="64M (极限版)"
+        export GOMAXPROCS=1
     fi
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
-}
 
-# ==========================================
-# 3. 核心配置与证书生成 (自动补全 OpenSSL)
-# ==========================================
-write_config() {
-    local PORT_BASE=$1
-    local UUID=$(jq -r '.inbounds[0].users[0].password // .inbounds[0].users[0].uuid' $CONFIG_FILE 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-    
-    local JSON='{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct"}]}'
-    
-    # 自动生成证书
-    mkdir -p /etc/sing-box/certs
-    if [ ! -f /etc/sing-box/certs/fullchain.pem ]; then
-        openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/sing-box/certs/privkey.pem -out /etc/sing-box/certs/fullchain.pem -days 3650 -subj "/CN=$(pick_tls_domain)" >/dev/null 2>&1
+    # --- C. Swap 救急 (非 Alpine) ---
+    if [[ ! "$OS_DISPLAY" == *"Alpine"* ]]; then
+        local stotal=$(free -m | awk '/Swap:/ {print $2}')
+        if [ "$stotal" -lt 10 ] && [ "$mem_total" -lt 150 ]; then
+            fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null
+            chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+        fi
     fi
+
+    # --- D. 协议差异化内核参数注入 ---
+    # 内核参数：针对 Hy2 (极致响应) 和 Argo (稳定穿透)
+    modprobe tcp_bbr >/dev/null 2>&1 || true
+    # 通用基础优化
+    cat > /etc/sysctl.d/99-singbox-base.conf <<EOF
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.core.netdev_max_backlog = 16384
+net.core.somaxconn = 8192
+vm.swappiness = 10
+EOF
 
     if [[ "$INSTALL_MODE" =~ [13] ]]; then
-        local HY2='{"type":"hysteria2","tag":"hy2-in","listen":"::","listen_port":'$PORT_BASE',"users":[{"password":"'$UUID'"}],"tls":{"enabled":true,"alpn":["h3"],"certificate_path":"/etc/sing-box/certs/fullchain.pem","key_path":"/etc/sing-box/certs/privkey.pem"}}'
-        JSON=$(echo "$JSON" | jq ".inbounds += [$HY2]")
-    fi
-    
-    if [[ "$INSTALL_MODE" =~ [23] ]]; then
-        local V_PORT=$((PORT_BASE + 5))
-        [[ "$INSTALL_MODE" == "2" ]] && V_PORT=$PORT_BASE
-        local VLESS='{"type":"vless","tag":"vless-in","listen":"127.0.0.1","listen_port":'$V_PORT',"users":[{"uuid":"'$UUID'"}],"transport":{"type":"ws","path":"/argo"}}'
-        JSON=$(echo "$JSON" | jq ".inbounds += [$VLESS]")
+        # 针对 Hy2 的 UDP 与爆发优化 (保留第一份代码精髓)
+        cat > /etc/sysctl.d/99-singbox-hy2.conf <<EOF
+net.core.rmem_max = $udp_buffer
+net.core.wmem_max = $udp_buffer
+net.ipv4.udp_mem = 131072 262144 524288
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_fastopen = 3
+EOF
+        if command -v ip >/dev/null; then
+            local dr=$(ip route show default | head -n1)
+            [[ $dr == *"via"* ]] && ip route change $dr initcwnd 15 initrwnd 15 || true
+        fi
     fi
 
-    echo "$JSON" | jq . > "$CONFIG_FILE"
+    if [[ "$INSTALL_MODE" =~ [23] ]]; then
+        # 针对 Argo 的优化 (减少延迟，快速回收)
+        cat > /etc/sysctl.d/99-singbox-argo.conf <<EOF
+net.ipv4.tcp_fin_timeout = 25
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_fastopen = 3
+EOF
+    fi
+    sysctl -p /etc/sysctl.d/99-singbox-*.conf >/dev/null 2>&1 || true
 }
 
 # ==========================================
-# 4. 视觉展示面板 (第4份脚本核心 UI)
+# 4. 系统服务配置 (标准优化配置)
+# ==========================================
+setup_service() {
+    info "配置系统服务并启动 (限制: $SBOX_MEM_MAX)..."
+    local env_vars="GOGC=${SBOX_GOGC:-80} GOMEMLIMIT=$SBOX_GOLIMIT GODEBUG=madvdontneed=1"
+    if [[ "$OS_DISPLAY" == *"Alpine"* ]]; then
+        cat > /etc/init.d/sing-box <<EOF
+#!/sbin/openrc-run
+name="sing-box"
+export $env_vars
+command="/usr/bin/sing-box"
+command_args="run -c $CONFIG_FILE"
+command_background="yes"
+pidfile="/run/\${RC_SVCNAME}.pid"
+EOF
+        chmod +x /etc/init.d/sing-box
+        rc-update add sing-box default && rc-service sing-box restart
+    else
+        cat > /etc/systemd/system/sing-box.service <<EOF
+[Unit]
+Description=Sing-box Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/sing-box
+Environment=$env_vars
+ExecStart=/usr/bin/sing-box run -c $CONFIG_FILE
+Restart=on-failure
+MemoryMax=$SBOX_MEM_MAX
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload && systemctl enable sing-box --now
+    fi
+}
+
+# ==========================================
+# 5. 信息展示面板 (还原版)
 # ==========================================
 show_nodes() {
     local SB_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}' || echo "未安装")
@@ -138,20 +211,16 @@ show_nodes() {
 }
 
 # ==========================================
-# 5. sb 命令集成 (完美保留原面板功能)
+# 6. sb 管理工具菜单 (0-5 选项)
 # ==========================================
 create_manager() {
     cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
 CONFIG_FILE="/etc/sing-box/config.json"
-SBOX_OPTIMIZE_LEVEL="$SBOX_OPTIMIZE_LEVEL"; SBOX_GOLIMIT="$SBOX_GOLIMIT"
-INSTALL_MODE="$INSTALL_MODE"; OS_DISPLAY="$OS_DISPLAY"
-
 source_env() {
     IPV4=\$(curl -s4 --max-time 2 api.ipify.org || echo "")
     IPV6=\$(curl -s6 --max-time 2 api.ipify.org || echo "")
 }
-
 while true; do
     clear
     echo "=============================="
@@ -168,113 +237,63 @@ while true; do
     case "\$opt" in
         1) source_env && show_nodes && read -p "按回车继续..." ;;
         2) 
-            echo -e "\n--- 更改端口配置 ---"
-            HAS_HY2=\$(jq -r '.inbounds[] | select(.tag=="hy2-in")' \$CONFIG_FILE 2>/dev/null)
-            HAS_ARGO=\$(jq -r '.inbounds[] | select(.tag=="vless-in")' \$CONFIG_FILE 2>/dev/null)
-            [ -n "\$HAS_HY2" ] && echo "1) 更改 Hysteria2 (公网端口)"
-            [ -n "\$HAS_ARGO" ] && echo "2) 更改 VLESS+Argo (本地转发端口)"
-            echo "3) 返回主菜单"
-            read -p "请选择: " p_opt
-            case "\$p_opt" in
-                1)
-                    read -p "输入 Hy2 新端口: " NEW_P
-                    jq ".inbounds |= map(if .tag == \"hy2-in\" then .listen_port = \$NEW_P else . end)" \$CONFIG_FILE > \$CONFIG_FILE.tmp && mv \$CONFIG_FILE.tmp \$CONFIG_FILE
-                    systemctl restart sing-box || rc-service local restart
-                    echo "Hy2 端口已更新" ;;
-                2)
-                    read -p "输入 VLESS+Argo 内部新端口: " NEW_P
-                    jq ".inbounds |= map(if .tag == \"vless-in\" then .listen_port = \$NEW_P else . end)" \$CONFIG_FILE > \$CONFIG_FILE.tmp && mv \$CONFIG_FILE.tmp \$CONFIG_FILE
-                    systemctl restart sing-box || rc-service local restart
-                    pkill cloudflared || true
-                    nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:\$NEW_P --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
-                    echo "VLESS+Argo 端口已更新" ;;
-            esac
-            sleep 2 ;;
-        3) clear; top -n 1 | head -n 20; read -p "按回车返回..." ;;
-        4) systemctl restart sing-box || rc-service local restart; echo "服务已重启"; sleep 1 ;;
-        5) rm -rf /etc/sing-box /usr/bin/sing-box /usr/bin/cloudflared /usr/local/bin/sb; echo "卸载完成"; exit 0 ;;
+            read -p "输入新端口: " NP
+            jq ".inbounds[0].listen_port = \$NP" \$CONFIG_FILE > \$CONFIG_FILE.tmp && mv \$CONFIG_FILE.tmp \$CONFIG_FILE
+            systemctl restart sing-box || rc-service sing-box restart; sleep 1 ;;
+        3) clear; top -n 1 | head -n 20; read -p "按回车继续..." ;;
+        4) systemctl restart sing-box || rc-service sing-box restart; pkill cloudflared; echo "已重启服务"; sleep 1 ;;
+        5) rm -rf /etc/sing-box /usr/bin/sing-box /usr/bin/cloudflared /usr/local/bin/sb; echo "已卸载"; exit 0 ;;
         0) exit 0 ;;
     esac
 done
 EOF
-    # 将必要的函数声明注入 sb 命令中，确保持久化
     declare -f show_nodes >> /usr/local/bin/sb
-    declare -f write_config >> /usr/local/bin/sb
     declare -f pick_tls_domain >> /usr/local/bin/sb
     chmod +x /usr/local/bin/sb
 }
 
 # ==========================================
-# 6. 主执行流程 (融合 Argo 循环检测机制)
+# 7. 主逻辑
 # ==========================================
 main() {
+    detect_env
     clear
     echo "1. Hysteria2 (极致速度)"
-    echo "2. VLESS+Argo (全能穿透)"
-    echo "3. 双协议同时安装"
+    echo "2. VLESS+Argo (穿透)"
+    echo "3. 双协议安装"
     read -p "请选择: " INSTALL_MODE
 
-    detect_env
     optimize_system
 
-    # 安装内核 (代码A的稳定获取)
     TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
     curl -L "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${SBOX_ARCH}.tar.gz" | tar -xz -C /tmp
     install -m 755 /tmp/sing-box-*/sing-box /usr/bin/sing-box
 
-    if [[ "$INSTALL_MODE" =~ [23] ]]; then
-        curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${SBOX_ARCH}" -o /usr/bin/cloudflared
-        chmod +x /usr/bin/cloudflared
-    fi
+    [[ "$INSTALL_MODE" =~ [23] ]] && { curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${SBOX_ARCH}" -o /usr/bin/cloudflared && chmod +x /usr/bin/cloudflared; }
 
+    local UUID=$(cat /proc/sys/kernel/random/uuid)
     read -p "起始端口 [回车随机]: " B_PORT
     B_PORT=${B_PORT:-$((RANDOM % 50000 + 10000))}
-    write_config "$B_PORT"
+    
+    mkdir -p /etc/sing-box/certs
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/sing-box/certs/privkey.pem -out /etc/sing-box/certs/fullchain.pem -days 3650 -subj "/CN=$(pick_tls_domain)" >/dev/null 2>&1
 
-    # 系统服务设置 (集成 Alpine 启动逻辑)
-    if [[ "$OS_DISPLAY" == *"Alpine"* ]]; then
-        cat > /etc/local.d/sing-box.start <<EOF
-#!/bin/bash
-GOGC=$SBOX_GOGC GOMEMLIMIT=$SBOX_GOLIMIT /usr/bin/sing-box run -c $CONFIG_FILE &
-EOF
-        chmod +x /etc/local.d/sing-box.start
-        rc-update add local
-        /etc/local.d/sing-box.start
-    else
-        cat > /etc/systemd/system/sing-box.service <<EOF
-[Unit]
-Description=Sing-box Service
-After=network.target
-[Service]
-Environment=GOGC=$SBOX_GOGC GOMEMLIMIT=$SBOX_GOLIMIT GODEBUG=madvdontneed=1
-ExecStart=/usr/bin/sing-box run -c $CONFIG_FILE
-Restart=on-failure
-MemoryMax=$SBOX_MEM_MAX
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload && systemctl enable sing-box --now
+    local JSON='{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct"}]}'
+    [[ "$INSTALL_MODE" =~ [13] ]] && JSON=$(echo "$JSON" | jq ".inbounds += [{\"type\":\"hysteria2\",\"tag\":\"hy2-in\",\"listen\":\"::\",\"listen_port\":$B_PORT,\"users\":[{\"password\":\"$UUID\"}],\"tls\":{\"enabled\":true,\"alpn\":[\"h3\"],\"certificate_path\":\"/etc/sing-box/certs/fullchain.pem\",\"key_path\":\"/etc/sing-box/certs/privkey.pem\"}}]")
+    
+    if [[ "$INSTALL_MODE" =~ [23] ]]; then
+        local VP=$((B_PORT + 5)); [[ "$INSTALL_MODE" == "2" ]] && VP=$B_PORT
+        JSON=$(echo "$JSON" | jq ".inbounds += [{\"type\":\"vless\",\"tag\":\"vless-in\",\"listen\":\"127.0.0.1\",\"listen_port\":$VP,\"users\":[{\"uuid\":\"$UUID\"}],\"transport\":{\"type\":\"ws\",\"path\":\"/argo\"}}]")
     fi
+    echo "$JSON" | jq . > "$CONFIG_FILE"
 
-    # Argo 循环捕获逻辑 (借鉴代码B，优化稳定性)
+    setup_service
+
     if [[ "$INSTALL_MODE" =~ [23] ]]; then
         local VP=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' $CONFIG_FILE)
-        info "正在启动 Argo 并尝试捕获域名..."
-        local n=0
-        while true; do
-            n=$((n+1))
-            pkill cloudflared || true
-            nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$VP --no-autoupdate > "$ARGO_LOG" 2>&1 &
-            sleep 8
-            local domain=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "$ARGO_LOG" | head -1 | sed 's#https://##')
-            if [ -n "$domain" ]; then
-                echo "$domain" > /etc/sing-box/argo_domain.txt
-                succ "Argo 域名捕获成功: $domain"
-                break
-            fi
-            [ $n -eq 5 ] && { err "Argo 捕获超时，请检查网络！"; break; }
-            info "捕获失败，正在进行第 $n 次重试..."
-        done
+        nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$VP --no-autoupdate > "$ARGO_LOG" 2>&1 &
+        sleep 8
+        grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "$ARGO_LOG" | head -1 | sed 's#https://##' > /etc/sing-box/argo_domain.txt
     fi
 
     create_manager
