@@ -286,13 +286,14 @@ setup_service() {
     info "写入系统服务单元 (配额: $SBOX_MEM_MAX)..."
     local env_vars="GOGC=${SBOX_GOGC:-80} GOMEMLIMIT=$SBOX_GOLIMIT GODEBUG=madvdontneed=1"
     
-    # 提取当前配置中的 Argo 端口（如果存在）
-    local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' "$CONFIG_FILE" 2>/dev/null || echo "")
+    # --- 新增：提取 Argo 端口逻辑 ---
+    local A_PORT=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .listen_port' $CONFIG_FILE 2>/dev/null || echo "")
     local ARGO_CMD=""
+    # 如果检测到配置了 Argo 端口，则准备启动命令
     if [[ -n "$A_PORT" && "$A_PORT" != "null" ]]; then
-        # 注意：这里我们预先清理旧进程，防止端口冲突
         ARGO_CMD="ExecStartPost=/usr/bin/bash -c 'pkill cloudflared || true; nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$A_PORT --no-autoupdate > /etc/sing-box/argo.log 2>&1 &'"
     fi
+    # ----------------------------
 
     if [[ "$OS_DISPLAY" == *"Alpine"* ]]; then
         cat > /etc/init.d/sing-box <<EOF
@@ -303,15 +304,11 @@ command="/usr/bin/sing-box"
 command_args="run -c $CONFIG_FILE"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
-
+# Alpine 环境下的自动拉起逻辑
 start_post() {
     [ -n "$A_PORT" ] && pkill cloudflared || true
     [ -n "$A_PORT" ] && nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:$A_PORT --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
     return 0
-}
-
-stop_post() {
-    pkill cloudflared || true
 }
 EOF
         chmod +x /etc/init.d/sing-box
