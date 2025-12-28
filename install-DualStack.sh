@@ -321,7 +321,7 @@ EOF
 }
 
 # ==========================================
-# 9. sb 管理工具生成
+# 9. sb 管理工具生成 (修复版)
 # ==========================================
 create_manager() {
     local SHOW_NODES_CODE=$(declare -f show_nodes)
@@ -424,11 +424,10 @@ while true; do
                 fi
             done ;;
         4) 
-            # 传参 true 启用版本对比和更新完成提示
+            # 移除这里的 local，并对变量增加默认值处理
             install_sbox_kernel "true"
-            local ret=\$?
-            # 只有在真正下载了新版本(返回0)时才重启服务
-            [ \$ret -eq 0 ] && restart_svc
+            ret_code=\$?
+            [ "\$ret_code" -eq 0 ] && restart_svc
             read -p "按回车继续..." ;;
         5) restart_svc && succ "SingBox 服务已重启" && read -p "按回车继续..." ;;
         6) 
