@@ -13,6 +13,8 @@ SBOX_GOGC="70"
 SBOX_MEM_MAX="55M"
 SBOX_OPTIMIZE_LEVEL="未检测"
 INSTALL_MODE=""
+IPV4=""
+IPV6=""
 
 # TLS 伪装域名池
 TLS_DOMAIN_POOL=("www.bing.com" "www.microsoft.com" "download.windowsupdate.com" "www.icloud.com")
@@ -24,9 +26,10 @@ succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 
 # ==========================================
-# 2. 系统环境检测 (全实时回显)
+# 2. 系统环境检测 (先回显响应，后异步获取网络)
 # ==========================================
 detect_env() {
+    # 立即响应用户操作
     info "正在检测系统环境并安装依赖..."
     
     if [ -f /etc/os-release ]; then
@@ -52,14 +55,14 @@ detect_env() {
     done
     [ $n -eq 5 ] && n=0
     
-    # 移除静默，过程完全可见
-    ${LINUX_UPDATE[$n]}
-    ${LINUX_INSTALL[$n]} curl jq openssl tar bash procps iproute2
+    # 执行静默更新
+    ${LINUX_UPDATE[$n]} >/dev/null 2>&1 || true
+    ${LINUX_INSTALL[$n]} curl jq openssl tar bash procps iproute2 >/dev/null 2>&1 || true
 
-    # --- 快速 IP 检测 (灵敏版) ---
-    info "正在抓取公网 IP..."
-    IPV4=$(curl -s4m 3 https://1.1.1.1/cdn-cgi/trace | awk -F= '/ip/ {print $2}' || curl -s4m 3 api.ipify.org || echo "")
-    IPV6=$(curl -s6m 3 https://[2606:4700:4700::1111]/cdn-cgi/trace | awk -F= '/ip/ {print $2}' || curl -s6m 3 api6.ipify.org || echo "")
+    # 获取公网 IP (限时 2s)
+    info "正在获取网络信息..."
+    IPV4=$(curl -s4m 2 https://1.1.1.1/cdn-cgi/trace | awk -F= '/ip/ {print $2}' || curl -s4m 2 api.ipify.org || echo "")
+    IPV6=$(curl -s6m 2 https://[2606:4700:4700::1111]/cdn-cgi/trace | awk -F= '/ip/ {print $2}' || curl -s6m 2 api6.ipify.org || echo "")
 }
 
 # ==========================================
@@ -70,19 +73,19 @@ install_sbox_kernel() {
     [ -f "/usr/bin/sing-box" ] && CURRENT_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}' || echo "")
     
     info "正在获取 Sing-box 最新版本..."
-    local TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+    local TAG=$(curl -s --connect-timeout 2 https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
     local LATEST_VER="${TAG#v}"
 
     if [[ "$CURRENT_VER" == "$LATEST_VER" ]]; then
-        info "当前版本 v$CURRENT_VER 已是最新，跳过下载。"
-        return 1 # 返回 1 表示未更新
+        info "当前版本 v$CURRENT_VER 已是最新。"
+        return 1 # 未更新
     else
         info "正在更新内核: v${CURRENT_VER:-0.0.0} -> v$LATEST_VER ($SBOX_ARCH)..."
         curl -L "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${LATEST_VER}-linux-${SBOX_ARCH}.tar.gz" | tar -xz -C /tmp
         install -m 755 /tmp/sing-box-*/sing-box /usr/bin/sing-box
         rm -rf /tmp/sing-box-*
         info "内核已部署"
-        return 0 # 返回 0 表示已更新
+        return 0 # 已更新
     fi
 }
 
@@ -208,7 +211,7 @@ EOF
 }
 
 # ==========================================
-# 6. 信息展示面板 (全量还原版)
+# 6. 信息展示面板 (优化版：静态IP调用)
 # ==========================================
 show_nodes() {
     local SB_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}' || echo "未安装")
@@ -260,7 +263,10 @@ SBOX_ARCH="$SBOX_ARCH"
 OS_DISPLAY="$OS_DISPLAY"
 SBOX_OPTIMIZE_LEVEL="$SBOX_OPTIMIZE_LEVEL"
 
-# 日志输出函数
+# 注入缓存 IP，彻底消除菜单响应延迟
+IPV4="$IPV4"
+IPV6="$IPV6"
+
 info() { echo -e "\033[1;34m[INFO]\033[0m \$*"; }
 
 $SHOW_NODES_CODE
@@ -272,9 +278,6 @@ restart_svc() {
 }
 
 while true; do
-    IPV4=\$(curl -s4m 2 https://1.1.1.1/cdn-cgi/trace | awk -F= '/ip/ {print \$2}' || echo "")
-    IPV6=\$(curl -s6m 2 https://[2606:4700:4700::1111]/cdn-cgi/trace | awk -F= '/ip/ {print \$2}' || echo "")
-    
     echo -e "\n\033[1;36m==============================\033[0m"
     echo "    Sing-box 管理面板 (sb)"
     echo "=============================="
