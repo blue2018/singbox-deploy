@@ -361,14 +361,17 @@ refresh_argo_context() {
 # ==========================================
 # 9. sb 管理工具生成 (修复版)
 # ==========================================
+# ==========================================
+# 9. sb 管理工具生成 (修复版)
+# ==========================================
 create_manager() {
     local SHOW_NODES_CODE=$(declare -f show_nodes)
     local SHOW_SINGLE_CODE=$(declare -f show_single_node)
     local INSTALL_KERNEL_CODE=$(declare -f install_sbox_kernel)
     local READ_PORT_CODE=$(declare -f read_port)
     local ARGO_WAIT_CODE=$(declare -f wait_argo_domain)
-    # 关键：必须把这个函数也导出来，否则 sb 菜单选 5 会报错
-    local REFRESH_CODE=$(declare -f refresh_argo_context)
+    # 关键点 1：导出恢复函数
+    local REFRESH_ARGO_CODE=$(declare -f refresh_argo_context)
 
     cat > /usr/local/bin/sb <<EOF
 #!/usr/bin/env bash
@@ -379,6 +382,7 @@ SBOX_OPTIMIZE_LEVEL="$SBOX_OPTIMIZE_LEVEL"
 IPV4="$IPV4"
 IPV6="$IPV6"
 ARGO_LOG="/etc/sing-box/argo.log"
+
 # 定义颜色
 CYAN='\033[1;36m'
 YELLOW='\033[1;33m'
@@ -393,7 +397,7 @@ $SHOW_SINGLE_CODE
 $INSTALL_KERNEL_CODE
 $READ_PORT_CODE
 $ARGO_WAIT_CODE
-$REFRESH_CODE
+$REFRESH_ARGO_CODE
 
 restart_svc() {
     if command -v systemctl >/dev/null 2>&1; then
@@ -477,7 +481,8 @@ while true; do
             read -p "按回车继续..." ;;
         4) install_sbox_kernel "true" && restart_svc && read -p "按回车继续..." ;;
         5)
-            restart_svc
+            # 关键点 2：添加你要求的提示文案
+            restart_svc && succ "SingBox 服务已重启"
             refresh_argo_context
             read -p "按回车继续..." ;;
         6)
