@@ -370,7 +370,6 @@ create_manager() {
     local INSTALL_KERNEL_CODE=$(declare -f install_sbox_kernel)
     local READ_PORT_CODE=$(declare -f read_port)
     local ARGO_WAIT_CODE=$(declare -f wait_argo_domain)
-    # 关键点 1：导出恢复函数
     local REFRESH_ARGO_CODE=$(declare -f refresh_argo_context)
 
     cat > /usr/local/bin/sb <<EOF
@@ -481,7 +480,6 @@ while true; do
             read -p "按回车继续..." ;;
         4) install_sbox_kernel "true" && restart_svc && read -p "按回车继续..." ;;
         5)
-            # 关键点 2：添加你要求的提示文案
             restart_svc && succ "SingBox 服务已重启"
             refresh_argo_context
             read -p "按回车继续..." ;;
