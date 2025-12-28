@@ -75,12 +75,14 @@ install_sbox_kernel() {
 
     if [[ "$CURRENT_VER" == "$LATEST_VER" ]]; then
         info "当前版本 v$CURRENT_VER 已是最新，跳过下载。"
+        return 1 # 返回 1 表示未更新
     else
         info "正在更新内核: v${CURRENT_VER:-0.0.0} -> v$LATEST_VER ($SBOX_ARCH)..."
         curl -L "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${LATEST_VER}-linux-${SBOX_ARCH}.tar.gz" | tar -xz -C /tmp
         install -m 755 /tmp/sing-box-*/sing-box /usr/bin/sing-box
         rm -rf /tmp/sing-box-*
         info "内核已部署"
+        return 0 # 返回 0 表示已更新
     fi
 }
 
@@ -248,7 +250,6 @@ show_nodes() {
 # 7. sb 管理工具生成
 # ==========================================
 create_manager() {
-    # 提取函数内容并保留注释（使用 sed 去掉每一行前可能的空格，保持格式）
     local SHOW_NODES_CODE=$(declare -f show_nodes)
     local INSTALL_KERNEL_CODE=$(declare -f install_sbox_kernel)
 
@@ -259,7 +260,7 @@ SBOX_ARCH="$SBOX_ARCH"
 OS_DISPLAY="$OS_DISPLAY"
 SBOX_OPTIMIZE_LEVEL="$SBOX_OPTIMIZE_LEVEL"
 
-# 日志输出函数（供内核更新使用）
+# 日志输出函数
 info() { echo -e "\033[1;34m[INFO]\033[0m \$*"; }
 
 $SHOW_NODES_CODE
@@ -271,7 +272,6 @@ restart_svc() {
 }
 
 while true; do
-    # 快速获取 IP (灵敏版)
     IPV4=\$(curl -s4m 2 https://1.1.1.1/cdn-cgi/trace | awk -F= '/ip/ {print \$2}' || echo "")
     IPV6=\$(curl -s6m 2 https://[2606:4700:4700::1111]/cdn-cgi/trace | awk -F= '/ip/ {print \$2}' || echo "")
     
@@ -303,27 +303,34 @@ while true; do
             if [ "\$add_opt" == "1" ]; then
                 read -p "端口: " NP && NP=\${NP:-\$((RANDOM % 50000 + 10000))}
                 jq ".inbounds += [{\"type\":\"hysteria2\",\"tag\":\"hy2-in\",\"listen\":\"::\",\"listen_port\":\$NP,\"users\":[{\"password\":\"\$UUID\"}],\"tls\":{\"enabled\":true,\"alpn\":[\"h3\"],\"certificate_path\":\"/etc/sing-box/certs/fullchain.pem\",\"key_path\":\"/etc/sing-box/certs/privkey.pem\"}}]" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
-                restart_svc
+                restart_svc && echo "Hy2 协议已添加"
             elif [ "\$add_opt" == "2" ]; then
                 AP=\$((RANDOM % 50000 + 10000))
                 curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-\$SBOX_ARCH" -o /usr/bin/cloudflared && chmod +x /usr/bin/cloudflared
                 jq ".inbounds += [{\"type\":\"vless\",\"tag\":\"vless-in\",\"listen\":\"127.0.0.1\",\"listen_port\":\$AP,\"users\":[{\"uuid\":\"\$UUID\"}],\"transport\":{\"type\":\"ws\",\"path\":\"/argo\"}}]" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
                 nohup /usr/bin/cloudflared tunnel --url http://127.0.0.1:\$AP --no-autoupdate > /etc/sing-box/argo.log 2>&1 &
-                restart_svc
+                restart_svc && echo "Argo 协议已添加"
             fi
-            ;;
-        2) show_nodes && read -p "回车继续..." ;;
+            read -p "回车返回菜单..." ;;
+        2) show_nodes && read -p "回车返回菜单..." ;;
         3)
+            echo -e "\n--- 更改端口 ---"
             echo "1. Hy2 端口"
             echo "2. Argo 端口"
+            echo "0. 返回上级"
             read -p "选择: " p_opt
+            [ "\$p_opt" == "0" ] && continue
             read -p "新端口: " NP
             [ "\$p_opt" == "1" ] && tag="hy2-in" || tag="vless-in"
             jq "(.inbounds[] | select(.tag==\"\$tag\") | .listen_port) = \$NP" \$CONFIG_FILE > tmp.json && mv tmp.json \$CONFIG_FILE
-            restart_svc
-            ;;
-        4) install_sbox_kernel && restart_svc && read -p "回车继续..." ;;
-        5) restart_svc && echo "服务已重启" ;;
+            restart_svc && echo "端口已更新为 \$NP"
+            read -p "回车返回菜单..." ;;
+        4) 
+            if install_sbox_kernel; then
+                restart_svc && echo "内核已更新并重启服务"
+            fi
+            read -p "回车返回菜单..." ;;
+        5) restart_svc && echo "服务已重启" && read -p "回车返回菜单..." ;;
         6) rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb && echo "已卸载" && exit 0 ;;
         0) exit 0 ;;
     esac
