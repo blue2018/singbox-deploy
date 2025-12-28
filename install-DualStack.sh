@@ -365,30 +365,44 @@ while true; do
     echo "5) 重启服务"
     echo "6) 卸载脚本"
     echo "0) 退出"
-    # 这里的 -r 防止转义，-e 允许在某些环境下更智能地处理输入
+    
     read -r -p "请选择 [0-6]: " opt
-        # 优化建议：使用 Bash 原生方式剔除前后空格，比 xargs 更快且无需担心子 shell 环境问题
-        opt="${opt#"${opt%%[![:space:]]*}"}"
-        opt="${opt%"${opt##*[![:space:]]}"}"
-        # 逻辑判断：如果输入为空
-        if [[ -z "$opt" ]]; then
-            echo -e "\033[1;31m输入有误，请重新输入\033[0m"
-            sleep 1
-            continue
-        fi
+    # 清理输入的前后空格
+    opt=\$(echo "\$opt" | xargs echo -n 2>/dev/null || echo "\$opt")
+    
+    if [[ -z "\$opt" ]]; then
+        echo -e "\033[1;31m输入有误，请重新输入\033[0m"
+        sleep 1
+        continue
+    fi
 
     case "\$opt" in
         1)
             HAS_HY2=\$(jq -r '.inbounds[] | select(.tag=="hy2-in") | .tag' \$CONFIG_FILE 2>/dev/null || echo "")
             HAS_ARGO=\$(jq -r '.inbounds[] | select(.tag=="vless-in") | .tag' \$CONFIG_FILE 2>/dev/null || echo "")
+            
+            # 协议满载检测
+            if [[ -n "\$HAS_HY2" && -n "\$HAS_ARGO" ]]; then
+                echo -e "\n\033[1;33m[提示] Hysteria2 和 VLESS+Argo 协议均已安装，无需重复添加。\033[0m"
+                read -p "按回车继续..."
+                continue
+            fi
+
             echo -e "\n--- 可添加协议 ---"
             [ -z "\$HAS_HY2" ] && echo "1. Hysteria2"
             [ -z "\$HAS_ARGO" ] && echo "2. VLESS+Argo"
             echo "0. 返回上级"
             
             while true; do
-                read -p "选择: " add_opt
+                read -r -p "选择: " add_opt
+                add_opt=\$(echo "\$add_opt" | xargs echo -n 2>/dev/null || echo "\$add_opt")
+                
                 [ "\$add_opt" == "0" ] && break
+                if [[ -z "\$add_opt" ]]; then
+                    echo -e "\033[1;31m输入不能为空\033[0m"
+                    continue
+                fi
+
                 if [[ "\$add_opt" == "1" && -z "\$HAS_HY2" ]]; then
                     NP=\$(read_port "设置端口" "\$((RANDOM % 50000 + 10000))")
                     UUID=\$(jq -r '.inbounds[0].users[0].password // .inbounds[0].users[0].uuid' \$CONFIG_FILE 2>/dev/null || cat /proc/sys/kernel/random/uuid)
@@ -416,7 +430,8 @@ while true; do
             opts=(); [ -n "\$HAS_HY2" ] && echo "1. Hysteria2 端口" && opts+=(1); [ -n "\$HAS_ARGO" ] && echo "2. Argo 端口" && opts+=(2); echo "0. 返回上级"
             
             while true; do
-                read -p "选择: " p_opt
+                read -r -p "选择: " p_opt
+                p_opt=\$(echo "\$p_opt" | xargs echo -n 2>/dev/null || echo "\$p_opt")
                 [ "\$p_opt" == "0" ] && break
                 if [[ " \${opts[@]} " =~ " \$p_opt " ]]; then
                     NP=\$(read_port "请输入新端口号" "\$((RANDOM % 50000 + 10000))")
@@ -434,14 +449,13 @@ while true; do
                 fi
             done ;;
         4) 
-            # 移除这里的 local，并对变量增加默认值处理
             install_sbox_kernel "true"
             ret_code=\$?
             [ "\$ret_code" -eq 0 ] && restart_svc
             read -p "按回车继续..." ;;
         5) restart_svc && succ "SingBox 服务已重启" && read -p "按回车继续..." ;;
         6) 
-            read -p "确认卸载？[y/N]: " un_confirm
+            read -r -p "确认卸载？[y/N]: " un_confirm
             if [[ "\$un_confirm" =~ ^[Yy]$ ]]; then
                 info "正在卸载 SingBox 相关组件..."
                 systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true
