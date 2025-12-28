@@ -254,7 +254,7 @@ show_single_node() {
         local A_UUID=$(jq -r '.inbounds[] | select(.tag=="vless-in") | .users[0].uuid' $CONFIG_FILE)
         local A_DOM=$(cat /etc/sing-box/argo_domain.txt 2>/dev/null || echo "等待捕获...")
         echo -e "\n\033[1;36m[VLESS+Argo 节点配置]\033[0m   转发端口: \033[1;33m$A_PORT\033[0m"
-        echo -e "Argo链接:\n\033[1;32mvless://$A_UUID@$A_DOM:443?encryption=none&security=tls&sni=$A_DOM&type=ws&host=$A_DOM&path=%2Fargo#VLESS_Argo_${HOST_NAME}\033[0m"
+        echo -e "Argo链接:\n\033[1;32mvless://$A_UUID@$A_DOM:443?encryption=none&security=tls&sni=$A_DOM&fp=chrome&type=ws&host=$A_DOM&path=%2Fargo#VLESS_Argo_${HOST_NAME}\033[0m"
     fi
 }
 
