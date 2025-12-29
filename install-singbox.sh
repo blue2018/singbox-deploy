@@ -376,12 +376,14 @@ create_config() {
     local PSK
     if [ -f /etc/sing-box/config.json ]; then
         PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
+    elif command -v uuidgen >/dev/null 2>&1; then
+        PSK=$(uuidgen)
+    elif [ -f /proc/sys/kernel/random/uuid ]; then
+        PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
     else
-        if [ -f /proc/sys/kernel/random/uuid ]; then
-            PSK=$(cat /proc/sys/kernel/random/uuid)
-        else
-            PSK=$(printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
-        fi
+        # 兜底：使用 openssl 生成符合标准 UUID 格式的随机数
+        local seed=$(openssl rand -hex 16)
+        PSK="${seed:0:8}-${seed:8:4}-${seed:12:4}-${seed:16:4}-${seed:20:12}"
     fi
     
     # 3. 写入 Sing-box 配置文件
