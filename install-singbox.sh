@@ -505,7 +505,7 @@ while true; do
     opt=$(echo "$opt" | xargs echo -n 2>/dev/null || echo "$opt")
     # 优化后的检测逻辑：如果为空，或者不是 0-6 的数字
     if [[ -z "$opt" ]] || [[ ! "$opt" =~ ^[0-6]$ ]]; then
-        echo -e "\033[1;31m输入有误 [$opt]，请输入 0 到 6 之间的数字\033[0m"
+        echo -e "\033[1;31m输入有误 [$opt]，请重新输入\033[0m"
         sleep 1.5
         continue
     fi
@@ -540,7 +540,6 @@ while true; do
            fi
            ;;
         0) exit 0 ;;
-        *) echo -e "\033[1;31m输入有误，请重新输入\033[0m" ;;
     esac
 done
 EOF
