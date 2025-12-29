@@ -415,8 +415,7 @@ display_links() {
         return
     fi
 
-    echo -e "\n\033[1;32m[节点访问信息]\033[0m"
-    echo -e "当前端口: \033[1;33m${RAW_PORT}\033[0m"
+    echo -e "\n\n\033[1;32m[节点信息]\033[0m \033[1;34m||\033[0m 运行端口: \033[1;33m${RAW_PORT}\033[0m"
 
     if [ -n "${RAW_IP4:-}" ]; then
         LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v4"
