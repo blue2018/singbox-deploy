@@ -202,7 +202,7 @@ install_singbox() {
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')
 
     info "正在连接 GitHub API 获取版本信息..."
-    # 获取版本，限时 8 秒
+    # 获取版本，限时 15 秒
     local RELEASE_JSON=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
     local LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "null")
 
@@ -232,7 +232,7 @@ install_singbox() {
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
     local TMP_D=$(mktemp -d)
     
-    # 核心修改点：8秒限时下载，3次重试
+    # 核心修改点：15秒限时下载，3次重试
     info "开始下载内核..."
     if curl -fL --retry 3 --retry-delay 2 --max-time 15 "$URL" -o "$TMP_D/sb.tar.gz"; then
         tar -xf "$TMP_D/sb.tar.gz" -C "$TMP_D"
