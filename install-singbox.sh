@@ -29,11 +29,13 @@ err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
 succ() { echo -e "\033[1;32m[OK]\033[0m $*"; }
 
 
-# OSC 52 自动复制到剪贴板函数
+# OSC 52 自动复制到剪贴板函数 (支持多行)
 copy_to_clipboard() {
     local content="$1"
     if [ -n "${SSH_TTY:-}" ] || [ -n "${DISPLAY:-}" ]; then
-        echo -ne "\033]52;c;$(echo -n "$content" | base64 | tr -d '\r\n')\a"
+        # %b 允许 printf 解析字符串中的 \n
+        local b64_content=$(printf "%b" "$content" | base64 | tr -d '\r\n')
+        echo -ne "\033]52;c;${b64_content}\a"
         echo -e "\033[1;32m[复制]\033[0m 节点链接已自动推送到本地剪贴板"
     fi
 }
@@ -342,9 +344,13 @@ EOF
 }
 
 
-# 显示信息
+# 显示信息 (支持 IPv4/IPv6 双链接)
 show_info() {
-    local IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
+    info "正在检测双栈网络环境..."
+    # 分别获取 IPv4 和 IPv6，缩短超时时间提高响应速度
+    local IP4=$(curl -s4 --max-time 2 https://api.ipify.org || echo "")
+    local IP6=$(curl -s6 --max-time 2 https://api6.ipify.org || echo "")
+    
     local VER_INFO=$(/usr/bin/sing-box version | head -n1)
     local CONFIG="/etc/sing-box/config.json"
     
@@ -355,22 +361,56 @@ show_info() {
     local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG")
     local SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' || echo "unknown")
     
-    local LINK="hy2://$PSK@$IP:$PORT/?sni=$SNI&alpn=h3&insecure=1#$(hostname)"
-    
+    local LINK_V4=""
+    local LINK_V6=""
+    local FULL_CLIPBOARD=""
+
     echo -e "\n\033[1;34m==========================================\033[0m"
     echo -e "\033[1;37m        Sing-box HY2 节点详细信息\033[0m"
     echo -e "\033[1;34m==========================================\033[0m"
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
-    echo -e "公网地址: \033[1;33m$IP\033[0m"
     echo -e "运行端口: \033[1;33m$PORT\033[0m"
     echo -e "伪装 SNI: \033[1;33m$SNI\033[0m"
+    
+    # --- 逻辑判断与明文 IP 显示 ---
+    if [ -n "$IP4" ]; then
+        echo -e "IPv4 地址: \033[1;33m$IP4\033[0m"
+        LINK_V4="hy2://$PSK@$IP4:$PORT/?sni=$SNI&alpn=h3&insecure=1#$(hostname)_v4"
+        FULL_CLIPBOARD="$LINK_V4"
+    fi
+    if [ -n "$IP6" ]; then
+        echo -e "IPv6 地址: \033[1;33m$IP6\033[0m"
+        LINK_V6="hy2://$PSK@[$IP6]:$PORT/?sni=$SNI&alpn=h3&insecure=1#$(hostname)_v6"
+        # 如果 v4 也存在，则换行拼接
+        if [ -n "$FULL_CLIPBOARD" ]; then
+            FULL_CLIPBOARD="${FULL_CLIPBOARD}\n${LINK_V6}"
+        else
+            FULL_CLIPBOARD="$LINK_V6"
+        fi
+    fi
+
     echo -e "\033[1;34m------------------------------------------\033[0m"
-    echo -e "\033[1;32m$LINK\033[0m"
+    # --- 按需显示链接区 ---
+    if [ -n "$LINK_V4" ]; then
+        echo -e "\033[1;35m[ IPv4 节点链接 ]\033[0m"
+        echo -e "$LINK_V4\n"
+    fi
+    if [ -n "$LINK_V6" ]; then
+        echo -e "\033[1;36m[ IPv6 节点链接 ]\033[0m"
+        echo -e "$LINK_V6"
+    fi
+    # 如果两个都没有（极端情况）
+    if [ -z "$LINK_V4" ] && [ -z "$LINK_V6" ]; then
+        echo -e "\033[1;31m警告: 未检测到任何公网 IP 地址，请检查网络！\033[0m"
+    fi
     echo -e "\033[1;34m==========================================\033[0m\n"
     
-    copy_to_clipboard "$LINK"
+    # 执行剪贴板推送
+    if [ -n "$FULL_CLIPBOARD" ]; then
+        copy_to_clipboard "$FULL_CLIPBOARD"
+    fi
 }
 
 
