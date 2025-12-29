@@ -90,7 +90,7 @@ optimize_system() {
     # --- 1. 内存检测逻辑 (多路侦测) ---
     local mem_total=64
     local mem_cgroup=0
-    local mem_free=$(free -m | awk '/Mem:/ {print $2}')
+    local mem_host_total=$(free -m | awk '/Mem:/ {print $2}')
     
     # 路径 A: Cgroup v1 (常用)
     if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
@@ -106,10 +106,10 @@ optimize_system() {
     fi
 
     # 逻辑判断：如果 Cgroup 探测到了且数值在合理范围，则以它为准
-    if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_free" ]; then
+    if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_host_total" ]; then
         mem_total=$mem_cgroup
     else
-        mem_total=$mem_free
+        mem_total=$mem_host_total
     fi
 
     # 兜底：防止极端情况获取到 0 或异常大值
