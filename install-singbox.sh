@@ -74,96 +74,124 @@ detect_os() {
 }
 
 
-# 系统内核优化 (64M/128M/256M/512M 阶梯差异化调优)
+# 系统内核优化 (针对 64M/128M/256M/512M 阶梯优化 - 全维度增强版)
 optimize_system() {
-    # --- 1. 内存检测逻辑 (沿用你原有的多路侦测) ---
+    # --- 1. 内存检测逻辑 (保留多路侦测) ---
     local mem_total=64
     local mem_free=$(free -m | awk '/Mem:/ {print $2}')
+    
+    # 路径 A & B: Cgroup 侦测 (针对容器环境)
     if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
-        local m_cgroup=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
-        [ "$m_cgroup" -gt 0 ] && [ "$m_cgroup" -le "$mem_free" ] && mem_total=$m_cgroup
+        local m_limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+        [ "$m_limit" -lt 9223372036854771712 ] && mem_total=$((m_limit / 1024 / 1024)) || mem_total=$mem_free
     elif [ -f /sys/fs/cgroup/memory.max ]; then
         local m_max=$(cat /sys/fs/cgroup/memory.max)
-        [[ "$m_max" =~ ^[0-9]+$ ]] && [ "$((m_max / 1048576))" -le "$mem_free" ] && mem_total=$((m_max / 1048576))
+        [[ "$m_max" =~ ^[0-9]+$ ]] && mem_total=$((m_max / 1024 / 1024)) || mem_total=$mem_free
     else
         mem_total=$mem_free
     fi
-    [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ] && mem_total=64
+
+    # 兜底：防止异常大值
+    if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=$mem_free; fi
     info "检测到系统可用内存: ${mem_total} MB"
 
-    # --- 2. 注入差异化优化变量 (含窗口与优先级) ---
-    local go_limit gogc udp_buffer rx_conn rx_total cpu_pri mem_level
+    # --- 2. 激进版阶梯变量矩阵 (核心优化策略) ---
+    local init_cwnd="15"
+    local swap_target=0
+
     if [ "$mem_total" -ge 450 ]; then
-        go_limit="420MiB"; gogc="110"; udp_buffer="134217728"
-        rx_conn="10485760"; rx_total="31457280"; cpu_pri="0"; mem_level="512M (爆发版)"
+        SBOX_OPTIMIZE_LEVEL="512M (极致吞吐版)"
+        SBOX_GOLIMIT="420MiB"; SBOX_GOGC="110"
+        SBOX_UDP_BUF="134217728"   # 128MB 内核缓冲
+        SBOX_HY2_WIN="67108864"    # 64MB QUIC 连结窗口
+        SBOX_HY2_STR="16777216"    # 16MB 单流窗口
+        init_cwnd="20"             # 激进起跑，目标 300Mbps+
+        SBOX_CPU_PRIO="-10"        # 较高 CPU 优先级
+        swap_target=128            # 象征性兜底
     elif [ "$mem_total" -ge 200 ]; then
-        go_limit="210MiB"; gogc="100"; udp_buffer="67108864"
-        rx_conn="5242880"; rx_total="15728640"; cpu_pri="-5"; mem_level="256M (瞬时版)"
+        SBOX_OPTIMIZE_LEVEL="256M (瞬时爆发版)"
+        SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
+        SBOX_UDP_BUF="67108864"    # 64MB
+        SBOX_HY2_WIN="33554432"    # 32MB
+        SBOX_HY2_STR="8388608"     # 8MB
+        init_cwnd="18"
+        SBOX_CPU_PRIO="-5"
+        swap_target=256
     elif [ "$mem_total" -ge 100 ]; then
-        go_limit="100MiB"; gogc="85"; udp_buffer="33554432"
-        rx_conn="2097152"; rx_total="8388608"; cpu_pri="-10"; mem_level="128M (激进版)"
+        SBOX_OPTIMIZE_LEVEL="128M (激进优化版)"
+        SBOX_GOLIMIT="100MiB"; SBOX_GOGC="80"
+        SBOX_UDP_BUF="33554432"    # 32MB
+        SBOX_HY2_WIN="16777216"    # 16MB
+        SBOX_HY2_STR="4194304"     # 4MB
+        init_cwnd="15"
+        SBOX_CPU_PRIO="0"
+        swap_target=256
     else
-        go_limit="52MiB"; gogc="70"; udp_buffer="16777216"
-        rx_conn="1048576"; rx_total="4194304"; cpu_pri="-15"; mem_level="64M (极限版)"
+        SBOX_OPTIMIZE_LEVEL="64M (极限生存版)"
+        SBOX_GOLIMIT="52MiB"; SBOX_GOGC="70"
+        SBOX_UDP_BUF="16777216"    # 16MB
+        SBOX_HY2_WIN="8388608"     # 8MB
+        SBOX_HY2_STR="2097152"     # 2MB
+        init_cwnd="12"             # 小内存保守起跑，防止缓冲区瞬间爆仓
+        SBOX_CPU_PRIO="0"
+        swap_target=512            # 强力 Swap 支撑生命
     fi
 
-    SBOX_GOLIMIT="$go_limit"
-    SBOX_GOGC="$gogc"
-    SBOX_RX_CONN="$rx_conn"
-    SBOX_RX_TOTAL="$rx_total"
-    SBOX_CPU_PRI="$cpu_pri"
+    # 统一内存限制（物理内存的 92%）
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
-    SBOX_OPTIMIZE_LEVEL="$mem_level"
+    info "应用 ${SBOX_OPTIMIZE_LEVEL} 策略 (UDP缓冲: $((SBOX_UDP_BUF/1024/1024))MB)"
 
-    # --- 3. Swap 逻辑 (保持原样) ---
+    # --- 3. Swap 阶梯补全 (针对小内存) ---
     if [ "$OS" != "alpine" ]; then
-        local swap_total=$(free -m | awk '/Swap:/ {print $2}')
-        if [ "$swap_total" -lt 10 ] && [ "$mem_total" -lt 150 ]; then
-            warn "创建救急 Swap..."
-            fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null
-            chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+        local current_swap=$(free -m | awk '/Swap:/ {print $2}')
+        if [ "$current_swap" -lt 50 ]; then
+            warn "内存受限，正在创建 ${swap_target}MB 救急 Swap..."
+            if fallocate -l ${swap_target}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$swap_target 2>/dev/null; then
+                chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+                grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+                succ "Swap 部署完成。"
+            fi
         fi
     fi
 
-    # --- 4. 内核调优 (保持原有激进参数，整合 BBR+FQ) ---
-    modprobe tcp_bbr >/dev/null 2>&1 || true
+    # --- 4. BBRv3 探测与内核精调 ---
+    local current_bbr="bbr"
+    # 自动探测内核是否支持 bbr3 (需内核 6.4+ 或补丁)
+    sysctl net.ipv4.tcp_available_congestion_control | grep -q "bbr3" && current_bbr="bbr3"
+    
     cat > /etc/sysctl.conf <<SYSCTL
+# 响应优化：禁止空闲慢启动
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_fastopen = 3
+# 队列容量优化
 net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 8192
-net.core.rmem_max = $udp_buffer
-net.core.wmem_max = $udp_buffer
-net.ipv4.udp_mem = 131072 262144 524288
-net.ipv4.udp_rmem_min = 32768
-net.ipv4.udp_wmem_min = 32768
+# 动态 UDP 缓冲区
+net.core.rmem_max = $SBOX_UDP_BUF
+net.core.wmem_max = $SBOX_UDP_BUF
+net.ipv4.udp_mem = 65536 131072 $((SBOX_UDP_BUF / 4096 * 2))
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+# 拥塞控制：BBR + FQ
 net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_congestion_control = $current_bbr
 vm.swappiness = 10
 SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
-    # --- 5. InitCWND 黄金平衡 (15) 状态反馈版 ---
-    if command -v ip >/dev/null; then
-        local default_route=$(ip route show default | head -n1)
-        if [[ $default_route == *"via"* ]]; then
-            # 捕获可能的错误信息
-            local err_output
-            if err_output=$(ip route change $default_route initcwnd 15 initrwnd 15 2>&1); then
-                succ "InitCWND 优化成功: 初始窗口已设为 15"
-            else
-                # 根据错误类型给出针对性提示
-                if [[ "$err_output" == *"Operation not permitted"* ]]; then
-                    warn "InitCWND 优化跳过: 容器权限不足 (Operation not permitted)"
-                else
-                    warn "InitCWND 优化未生效: $err_output"
-                fi
-            fi
+    # --- 5. InitCWND 黄金爆发调整 ---
+    local default_route=$(ip route show default | head -n1)
+    if [[ $default_route == *"via"* ]]; then
+        # 执行调整
+        ip route change $default_route initcwnd $init_cwnd initrwnd $init_cwnd 2>/dev/null || true
+        # 校验结果
+        local check_cwnd=$(ip route show default | grep -oE "initcwnd [0-9]+" | awk '{print $2}' || echo "")
+        if [ "$check_cwnd" = "$init_cwnd" ]; then
+            succ "InitCWND 已优化为 $init_cwnd"
         else
-            warn "InitCWND 优化跳过: 未发现有效的默认路由"
+            warn "系统环境限制，InitCWND 保持默认 (不影响使用)"
         fi
     fi
-    info "应用 ${mem_level} 优化完毕"
 }
 
 
@@ -290,26 +318,29 @@ generate_cert() {
 }
 
 
-# 生成 Sing-box 配置文件
+# 生成 Sing-box 配置文件 (注入 QUIC Pacing 与动态窗口)
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
-    # 保持你原有的端口和 PSK 逻辑，确保 UUID 格式正确
+    # [端口确定逻辑]
     if [ -z "$PORT_HY2" ]; then
-        [ -f /etc/sing-box/config.json ] && PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json) || PORT_HY2=$(shuf -i 10000-60000 -n 1)
+        if [ -f /etc/sing-box/config.json ]; then
+            PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
+        else
+            PORT_HY2=$(shuf -i 10000-60000 -n 1)
+        fi
     fi
+
+    # [PSK 确定逻辑]
     local PSK
     if [ -f /etc/sing-box/config.json ]; then
         PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
     else
-        [ -f /proc/sys/kernel/random/uuid ] && PSK=$(cat /proc/sys/kernel/random/uuid) || PSK=$(printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
+        PSK=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
     fi
-
-    # 注入新版性能变量 (容错处理)
-    local rx_c="${SBOX_RX_CONN:-1048576}"
-    local rx_t="${SBOX_RX_TOTAL:-4194304}"
-
+    
+    # [写入配置文件]
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -320,35 +351,37 @@ create_config() {
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": true,
-    "recv_window_conn": $rx_c,
-    "recv_window": $rx_t,
+    "up_mbps": 300,
+    "down_mbps": 300,
     "tls": {
       "enabled": true,
       "alpn": ["h3"],
-      "max_early_data": 2048,
       "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-      "key_path": "/etc/sing-box/certs/privkey.pem"
+      "key_path": "/etc/sing-box/certs/privkey.pem",
+      "max_early_data": 2048
     },
-    "transport": {
-      "type": "udp",
-      "path_mtu_discovery": true
-    }
+    "quic": {
+      "pacing": true,
+      "gauss_congestion_control": true,
+      "amp_factor": 1.1
+    },
+    "recv_window_conn": $SBOX_HY2_WIN,
+    "recv_window": $SBOX_HY2_STR
   }],
-  "outbounds": [{ "type": "direct", "tag": "direct-out" }]
+  "outbounds": [{ "type": "direct", "tag": "direct-out" }],
+  "transport": {
+    "path_mtu_discovery": true
+  }
 }
 EOF
     chmod 600 "/etc/sing-box/config.json"
 }
 
 
-# 配置系统服务 (应用阶梯优化变量)
+# 配置系统服务 (应用阶梯调度优化)
 setup_service() {
-    # 关键防错：如果在修改端口等操作中漏掉了变量，这里自动补算一次
-    [ -z "${SBOX_GOLIMIT:-}" ] && optimize_system >/dev/null 2>&1
-
-    info "配置系统服务并启动 (限制: $SBOX_MEM_MAX)..."
+    info "配置系统服务并启动 (资源限额: $SBOX_MEM_MAX)..."
     if [ "$OS" = "alpine" ]; then
-        # 完全沿用你原版的 OpenRC 结构，确保不报错
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
@@ -361,13 +394,11 @@ command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
 EOF
         chmod +x /etc/init.d/sing-box
-        rc-update add sing-box default >/dev/null 2>&1
-        rc-service sing-box restart
+        rc-update add sing-box default && rc-service sing-box restart
     else
-        # Systemd 加入 Nice 优化 (Debian/Ubuntu 环境)
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
-Description=Sing-box Service
+Description=Sing-box Service (Optimized for HY2)
 After=network.target
 
 [Service]
@@ -379,8 +410,16 @@ Environment=GOMEMLIMIT=$SBOX_GOLIMIT
 Environment=GODEBUG=madvdontneed=1
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
+
+# --- 爆发力优化：进程优先级调度 ---
+Nice=${SBOX_CPU_PRIO:-0}
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=50
+IOSchedulingClass=realtime
+IOSchedulingPriority=2
+
+# --- 稳定性优化：内存与文件描述符 ---
 MemoryMax=$SBOX_MEM_MAX
-Nice=$SBOX_CPU_PRI
 LimitNOFILE=1000000
 
 [Install]
