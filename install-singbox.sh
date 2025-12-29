@@ -180,7 +180,6 @@ SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
     # 爆发优化：取黄金分割点 15 (比默认 10 强 50%，比 20 更隐蔽)
-    # 爆发优化：尝试修改，并将系统报错丢弃
     if command -v ip >/dev/null; then
         local default_route=$(ip route show default | head -n1)
         if [[ $default_route == *"via"* ]]; then
@@ -439,9 +438,24 @@ display_links() {
 # [模块3] 显示系统状态
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version | head -n1 | sed 's/version /v/')
+    # 直接从路由表提取 initcwnd 的数值
+    local CURRENT_CWND=$(ip route show default | grep -oP 'initcwnd \K[0-9]+' || echo "")
+    local CWND_TEXT
+    if [ "$CURRENT_CWND" = "15" ]; then
+        # 成功设置成 15
+        CWND_TEXT="15 (已优化)"
+    elif [ -n "$CURRENT_CWND" ]; then
+        # 被设置成了其他值
+        CWND_TEXT="$CURRENT_CWND"
+    else
+        # 路由表里没有 initcwnd 字段，说明处于系统默认状态
+        CWND_TEXT="10 (内核默认)"
+    fi
+
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
+    echo -e "Initcwnd: \033[1;33m${CWND_TEXT}\033[0m"
     echo -e "伪装SNI: \033[1;33m${RAW_SNI:-未检测}\033[0m"
     echo -e "IPv4地址: \033[1;35m${RAW_IP4:-无}\033[0m"
     echo -e "IPv6地址: \033[1;36m${RAW_IP6:-无}\033[0m"
