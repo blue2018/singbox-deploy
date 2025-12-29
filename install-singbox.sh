@@ -230,7 +230,7 @@ install_singbox() {
     
     if [[ "$MODE" == "update" ]]; then
         echo -e "---------------------------------"
-        echo -e "当前已安装版本: \033[1;33m${LOCAL_VER}\033[0m"
+        echo -e "当前已装版本: \033[1;33m${LOCAL_VER}\033[0m"
         echo -e "官方最新版本: \033[1;32m${REMOTE_VER}\033[0m (源: $DOWNLOAD_SOURCE)"
         echo -e "---------------------------------"
         if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then
