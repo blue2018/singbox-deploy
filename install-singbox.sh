@@ -612,10 +612,10 @@ case "$OS" in
     redhat) yum install -y curl jq openssl ;;
 esac
 
-# 首次安装时采集 IP 信息 (全局变量)
+# 首次安装时采集 IP 信息 (尝试 ipify, 失败则尝试官方替代源)
 info "正在获取本地网络地址..."
-RAW_IP4=$(curl -s4 --max-time 3 https://api.ipify.org || echo "")
-RAW_IP6=$(curl -s6 --max-time 3 https://api6.ipify.org || echo "")
+RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 https://ifconfig.me || echo "")  
+RAW_IP6=$(curl -s6 --max-time 5 https://api6.ipify.org || curl -s6 --max-time 5 https://ifconfig.co || echo "")
 
 echo -e "-----------------------------------------------"
 # 使用封装后的函数获取端口
