@@ -136,7 +136,7 @@ optimize_system() {
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
     SBOX_OPTIMIZE_LEVEL="$mem_level"
 
-    info "应用 ${mem_level} 级别优化 (UDP缓冲: $((udp_buffer/1024/1024))MB, 响应增强开启)"
+    info "应用 ${mem_level} 级别优化 (UDP缓冲: $((udp_buffer/1024/1024)) MB, 响应增强开启)"
 
     # --- 3. Swap 状态侦测与提示 ---
     if [ "$OS" = "alpine" ]; then
@@ -373,12 +373,13 @@ is_valid_port() {
 prompt_for_port() {
     local input_port
     while true; do
-        # 关键：所有交互文字必须通过 >&2 定向到错误流，这样就不会被变量捕获
-        read -p "请输入端口 [1025-65535] (回车随机生成): " input_port >&2
+        # read 的提示词本身就是定向到 stderr 的，保持原样
+        read -p "请输入端口 [1025-65535] (回车随机生成): " input_port
         if [[ -z "$input_port" ]]; then
             input_port=$(shuf -i 10000-60000 -n 1)
+            # 关键修复：加上 >&2，这样这行字只会显示在屏幕上，不会进入变量
             echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $input_port" >&2
-            echo "$input_port"  # 只有这行会通过标准输出被 USER_PORT 捕获
+            echo "$input_port"
             return 0
         elif is_valid_port "$input_port"; then
             echo "$input_port"
