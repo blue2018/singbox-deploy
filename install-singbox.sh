@@ -554,7 +554,7 @@ detect_os
 
 # 安装必要依赖
 case "$OS" in
-    alpine) apk add --no-cache bash curl jq openssl openrc iproute2 ;;
+    alpine) apk add --no-cache bash curl jq openssl openrc iproute2 coreutils ;;
     debian) apt-get update && apt-get install -y curl jq openssl ;;
     redhat) yum install -y curl jq openssl ;;
 esac
