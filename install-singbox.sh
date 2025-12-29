@@ -203,7 +203,7 @@ install_singbox() {
 
     info "正在连接 GitHub API 获取版本信息..."
     # 获取版本，限时 8 秒
-    local RELEASE_JSON=$(curl -sL --max-time 8 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
+    local RELEASE_JSON=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
     local LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "null")
 
     # API 查询失败时的兜底
@@ -234,7 +234,7 @@ install_singbox() {
     
     # 核心修改点：8秒限时下载，3次重试
     info "开始下载内核..."
-    if curl -fL --retry 3 --retry-delay 2 --max-time 8 "$URL" -o "$TMP_D/sb.tar.gz"; then
+    if curl -fL --retry 3 --retry-delay 2 --max-time 15 "$URL" -o "$TMP_D/sb.tar.gz"; then
         tar -xf "$TMP_D/sb.tar.gz" -C "$TMP_D"
         pgrep sing-box >/dev/null && (systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true)
         install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box
