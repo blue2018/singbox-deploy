@@ -245,6 +245,38 @@ install_singbox() {
 }
 
 
+# 校验端口是否合法 (限定 1025-65535 非特权范围)
+is_valid_port() {
+    local port="$1"
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1025 ] && [ "$port" -le 65535 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 封装端口交互逻辑 (支持回车随机生成和合法性校验)
+prompt_for_port() {
+    local input_port
+    while true; do
+        # read 默认就是输出到 stderr，无需改动
+        read -p "请输入端口 [1025-65535] (回车随机生成): " input_port
+        if [[ -z "$input_port" ]]; then
+            input_port=$(shuf -i 10000-60000 -n 1)
+            # 必须加 >&2
+            echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $input_port" >&2
+            echo "$input_port"
+            return 0
+        elif is_valid_port "$input_port"; then
+            echo "$input_port"
+            return 0
+        else
+            echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
+        fi
+    done
+}
+
+
 # 生成 ECC 证书
 generate_cert() {
     info "生成 ECC P-256 高性能证书 (伪装: $TLS_DOMAIN)..."
@@ -356,38 +388,6 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload && systemctl enable sing-box --now
     fi
-}
-
-
-# 校验端口是否合法 (限定 1025-65535 非特权范围)
-is_valid_port() {
-    local port="$1"
-    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1025 ] && [ "$port" -le 65535 ]; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-# 封装端口交互逻辑 (支持回车随机生成和合法性校验)
-prompt_for_port() {
-    local input_port
-    while true; do
-        # read 默认就是输出到 stderr，无需改动
-        read -p "请输入端口 [1025-65535] (回车随机生成): " input_port
-        if [[ -z "$input_port" ]]; then
-            input_port=$(shuf -i 10000-60000 -n 1)
-            # 必须加 >&2
-            echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $input_port" >&2
-            echo "$input_port"
-            return 0
-        elif is_valid_port "$input_port"; then
-            echo "$input_port"
-            return 0
-        else
-            echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
-        fi
-    done
 }
 
 
