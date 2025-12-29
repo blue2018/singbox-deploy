@@ -270,18 +270,22 @@ create_config() {
         fi
     fi
 
-    # 2. PSK (密码) 确定逻辑
+    # 2. PSK (密码) 确定逻辑 (确保全环境标准 UUID 格式)
     local PSK
     if [ -f /etc/sing-box/config.json ]; then
+        # 优先从现有配置文件读取密码，防止重置端口时刷新密码导致客户端失效
         PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
     else
+        # 首次安装：优先尝试从内核获取标准 UUID
         if [ -f /proc/sys/kernel/random/uuid ]; then
             PSK=$(cat /proc/sys/kernel/random/uuid)
         else
+            # 兼容模式：在受限容器环境(如 LXC/Docker)中，通过 openssl 拼装标准 UUID 格式 (8-4-4-4-12)
             PSK=$(printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
         fi
     fi
     
+    # 3. 写入 Sing-box 配置文件
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
