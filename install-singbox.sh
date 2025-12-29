@@ -345,76 +345,78 @@ EOF
 
 
 # 显示信息 (支持 IPv4/IPv6 双链接)
-# [模块1] 获取环境数据 (数据层)
+# [模块1] 获取环境数据 (从配置文件抓取，不重复请求网络)
 get_env_data() {
-    # 检查变量是否为空。只有为空时（即本次会话第一次运行）才执行网络请求
-    if [ -z "${RAW_IP4:-}" ] && [ -z "${RAW_IP6:-}" ]; then
-        info "正在获取网络地址 (仅在首次运行时采集)..."
-        RAW_IP4=$(curl -s4 --max-time 2 https://api.ipify.org || echo "")
-        RAW_IP6=$(curl -s6 --max-time 2 https://api6.ipify.org || echo "")
-    fi
-    
     local CONFIG="/etc/sing-box/config.json"
     [ ! -f "$CONFIG" ] && return 1
-
+    # RAW_IP4 和 RAW_IP6 已在安装时固化在核心脚本中
     RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG")
     RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG")
     local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG")
     RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' || echo "unknown")
 }
 
-# [模块2] 仅显示核心链接 (展示层：精简模式)
+# [模块2] 仅显示核心链接 (含 IPv6 判断及警告)
 display_links() {
     local LINK_V4="" LINK_V6="" FULL_CLIP=""
     
-    # 如果两个 IP 都没有，触发你保留的警告逻辑
-    if [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ]; then
+    # 极端情况判断
+    if [ -z "${RAW_IP4:-}" ] && [ -z "${RAW_IP6:-}" ]; then
         echo -e "\n\033[1;31m警告: 未检测到任何公网 IP 地址，请检查网络！\033[0m"
         return
     fi
 
     echo -e "\n\033[1;32m[ 节点访问信息 ]\033[0m"
-    echo -e "运行端口: \033[1;33m${RAW_PORT}\033[0m"
+    echo -e "当前端口: \033[1;33m${RAW_PORT}\033[0m"
     echo -e "\033[1;34m------------------------------------------\033[0m"
 
-    if [ -n "$RAW_IP4" ]; then
+    if [ -n "${RAW_IP4:-}" ]; then
         LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v4"
         FULL_CLIP="$LINK_V4"
-        echo -e "\033[1;35m[ IPv4 节点链接 ]\033[0m\n$LINK_V4\n"
+        echo -e "\033[1;35m[ IPv4 节点链接 ]\033[0m"
+        echo -e "$LINK_V4\n"
     fi
 
-    if [ -n "$RAW_IP6" ]; then
+    if [ -n "${RAW_IP6:-}" ]; then
         LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v6"
         [ -n "$FULL_CLIP" ] && FULL_CLIP="${FULL_CLIP}\n${LINK_V6}" || FULL_CLIP="$LINK_V6"
-        echo -e "\033[1;36m[ IPv6 节点链接 ]\033[0m\n$LINK_V6"
+        echo -e "\033[1;36m[ IPv6 节点链接 ]\033[0m"
+        echo -e "$LINK_V6"
     fi
     
     echo -e "\033[1;34m==========================================\033[0m"
     [ -n "$FULL_CLIP" ] && copy_to_clipboard "$FULL_CLIP"
 }
 
-# [模块3] 显示系统状态 (展示层：系统详情)
+# [模块3] 显示系统状态
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version | head -n1)
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
-    echo -e "伪装 SNI: \033[1;33m$RAW_SNI\033[0m"
+    echo -e "伪装 SNI: \033[1;33m${RAW_SNI:-未检测}\033[0m"
 }
-
 
 # 创建 sb 管理脚本 (固化优化变量)
 create_sb_tool() {
     mkdir -p /etc/sing-box
-    echo "#!/usr/bin/env bash" > "$SBOX_CORE"
-    echo "set -euo pipefail" >> "$SBOX_CORE"
-    echo "SBOX_CORE='$SBOX_CORE'" >> "$SBOX_CORE"
-    echo "SBOX_GOLIMIT='$SBOX_GOLIMIT'" >> "$SBOX_CORE"
-    echo "SBOX_GOGC='${SBOX_GOGC:-80}'" >> "$SBOX_CORE"
-    echo "SBOX_MEM_MAX='$SBOX_MEM_MAX'" >> "$SBOX_CORE"
-    echo "SBOX_OPTIMIZE_LEVEL='$SBOX_OPTIMIZE_LEVEL'" >> "$SBOX_CORE"
-    echo "TLS_DOMAIN_POOL=(${TLS_DOMAIN_POOL[@]})" >> "$SBOX_CORE"
-    declare -f >> "$SBOX_CORE"
+    # 写入固化变量
+    cat > "$SBOX_CORE" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+SBOX_CORE='$SBOX_CORE'
+SBOX_GOLIMIT='$SBOX_GOLIMIT'
+SBOX_GOGC='${SBOX_GOGC:-80}'
+SBOX_MEM_MAX='$SBOX_MEM_MAX'
+SBOX_OPTIMIZE_LEVEL='$SBOX_OPTIMIZE_LEVEL'
+TLS_DOMAIN_POOL=(${TLS_DOMAIN_POOL[@]})
+# 固化安装时采集到的 IP，不再重复请求
+RAW_IP4='$RAW_IP4'
+RAW_IP6='$RAW_IP6'
+EOF
+
+    # 声明函数并追加到核心脚本
+    declare -f get_env_data display_links display_system_status detect_os copy_to_clipboard create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
     
     cat >> "$SBOX_CORE" <<'EOF'
 if [[ "${1:-}" == "--detect-only" ]]; then
@@ -424,12 +426,12 @@ elif [[ "${1:-}" == "--show-only" ]]; then
     get_env_data
     echo -e "\n\033[1;34m==========================================\033[0m"
     display_system_status # 系统信息
-    echo -e "\033[1;34m--------------------------------------------\033[0m"
+    echo -e "\033[1;34m------------------------------------------\033[0m"
     display_links         # 链接信息
 elif [[ "${1:-}" == "--reset-port" ]]; then
     detect_os && create_config "$2" && setup_service && sleep 1
     get_env_data
-    display_links  # 只显示链接（内含警告判断）
+    display_links  # 只显示链接（内含警告判断及端口号）
 elif [[ "${1:-}" == "--update-kernel" ]]; then
     detect_os
     if install_singbox "update"; then
@@ -458,18 +460,15 @@ while true; do
     echo "=========================="
     echo " Sing-box HY2 管理 (快捷键: sb)"
     echo "=========================="
-    echo "1) 查看链接   2) 编辑配置   3) 重置端口"
-    echo "4) 更新内核   5) 重启服务   6) 卸载程序"
+    echo "1) 查看链接    2) 编辑配置    3) 重置端口"
+    echo "4) 更新内核    5) 重启服务    6) 卸载程序"
     echo "0) 退出"
     echo "=========================="
-    # 这里的 -r 防止转义，-e 允许在某些环境下更智能地处理输入
     read -r -p "请选择 [0-6]: " opt
-    # 移除输入值前后的空格 (清理粘贴残留的空格/换行)
     opt=$(echo "$opt" | xargs echo -n 2>/dev/null || echo "$opt")
-    # 逻辑判断：如果输入为空（包括删除字符后回车、或纯空格回车）
     if [[ -z "$opt" ]]; then
         echo -e "\033[1;31m输入有误，请重新输入\033[0m"
-        sleep 1  # 停顿一秒让用户看清提示
+        sleep 1
         continue
     fi
     
@@ -518,33 +517,35 @@ EOF
     ln -sf "$SB_PATH" "/usr/local/bin/SB"
 }
 
+# 修改后的主逻辑主体
+detect_os
+[ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
 
-# 主逻辑
-if [[ "${1:-}" == "--detect-only" ]]; then
-    detect_os
-elif [[ "${1:-}" == "--show-only" ]]; then
-    detect_os && show_info
-elif [[ "${1:-}" == "--reset-port" ]]; then
-    detect_os && create_config "$2" && setup_service && show_info
-elif [[ "${1:-}" == "--update-kernel" ]]; then
-    detect_os && install_singbox "update" && setup_service
-else
-    detect_os
-    [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
-    info "开始安装..."
-    case "$OS" in
-        alpine) apk add --no-cache bash curl jq openssl openrc iproute2 ;;
-        debian) apt-get update && apt-get install -y curl jq openssl ;;
-        redhat) yum install -y curl jq openssl ;;
-    esac
-    echo -e "-----------------------------------------------"
-    read -p "请输入 Hysteria2 运行端口 [回车随机生成]: " USER_PORT
-    optimize_system
-    install_singbox "install"
-    generate_cert
-    create_config "$USER_PORT"
-    setup_service
-    create_sb_tool
-    show_info
-    info "安装完毕。输入 'sb' 管理。"
-fi
+# 安装必要依赖
+case "$OS" in
+    alpine) apk add --no-cache bash curl jq openssl openrc iproute2 ;;
+    debian) apt-get update && apt-get install -y curl jq openssl ;;
+    redhat) yum install -y curl jq openssl ;;
+esac
+
+# 首次安装时采集 IP 信息 (全局变量)
+info "正在获取本地网络地址..."
+RAW_IP4=$(curl -s4 --max-time 3 https://api.ipify.org || echo "")
+RAW_IP6=$(curl -s6 --max-time 3 https://api6.ipify.org || echo "")
+
+echo -e "-----------------------------------------------"
+read -p "请输入 Hysteria2 运行端口 [回车随机生成]: " USER_PORT
+optimize_system
+install_singbox "install"
+generate_cert
+create_config "$USER_PORT"
+setup_service
+create_sb_tool
+
+# 初始显示
+get_env_data
+echo -e "\n\033[1;34m==========================================\033[0m"
+display_system_status
+echo -e "\033[1;34m------------------------------------------\033[0m"
+display_links
+info "安装完毕。输入 'sb' 管理。"
