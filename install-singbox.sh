@@ -74,122 +74,122 @@ detect_os() {
 }
 
 
-# 系统内核优化 (针对 64M/128M/256M/512M 阶梯优化 - 全维度增强版)
+# 系统内核优化 (针对 64M/128M/256M/512M 阶梯优化 - 爆发响应激进版)
 optimize_system() {
-    # --- 1. 内存检测逻辑 (保留多路侦测) ---
+    # --- 1. 内存检测逻辑 (多路侦测) ---
     local mem_total=64
+    local mem_cgroup=0
     local mem_free=$(free -m | awk '/Mem:/ {print $2}')
     
-    # 路径 A & B: Cgroup 侦测 (针对容器环境)
+    # 路径 A: Cgroup v1 (常用)
     if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
-        local m_limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
-        [ "$m_limit" -lt 9223372036854771712 ] && mem_total=$((m_limit / 1024 / 1024)) || mem_total=$mem_free
+        mem_cgroup=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
+    # 路径 B: Cgroup v2 (部分新版容器)
     elif [ -f /sys/fs/cgroup/memory.max ]; then
         local m_max=$(cat /sys/fs/cgroup/memory.max)
-        [[ "$m_max" =~ ^[0-9]+$ ]] && mem_total=$((m_max / 1024 / 1024)) || mem_total=$mem_free
+        [[ "$m_max" =~ ^[0-9]+$ ]] && mem_cgroup=$((m_max / 1024 / 1024))
+    # 路径 C: /proc/meminfo (针对 OpenVZ 某些特定环境)
+    elif grep -q "MemTotal" /proc/meminfo; then
+        local m_proc=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        mem_cgroup=$((m_proc / 1024))
+    fi
+
+    # 逻辑判断：如果 Cgroup 探测到了且数值在合理范围，则以它为准
+    if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_free" ]; then
+        mem_total=$mem_cgroup
     else
         mem_total=$mem_free
     fi
 
-    # 兜底：防止异常大值
-    if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=$mem_free; fi
+    # 兜底：防止极端情况获取到 0 或异常大值
+    if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=64; fi
+
     info "检测到系统可用内存: ${mem_total} MB"
 
-    # --- 2. 激进版阶梯变量矩阵 (核心优化策略) ---
-    local init_cwnd="15"
-    local swap_target=0
+    # --- 2. 激进版阶梯变量设置 (极致爆发响应逻辑) ---
+    local go_limit gogc udp_buffer mem_level
 
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_OPTIMIZE_LEVEL="512M (极致吞吐版)"
-        SBOX_GOLIMIT="420MiB"; SBOX_GOGC="110"
-        SBOX_UDP_BUF="134217728"   # 128MB 内核缓冲
-        SBOX_HY2_WIN="67108864"    # 64MB QUIC 连结窗口
-        SBOX_HY2_STR="16777216"    # 16MB 单流窗口
-        init_cwnd="20"             # 激进起跑，目标 300Mbps+
-        SBOX_CPU_PRIO="-10"        # 较高 CPU 优先级
-        swap_target=128            # 象征性兜底
+        go_limit="420MiB"       # 512M 环境: 目标 300Mbps+ 瞬时爆发
+        gogc="110"              # 平衡 GC 频率，确保高并发无卡顿
+        udp_buffer="134217728"  # 128MB 缓冲区 (应对极端大流量)
+        mem_level="512M (爆发版)"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_OPTIMIZE_LEVEL="256M (瞬时爆发版)"
-        SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
-        SBOX_UDP_BUF="67108864"    # 64MB
-        SBOX_HY2_WIN="33554432"    # 32MB
-        SBOX_HY2_STR="8388608"     # 8MB
-        init_cwnd="18"
-        SBOX_CPU_PRIO="-5"
-        swap_target=256
+        go_limit="210MiB"       # 256M 环境: 目标 250Mbps 瞬时爆发
+        gogc="100"              # 激进回收策略
+        udp_buffer="67108864"   # 64MB 缓冲区
+        mem_level="256M (瞬时版)"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_OPTIMIZE_LEVEL="128M (激进优化版)"
-        SBOX_GOLIMIT="100MiB"; SBOX_GOGC="80"
-        SBOX_UDP_BUF="33554432"    # 32MB
-        SBOX_HY2_WIN="16777216"    # 16MB
-        SBOX_HY2_STR="4194304"     # 4MB
-        init_cwnd="15"
-        SBOX_CPU_PRIO="0"
-        swap_target=256
+        go_limit="100MiB"       # 128M 环境: 目标 200Mbps+ 瞬时爆发
+        gogc="80"               # 保持小内存下的响应敏捷
+        udp_buffer="33554432"   # 32MB 缓冲区
+        mem_level="128M (激进版)"
     else
-        SBOX_OPTIMIZE_LEVEL="64M (极限生存版)"
-        SBOX_GOLIMIT="52MiB"; SBOX_GOGC="70"
-        SBOX_UDP_BUF="16777216"    # 16MB
-        SBOX_HY2_WIN="8388608"     # 8MB
-        SBOX_HY2_STR="2097152"     # 2MB
-        init_cwnd="12"             # 小内存保守起跑，防止缓冲区瞬间爆仓
-        SBOX_CPU_PRIO="0"
-        swap_target=512            # 强力 Swap 支撑生命
+        go_limit="52MiB"        # 64M 环境: 目标 150Mbps 稳定爆发
+        gogc="70"               # 极其激进的内存回收，防止 OOM
+        udp_buffer="16777216"   # 16MB 缓冲区 (利用 45% 剩余空间)
+        mem_level="64M (极限版)"
     fi
 
-    # 统一内存限制（物理内存的 92%）
+    SBOX_GOLIMIT="$go_limit"
+    SBOX_GOGC="$gogc"
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
-    info "应用 ${SBOX_OPTIMIZE_LEVEL} 策略 (UDP缓冲: $((SBOX_UDP_BUF/1024/1024))MB)"
+    SBOX_OPTIMIZE_LEVEL="$mem_level"
 
-    # --- 3. Swap 阶梯补全 (针对小内存) ---
-    if [ "$OS" != "alpine" ]; then
-        local current_swap=$(free -m | awk '/Swap:/ {print $2}')
-        if [ "$current_swap" -lt 50 ]; then
-            warn "内存受限，正在创建 ${swap_target}MB 救急 Swap..."
-            if fallocate -l ${swap_target}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$swap_target 2>/dev/null; then
+    info "应用 ${mem_level} 级别优化 (UDP缓冲: $((udp_buffer/1024/1024)) MB, 响应增强开启)"
+
+    # --- 3. Swap 状态侦测与提示 ---
+    if [ "$OS" = "alpine" ]; then
+        info "Alpine 系统跳过 Swap 处理。"
+    else
+        local swap_total=$(free -m | awk '/Swap:/ {print $2}')
+        if [ "$swap_total" -gt 10 ]; then
+            succ "检测到系统已存在 Swap (${swap_total}MB)。"
+        elif [ "$mem_total" -lt 150 ]; then
+            warn "内存极小正在创建 128MB 救急 Swap..."
+            if fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null; then
                 chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
                 grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-                succ "Swap 部署完成。"
+                succ "Swap 创建成功。"
             fi
         fi
     fi
-
-    # --- 4. BBRv3 探测与内核精调 ---
-    local current_bbr="bbr"
-    # 自动探测内核是否支持 bbr3 (需内核 6.4+ 或补丁)
-    sysctl net.ipv4.tcp_available_congestion_control | grep -q "bbr3" && current_bbr="bbr3"
     
+    # --- 4. 黄金平衡版 (保留超大缓存 + 平滑起步) ---
+    modprobe tcp_bbr >/dev/null 2>&1 || true
     cat > /etc/sysctl.conf <<SYSCTL
-# 响应优化：禁止空闲慢启动
+# 响应优化：禁止空闲慢启动，配合 FQ 调度实现平滑爆发
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_fastopen = 3
-# 队列容量优化
+# 保持高并发队列，防止瞬时溢出
 net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 8192
-# 动态 UDP 缓冲区
-net.core.rmem_max = $SBOX_UDP_BUF
-net.core.wmem_max = $SBOX_UDP_BUF
-net.ipv4.udp_mem = 65536 131072 $((SBOX_UDP_BUF / 4096 * 2))
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384
-# 拥塞控制：BBR + FQ
+
+# 缓冲区优化：保持激进的大容量天花板
+net.core.rmem_max = $udp_buffer
+net.core.wmem_max = $udp_buffer
+net.ipv4.udp_mem = 131072 262144 524288
+net.ipv4.udp_rmem_min = 32768
+net.ipv4.udp_wmem_min = 32768
+
+# BBR + FQ：最核心的平滑器
 net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = $current_bbr
+net.ipv4.tcp_congestion_control = bbr
 vm.swappiness = 10
 SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
-    # --- 5. InitCWND 黄金爆发调整 ---
-    local default_route=$(ip route show default | head -n1)
-    if [[ $default_route == *"via"* ]]; then
-        # 执行调整
-        ip route change $default_route initcwnd $init_cwnd initrwnd $init_cwnd 2>/dev/null || true
-        # 校验结果
-        local check_cwnd=$(ip route show default | grep -oE "initcwnd [0-9]+" | awk '{print $2}' || echo "")
-        if [ "$check_cwnd" = "$init_cwnd" ]; then
-            succ "InitCWND 已优化为 $init_cwnd"
-        else
-            warn "系统环境限制，InitCWND 保持默认 (不影响使用)"
+    # 爆发优化：取黄金分割点 15 (比默认 10 强 50%，比 20 更隐蔽)
+    if command -v ip >/dev/null; then
+        local default_route=$(ip route show default | head -n1)
+        if [[ $default_route == *"via"* ]]; then
+            # 尝试执行，静默系统原始报错
+            if ip route change $default_route initcwnd 15 initrwnd 15 2>/dev/null; then
+                succ "黄金平衡版：InitCWND 设为 15，兼顾速度与隐蔽性"
+            else
+                # 提示环境不支持，但不作为错误处理
+                warn "系统环境限制，跳过 InitCWND 优化 (不影响使用)"
+            fi
         fi
     fi
 }
@@ -318,29 +318,38 @@ generate_cert() {
 }
 
 
-# 生成 Sing-box 配置文件 (注入 QUIC Pacing 与动态窗口)
+# 生成 Sing-box 配置文件
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
-    # [端口确定逻辑]
+    # 1. 端口确定逻辑
     if [ -z "$PORT_HY2" ]; then
         if [ -f /etc/sing-box/config.json ]; then
+            # 如果已有配置，则读取现有端口
             PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
         else
+            # 如果是纯新安装且未传入端口，则生成随机端口 (10000-60000)
             PORT_HY2=$(shuf -i 10000-60000 -n 1)
         fi
     fi
 
-    # [PSK 确定逻辑]
+    # 2. PSK (密码) 确定逻辑 (确保全环境标准 UUID 格式)
     local PSK
     if [ -f /etc/sing-box/config.json ]; then
+        # 优先从现有配置文件读取密码，防止重置端口时刷新密码导致客户端失效
         PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
     else
-        PSK=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
+        # 首次安装：优先尝试从内核获取标准 UUID
+        if [ -f /proc/sys/kernel/random/uuid ]; then
+            PSK=$(cat /proc/sys/kernel/random/uuid)
+        else
+            # 兼容模式：在受限容器环境(如 LXC/Docker)中，通过 openssl 拼装标准 UUID 格式 (8-4-4-4-12)
+            PSK=$(printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
+        fi
     fi
     
-    # [写入配置文件]
+    # 3. 写入 Sing-box 配置文件
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -351,36 +360,24 @@ create_config() {
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": true,
-    "up_mbps": 300,
-    "down_mbps": 300,
     "tls": {
       "enabled": true,
       "alpn": ["h3"],
       "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-      "key_path": "/etc/sing-box/certs/privkey.pem",
-      "max_early_data": 2048
-    },
-    "quic": {
-      "pacing": true,
-      "gauss_congestion_control": true,
-      "amp_factor": 1.1
-    },
-    "recv_window_conn": $SBOX_HY2_WIN,
-    "recv_window": $SBOX_HY2_STR
+      "key_path": "/etc/sing-box/certs/privkey.pem"
+    }
   }],
-  "outbounds": [{ "type": "direct", "tag": "direct-out" }],
-  "transport": {
-    "path_mtu_discovery": true
-  }
+  "outbounds": [{ "type": "direct", "tag": "direct-out" }]
 }
 EOF
+    # 加固配置文件权限，防止 PSK 泄露
     chmod 600 "/etc/sing-box/config.json"
 }
 
 
-# 配置系统服务 (应用阶梯调度优化)
+# 配置系统服务 (应用阶梯优化变量)
 setup_service() {
-    info "配置系统服务并启动 (资源限额: $SBOX_MEM_MAX)..."
+    info "配置系统服务并启动 (限制: $SBOX_MEM_MAX)..."
     if [ "$OS" = "alpine" ]; then
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
@@ -398,7 +395,7 @@ EOF
     else
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
-Description=Sing-box Service (Optimized for HY2)
+Description=Sing-box Service
 After=network.target
 
 [Service]
@@ -410,15 +407,6 @@ Environment=GOMEMLIMIT=$SBOX_GOLIMIT
 Environment=GODEBUG=madvdontneed=1
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
-
-# --- 爆发力优化：进程优先级调度 ---
-Nice=${SBOX_CPU_PRIO:-0}
-CPUSchedulingPolicy=rr
-CPUSchedulingPriority=50
-IOSchedulingClass=realtime
-IOSchedulingPriority=2
-
-# --- 稳定性优化：内存与文件描述符 ---
 MemoryMax=$SBOX_MEM_MAX
 LimitNOFILE=1000000
 
@@ -436,13 +424,12 @@ get_env_data() {
     local CONFIG_FILE="/etc/sing-box/config.json"
     [ ! -f "$CONFIG_FILE" ] && return 1
     
-    # 统一使用 CONFIG_FILE 路径，避免全局变量干扰
-    RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE")
-    RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE")
+    # 使用 xargs 确保拿到的 PSK、Port、SNI 没有任何多余空格
+    RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE" | xargs)
+    RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE" | xargs)
     
-    local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG_FILE")
-    # 提取 SNI
-    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' || echo "unknown")
+    local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG_FILE" | xargs)
+    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' | xargs || echo "unknown")
 }
 
 # [模块2] 仅显示核心链接
@@ -626,8 +613,12 @@ esac
 
 # 首次安装时采集 IP 信息 (尝试 ipify, 失败则尝试官方替代源)
 info "正在获取本地网络地址..."
-RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 https://ifconfig.me || echo "")  
+RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 https://ifconfig.me || echo "")
+# 清洗：剔除空格和换行
+RAW_IP4=$(echo "$RAW_IP4" | xargs)
 RAW_IP6=$(curl -s6 --max-time 5 https://api6.ipify.org || curl -s6 --max-time 5 https://ifconfig.co || echo "")
+# 清洗：剔除空格和换行
+RAW_IP6=$(echo "$RAW_IP6" | xargs)
 
 echo -e "-----------------------------------------------"
 # 使用封装后的函数获取端口
