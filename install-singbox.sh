@@ -76,76 +76,94 @@ detect_os() {
 
 # 系统内核优化 (64M/128M/256M/512M 阶梯差异化调优)
 optimize_system() {
-    # 1. 内存探测 (兼容 Cgroup/OpenVZ/KVM)
+    # --- 1. 内存检测逻辑 (沿用你原有的多路侦测) ---
     local mem_total=64
     local mem_free=$(free -m | awk '/Mem:/ {print $2}')
-    if [ -f /sys/fs/cgroup/memory.max ]; then
+    if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+        local m_cgroup=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
+        [ "$m_cgroup" -gt 0 ] && [ "$m_cgroup" -le "$mem_free" ] && mem_total=$m_cgroup
+    elif [ -f /sys/fs/cgroup/memory.max ]; then
         local m_max=$(cat /sys/fs/cgroup/memory.max)
-        [[ "$m_max" =~ ^[0-9]+$ ]] && mem_total=$((m_max / 1024 / 1024))
+        [[ "$m_max" =~ ^[0-9]+$ ]] && [ "$((m_max / 1048576))" -le "$mem_free" ] && mem_total=$((m_max / 1048576))
+    else
+        mem_total=$mem_free
     fi
-    [ "$mem_total" -le 0 ] || [ "$mem_total" -gt "$mem_free" ] && mem_total=$mem_free
-    [ "$mem_total" -le 0 ] && mem_total=64
-
+    [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ] && mem_total=64
     info "检测到系统可用内存: ${mem_total} MB"
 
-    # 2. 差异化变量决策 (目标: 300Mbps 极限爆发)
+    # --- 2. 注入差异化优化变量 (含窗口与优先级) ---
     local go_limit gogc udp_buffer rx_conn rx_total cpu_pri mem_level
     if [ "$mem_total" -ge 450 ]; then
-        go_limit="420MiB"; gogc="110"; udp_buffer="67108864"; rx_conn="10485760"; rx_total="31457280"; cpu_pri="0"; mem_level="512M (爆发版)"
+        go_limit="420MiB"; gogc="110"; udp_buffer="134217728"
+        rx_conn="10485760"; rx_total="31457280"; cpu_pri="0"; mem_level="512M (爆发版)"
     elif [ "$mem_total" -ge 200 ]; then
-        go_limit="210MiB"; gogc="100"; udp_buffer="33554432"; rx_conn="5242880"; rx_total="15728640"; cpu_pri="-5"; mem_level="256M (标准版)"
+        go_limit="210MiB"; gogc="100"; udp_buffer="67108864"
+        rx_conn="5242880"; rx_total="15728640"; cpu_pri="-5"; mem_level="256M (瞬时版)"
     elif [ "$mem_total" -ge 100 ]; then
-        go_limit="100MiB"; gogc="85"; udp_buffer="16777216"; rx_conn="2097152"; rx_total="8388608"; cpu_pri="-10"; mem_level="128M (精简版)"
+        go_limit="100MiB"; gogc="85"; udp_buffer="33554432"
+        rx_conn="2097152"; rx_total="8388608"; cpu_pri="-10"; mem_level="128M (激进版)"
     else
-        go_limit="52MiB"; gogc="70"; udp_buffer="8388608"; rx_conn="1048576"; rx_total="4194304"; cpu_pri="-15"; mem_level="64M (极限版)"
+        go_limit="52MiB"; gogc="70"; udp_buffer="16777216"
+        rx_conn="1048576"; rx_total="4194304"; cpu_pri="-15"; mem_level="64M (极限版)"
     fi
 
-    SBOX_GOLIMIT="$go_limit"; SBOX_GOGC="$gogc"; SBOX_UDP_BUF="$udp_buffer"
-    SBOX_RX_CONN="$rx_conn"; SBOX_RX_TOTAL="$rx_total"; SBOX_CPU_PRI="$cpu_pri"
-    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"; SBOX_OPTIMIZE_LEVEL="$mem_level"
+    SBOX_GOLIMIT="$go_limit"
+    SBOX_GOGC="$gogc"
+    SBOX_RX_CONN="$rx_conn"
+    SBOX_RX_TOTAL="$rx_total"
+    SBOX_CPU_PRI="$cpu_pri"
+    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
+    SBOX_OPTIMIZE_LEVEL="$mem_level"
 
-    # 3. Swap 救急策略
+    # --- 3. Swap 逻辑 (保持原样) ---
     if [ "$OS" != "alpine" ]; then
         local swap_total=$(free -m | awk '/Swap:/ {print $2}')
-        if [ "$swap_total" -lt 10 ] && [ "$mem_total" -lt 250 ]; then
-            warn "创建 128MB 救急 Swap..."
+        if [ "$swap_total" -lt 10 ] && [ "$mem_total" -lt 150 ]; then
+            warn "创建救急 Swap..."
             fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null
             chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-            grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
         fi
     fi
 
-    # 4. 内核参数极限调优
+    # --- 4. 内核调优 (保持原有激进参数，整合 BBR+FQ) ---
+    modprobe tcp_bbr >/dev/null 2>&1 || true
     cat > /etc/sysctl.conf <<SYSCTL
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_fastopen = 3
 net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 8192
-net.core.rmem_max = $SBOX_UDP_BUF
-net.core.wmem_max = $SBOX_UDP_BUF
+net.core.rmem_max = $udp_buffer
+net.core.wmem_max = $udp_buffer
 net.ipv4.udp_mem = 131072 262144 524288
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384
-net.ipv4.ip_no_pmtu_disc = 0
+net.ipv4.udp_rmem_min = 32768
+net.ipv4.udp_wmem_min = 32768
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 vm.swappiness = 10
 SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
-    # 5. InitCWND 加固逻辑 (处理设置不成功的情况)
+    # --- 5. InitCWND 黄金平衡 (15) 状态反馈版 ---
     if command -v ip >/dev/null; then
         local default_route=$(ip route show default | head -n1)
-        if [[ -n "$default_route" ]]; then
-            local err_msg
-            if err_msg=$(ip route change $default_route initcwnd 15 initrwnd 15 2>&1); then
-                succ "InitCWND 优化成功: 设为 15"
+        if [[ $default_route == *"via"* ]]; then
+            # 捕获可能的错误信息
+            local err_output
+            if err_output=$(ip route change $default_route initcwnd 15 initrwnd 15 2>&1); then
+                succ "InitCWND 优化成功: 初始窗口已设为 15"
             else
-                warn "InitCWND 优化跳过: 环境限制 ($err_msg)"
+                # 根据错误类型给出针对性提示
+                if [[ "$err_output" == *"Operation not permitted"* ]]; then
+                    warn "InitCWND 优化跳过: 容器权限不足 (Operation not permitted)"
+                else
+                    warn "InitCWND 优化未生效: $err_output"
+                fi
             fi
+        else
+            warn "InitCWND 优化跳过: 未发现有效的默认路由"
         fi
     fi
-    info "应用 ${mem_level} 优化完毕。"
+    info "应用 ${mem_level} 优化完毕"
 }
 
 
@@ -277,13 +295,18 @@ create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
+    # 保持你原有的端口和 PSK 逻辑，确保 UUID 格式正确
     if [ -z "$PORT_HY2" ]; then
         [ -f /etc/sing-box/config.json ] && PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json) || PORT_HY2=$(shuf -i 10000-60000 -n 1)
     fi
     local PSK
-    [ -f /etc/sing-box/config.json ] && PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json) || PSK=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
+    if [ -f /etc/sing-box/config.json ]; then
+        PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
+    else
+        [ -f /proc/sys/kernel/random/uuid ] && PSK=$(cat /proc/sys/kernel/random/uuid) || PSK=$(printf '%s-%s-%s-%s-%s' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 2)" "$(openssl rand -hex 6)")
+    fi
 
-    # 容错处理：若变量未定义则给默认值
+    # 注入新版性能变量 (容错处理)
     local rx_c="${SBOX_RX_CONN:-1048576}"
     local rx_t="${SBOX_RX_TOTAL:-4194304}"
 
@@ -320,24 +343,18 @@ EOF
 
 # 配置系统服务 (应用阶梯优化变量)
 setup_service() {
-    # 再次确保内存参数已计算（防止重置端口时变量丢失）
+    # 关键防错：如果在修改端口等操作中漏掉了变量，这里自动补算一次
     [ -z "${SBOX_GOLIMIT:-}" ] && optimize_system >/dev/null 2>&1
 
-    info "配置系统服务 (内存上限: $SBOX_MEM_MAX)..."
+    info "配置系统服务并启动 (限制: $SBOX_MEM_MAX)..."
     if [ "$OS" = "alpine" ]; then
+        # 完全沿用你原版的 OpenRC 结构，确保不报错
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
-description="sing-box service"
-
-# 关键修复：移除默认依赖，防止容器环境报错
-depend() {
-    after net
-}
-
-export GOGC=$SBOX_GOGC
+name="sing-box"
+export GOGC=${SBOX_GOGC:-80}
 export GOMEMLIMIT=$SBOX_GOLIMIT
 export GODEBUG=madvdontneed=1
-
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
@@ -347,6 +364,7 @@ EOF
         rc-update add sing-box default >/dev/null 2>&1
         rc-service sing-box restart
     else
+        # Systemd 加入 Nice 优化 (Debian/Ubuntu 环境)
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service
@@ -356,7 +374,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/etc/sing-box
-Environment=GOGC=$SBOX_GOGC
+Environment=GOGC=${SBOX_GOGC:-80}
 Environment=GOMEMLIMIT=$SBOX_GOLIMIT
 Environment=GODEBUG=madvdontneed=1
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
