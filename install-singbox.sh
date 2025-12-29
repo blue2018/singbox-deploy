@@ -259,14 +259,18 @@ create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
+    # 1. 端口确定逻辑
     if [ -z "$PORT_HY2" ]; then
         if [ -f /etc/sing-box/config.json ]; then
+            # 如果已有配置，则读取现有端口
             PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
         else
-            PORT_HY2="$((RANDOM % 50000 + 10000))"
+            # 如果是纯新安装且未传入端口，则生成随机端口 (10000-60000)
+            PORT_HY2=$(shuf -i 10000-60000 -n 1)
         fi
     fi
 
+    # 2. PSK (密码) 确定逻辑
     local PSK
     if [ -f /etc/sing-box/config.json ]; then
         PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
@@ -344,6 +348,37 @@ EOF
 }
 
 
+# 校验端口是否合法 (限定 1025-65535 非特权范围)
+is_valid_port() {
+    local port="$1"
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1025 ] && [ "$port" -le 65535 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 封装端口交互逻辑 (支持回车随机生成和合法性校验)
+prompt_for_port() {
+    local input_port
+    while true; do
+        read -p "请输入端口 [1025-65535] (回车随机生成): " input_port
+        if [[ -z "$input_port" ]]; then
+            # 生成 10000-60000 之间的随机端口
+            input_port=$(shuf -i 10000-60000 -n 1)
+            echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $input_port"
+            echo "$input_port"
+            return 0
+        elif is_valid_port "$input_port"; then
+            echo "$input_port"
+            return 0
+        else
+            echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入 1025-65535 之间的数字或直接回车。" >&2
+        fi
+    done
+}
+
+
 # 显示信息 (支持 IPv4/IPv6 双链接)
 # [模块1] 获取环境数据 (从配置文件抓取，不重复请求网络)
 get_env_data() {
@@ -397,6 +432,7 @@ display_system_status() {
     echo -e "伪装 SNI: \033[1;33m${RAW_SNI:-未检测}\033[0m"
 }
 
+
 # 创建 sb 管理脚本 (固化优化变量)
 create_sb_tool() {
     mkdir -p /etc/sing-box
@@ -415,8 +451,8 @@ RAW_IP4='$RAW_IP4'
 RAW_IP6='$RAW_IP6'
 EOF
 
-    # 声明函数并追加到核心脚本
-    declare -f get_env_data display_links display_system_status detect_os copy_to_clipboard create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
+    # 声明函数并追加到核心脚本 (包含新封装的端口处理函数)
+    declare -f is_valid_port prompt_for_port get_env_data display_links display_system_status detect_os copy_to_clipboard create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
     
     cat >> "$SBOX_CORE" <<'EOF'
 if [[ "${1:-}" == "--detect-only" ]]; then
@@ -481,7 +517,8 @@ while true; do
            read -r
            ;;
         3) 
-           read -p "请输入新端口: " NEW_PORT
+           # 调用封装好的端口提示函数
+           NEW_PORT=$(prompt_for_port)
            source "$CORE" --reset-port "$NEW_PORT"
            echo -e "\n按回车键返回菜单..."
            read -r
@@ -517,7 +554,8 @@ EOF
     ln -sf "$SB_PATH" "/usr/local/bin/SB"
 }
 
-# 修改后的主逻辑主体
+
+# 主逻辑主体
 detect_os
 [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
 
@@ -534,7 +572,9 @@ RAW_IP4=$(curl -s4 --max-time 3 https://api.ipify.org || echo "")
 RAW_IP6=$(curl -s6 --max-time 3 https://api6.ipify.org || echo "")
 
 echo -e "-----------------------------------------------"
-read -p "请输入 Hysteria2 运行端口 [回车随机生成]: " USER_PORT
+# 使用封装后的函数获取端口
+USER_PORT=$(prompt_for_port)
+
 optimize_system
 install_singbox "install"
 generate_cert
@@ -548,4 +588,4 @@ echo -e "\n\033[1;34m==========================================\033[0m"
 display_system_status
 echo -e "\033[1;34m------------------------------------------\033[0m"
 display_links
-info "安装完毕。输入 'sb' 管理。"
+info "脚本部署完毕，输入 'sb' 管理"
