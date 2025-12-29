@@ -104,7 +104,7 @@ optimize_system() {
     # 兜底：防止极端情况获取到 0 或异常大值
     if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=64; fi
 
-    info "检测到系统可用内存: ${mem_total}MB"
+    info "检测到系统可用内存: ${mem_total} MB"
 
     # --- 2. 激进版阶梯变量设置 (极致爆发响应逻辑) ---
     local go_limit gogc udp_buffer mem_level
