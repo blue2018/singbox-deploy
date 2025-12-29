@@ -441,8 +441,14 @@ display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version | head -n1 | sed 's/version /v/')
     # 直接从路由表提取 initcwnd 的数值
     local CURRENT_CWND=$(ip route show default | awk -F 'initcwnd ' '{if($2) {split($2,a," "); print a[1]}}')
-    local CWND_TEXT="${CURRENT_CWND:-10 (内核默认)}"
-    [ "$CURRENT_CWND" = "15" ] && CWND_TEXT="15 (已优化)"
+    local CWND_TEXT
+    if [ "$CURRENT_CWND" = "15" ]; then
+        CWND_TEXT="15 (已优化)"
+    elif [ -n "$CURRENT_CWND" ]; then
+        CWND_TEXT="$CURRENT_CWND"
+    else
+        CWND_TEXT="10 (内核默认)"
+    fi
 
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
