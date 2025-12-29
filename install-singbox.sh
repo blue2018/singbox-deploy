@@ -345,72 +345,61 @@ EOF
 
 
 # 显示信息 (支持 IPv4/IPv6 双链接)
-show_info() {
-    info "正在检测双栈网络环境..."
-    # 分别获取 IPv4 和 IPv6，缩短超时时间提高响应速度
-    local IP4=$(curl -s4 --max-time 2 https://api.ipify.org || echo "")
-    local IP6=$(curl -s6 --max-time 2 https://api6.ipify.org || echo "")
+# [模块1] 获取环境数据 (数据层)
+get_env_data() {
+    # 检查变量是否为空。只有为空时（即本次会话第一次运行）才执行网络请求
+    if [ -z "${RAW_IP4:-}" ] && [ -z "${RAW_IP6:-}" ]; then
+        info "正在获取网络地址 (仅在首次运行时采集)..."
+        RAW_IP4=$(curl -s4 --max-time 2 https://api.ipify.org || echo "")
+        RAW_IP6=$(curl -s6 --max-time 2 https://api6.ipify.org || echo "")
+    fi
     
-    local VER_INFO=$(/usr/bin/sing-box version | head -n1)
     local CONFIG="/etc/sing-box/config.json"
-    
-    if [ ! -f "$CONFIG" ]; then err "配置文件不存在"; return; fi
-    
-    local PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG")
-    local PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG")
-    local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG")
-    local SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' || echo "unknown")
-    
-    local LINK_V4=""
-    local LINK_V6=""
-    local FULL_CLIPBOARD=""
+    [ ! -f "$CONFIG" ] && return 1
 
-    echo -e "\n\033[1;34m==========================================\033[0m"
-    echo -e "\033[1;37m        Sing-box HY2 节点详细信息\033[0m"
+    RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG")
+    RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG")
+    local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG")
+    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' || echo "unknown")
+}
+
+# [模块2] 仅显示核心链接 (展示层：精简模式)
+display_links() {
+    local LINK_V4="" LINK_V6="" FULL_CLIP=""
+    
+    # 如果两个 IP 都没有，触发你保留的警告逻辑
+    if [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ]; then
+        echo -e "\n\033[1;31m警告: 未检测到任何公网 IP 地址，请检查网络！\033[0m"
+        return
+    fi
+
+    echo -e "\n\033[1;32m[ 节点访问信息 ]\033[0m"
+    echo -e "运行端口: \033[1;33m${RAW_PORT}\033[0m"
+    echo -e "\033[1;34m------------------------------------------\033[0m"
+
+    if [ -n "$RAW_IP4" ]; then
+        LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v4"
+        FULL_CLIP="$LINK_V4"
+        echo -e "\033[1;35m[ IPv4 节点链接 ]\033[0m\n$LINK_V4\n"
+    fi
+
+    if [ -n "$RAW_IP6" ]; then
+        LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v6"
+        [ -n "$FULL_CLIP" ] && FULL_CLIP="${FULL_CLIP}\n${LINK_V6}" || FULL_CLIP="$LINK_V6"
+        echo -e "\033[1;36m[ IPv6 节点链接 ]\033[0m\n$LINK_V6"
+    fi
+    
     echo -e "\033[1;34m==========================================\033[0m"
+    [ -n "$FULL_CLIP" ] && copy_to_clipboard "$FULL_CLIP"
+}
+
+# [模块3] 显示系统状态 (展示层：系统详情)
+display_system_status() {
+    local VER_INFO=$(/usr/bin/sing-box version | head -n1)
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
-    echo -e "运行端口: \033[1;33m$PORT\033[0m"
-    echo -e "伪装 SNI: \033[1;33m$SNI\033[0m"
-    
-    # --- 逻辑判断与明文 IP 显示 ---
-    if [ -n "$IP4" ]; then
-        echo -e "IPv4 地址: \033[1;33m$IP4\033[0m"
-        LINK_V4="hy2://$PSK@$IP4:$PORT/?sni=$SNI&alpn=h3&insecure=1#$(hostname)_v4"
-        FULL_CLIPBOARD="$LINK_V4"
-    fi
-    if [ -n "$IP6" ]; then
-        echo -e "IPv6 地址: \033[1;33m$IP6\033[0m"
-        LINK_V6="hy2://$PSK@[$IP6]:$PORT/?sni=$SNI&alpn=h3&insecure=1#$(hostname)_v6"
-        # 如果 v4 也存在，则换行拼接
-        if [ -n "$FULL_CLIPBOARD" ]; then
-            FULL_CLIPBOARD="${FULL_CLIPBOARD}\n${LINK_V6}"
-        else
-            FULL_CLIPBOARD="$LINK_V6"
-        fi
-    fi
-
-    echo -e "\033[1;34m------------------------------------------\033[0m"
-    # --- 按需显示链接区 ---
-    if [ -n "$LINK_V4" ]; then
-        echo -e "\033[1;35m[ IPv4 节点链接 ]\033[0m"
-        echo -e "$LINK_V4\n"
-    fi
-    if [ -n "$LINK_V6" ]; then
-        echo -e "\033[1;36m[ IPv6 节点链接 ]\033[0m"
-        echo -e "$LINK_V6"
-    fi
-    # 如果两个都没有（极端情况）
-    if [ -z "$LINK_V4" ] && [ -z "$LINK_V6" ]; then
-        echo -e "\033[1;31m警告: 未检测到任何公网 IP 地址，请检查网络！\033[0m"
-    fi
-    echo -e "\033[1;34m==========================================\033[0m\n"
-    
-    # 执行剪贴板推送
-    if [ -n "$FULL_CLIPBOARD" ]; then
-        copy_to_clipboard "$FULL_CLIPBOARD"
-    fi
+    echo -e "伪装 SNI: \033[1;33m$RAW_SNI\033[0m"
 }
 
 
@@ -431,9 +420,16 @@ create_sb_tool() {
 if [[ "${1:-}" == "--detect-only" ]]; then
     detect_os
 elif [[ "${1:-}" == "--show-only" ]]; then
-    detect_os && show_info
+    detect_os
+    get_env_data
+    echo -e "\n\033[1;34m==========================================\033[0m"
+    display_system_status # 系统信息
+    echo -e "\033[1;34m--------------------------------------------\033[0m"
+    display_links         # 链接信息
 elif [[ "${1:-}" == "--reset-port" ]]; then
-    detect_os && create_config "$2" && setup_service && show_info
+    detect_os && create_config "$2" && setup_service && sleep 1
+    get_env_data
+    display_links  # 只显示链接（内含警告判断）
 elif [[ "${1:-}" == "--update-kernel" ]]; then
     detect_os
     if install_singbox "update"; then
