@@ -46,7 +46,7 @@ copy_to_clipboard() {
         # %b 允许 printf 解析字符串中的 \n
         local b64_content=$(printf "%b" "$content" | base64 | tr -d '\r\n')
         echo -ne "\033]52;c;${b64_content}\a"
-        echo -e "\033[1;32m[复制]\033[0m 节点链接已自动推送到本地剪贴板"
+        echo -e "\033[1;32m[复制]\033[0m 节点链接已推送至本地剪贴板"
     fi
 }
 
@@ -82,38 +82,43 @@ detect_os() {
     esac
 }
 
-# 依赖安装 (静默 & 容错增强版)
+# 依赖安装 (容错增强版)
 install_dependencies() {
     info "正在检查并安装必要依赖 (curl, jq, openssl)..."
     
-    # 定义静默运行函数：成功无声，失败报错
-    run_silent() {
-        if ! "$@" >/dev/null 2>&1; then
-            warn "命令执行有误，正在重试非静默模式: $*"
-            "$@" || { err "依赖安装失败，请检查网络或源"; exit 1; }
-        fi
-    }
-
     case "$OS" in
         alpine)
-            # Alpine 需要 coreutils 来获得完整的 base64/sha256sum 等工具
-            run_silent apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep
+            info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
+            # --no-cache 确保获取最新索引，不保留临时文件
+            apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep
             ;;
         debian)
+            # Ubuntu 和 Debian 都走这个逻辑
+            info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
             export DEBIAN_FRONTEND=noninteractive
-            # apt-get update 允许失败 (|| true)，因为只要能安装包就行
-            apt-get update -y -q >/dev/null 2>&1 || true
-            run_silent apt-get install -y -q curl jq openssl coreutils grep
+            # 允许 update 失败以便在某些源失效时仍尝试安装
+            apt-get update -y || true
+            # 移除 -q 参数，让你看到实时安装滚动条
+            apt-get install -y curl jq openssl coreutils grep
             ;;
         redhat)
-            run_silent yum install -y -q curl jq openssl coreutils grep
+            info "检测到 RHEL/CentOS 系统，正在安装依赖..."
+            # yum/dnf 安装过程通常比较详细
+            yum install -y curl jq openssl coreutils grep
             ;;
         *)
             err "不支持的系统发行版: $OS"
             exit 1
             ;;
     esac
-    succ "依赖检查完成"
+
+    # 验证关键工具是否安装成功
+    if ! command -v jq >/dev/null 2>&1; then
+        err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"
+        exit 1
+    fi
+    
+    succ "所需依赖已就绪！"
 }
 
 
@@ -121,14 +126,10 @@ install_dependencies() {
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 # ==========================================
 optimize_system() {
-    # ==========================================================
     # 0. RTT 感知模块 (关键修复：set +e 防止 Ping 失败退出)
-    # ==========================================================
     local RTT_AVG
-    
     # [关键] 临时关闭“错误即退出”，防止因网络波动导致 Ping 返回非 0 值杀掉脚本
     set +e 
-    
     # 策略 1: 优先探测 114 (评估回国链路拥塞度)
     # -c 2: 发包2次
     # -W 1: 超时等待1秒，防止卡死
@@ -138,17 +139,13 @@ optimize_system() {
     if [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ]; then
         RTT_AVG=$(ping -c 2 -W 1 8.8.8.8 2>/dev/null | awk -F'/' 'END{print int($5)}')
     fi
-    
     # [关键] 恢复“错误即退出”模式
     set -e
-
+    
     # 策略 3: 最终兜底，如果全都不通，默认 50ms (防止变量为空导致数学计算报错)
     [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ] && RTT_AVG=50
 
-
-    # ==========================================================
     # 1. 内存检测逻辑（Cgroup / Host / Proc 多路径容错）
-    # ==========================================================
     local mem_total=64
     local mem_cgroup=0
     local mem_host_total
@@ -176,17 +173,12 @@ optimize_system() {
     else
         mem_total=$mem_host_total
     fi
-    # 异常值修正
     if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=64; fi
 
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
 
-
-    # ==========================================================
     # 2. 差异化档位计算（核心算法：RTT 放大 + 内存钳位）
-    # ==========================================================
     local udp_mem_scale
-    
     # [安全锁] 计算物理内存的 40% 作为 UDP 缓冲区的绝对上限 (Page单位, 1Page=4KB)
     # 40% 内存 (MB) * 1024 / 4 = Pages
     local max_udp_mb=$((mem_total * 40 / 100)) 
@@ -232,16 +224,11 @@ optimize_system() {
 
     # 拼接最终参数 vector
     udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    
     # Systemd 内存硬限制 (留 8% 给系统内核)
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
-
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
-
-    # ==========================================================
     # 3. Swap 兜底 (Alpine 跳过)
-    # ==========================================================
     if [ "$OS" != "alpine" ]; then
         local swap_total
         swap_total=$(free -m | awk '/Swap:/ {print $2}')
@@ -255,10 +242,7 @@ optimize_system() {
         fi
     fi
 
-
-    # ==========================================================
     # 4. 内核网络栈写入 (智能探测 BBRv3)
-    # ==========================================================
     local tcp_cca="bbr"
     # 尝试加载 bbr 模块
     modprobe tcp_bbr >/dev/null 2>&1 || true
@@ -308,16 +292,16 @@ SYSCTL
     # 立即应用参数，忽略无关报错
     sysctl -p >/dev/null 2>&1 || true
 
-
-    # ==========================================================
     # 5. InitCWND 注入 (提升握手速度)
-    # ==========================================================
+    # 取黄金分割点 15 (比默认 10 强 50%，比 20 更隐蔽)
     if command -v ip >/dev/null; then
-        local default_route
-        default_route=$(ip route show default | head -n1)
-        if [[ "$default_route" == *"via"* ]]; then
-            # 尝试设置 InitCWND=15，失败则忽略
-            ip route change $default_route initcwnd 15 initrwnd 15 2>/dev/null || true
+        local default_route=$(ip route show default | head -n1)
+        if [[ $default_route == *"via"* ]]; then
+            if ip route change $default_route initcwnd 15 initrwnd 15 2>/dev/null; then
+                succ "黄金平衡版：InitCWND 设为 15，兼顾速度与隐蔽性"
+            else
+                warn "系统环境限制，跳过 InitCWND 优化(不影响使用)"
+            fi
         fi
     fi
 }
