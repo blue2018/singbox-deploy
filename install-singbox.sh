@@ -127,10 +127,8 @@ get_network_info() {
     # 关键：使用 || true 确保即便 curl 失败(如无IPv6) 脚本也不会崩溃
     RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 https://ifconfig.me || echo "")
     RAW_IP6=$(curl -s6 --max-time 5 https://api6.ipify.org || curl -s6 --max-time 5 https://ifconfig.co || echo "")
-    echo "-----------------------------------------------"
-    [ -n "$RAW_IP4" ] && echo -e "  IPv4 地址: \033[32m$RAW_IP4\033[0m" || echo -e "  IPv4 地址: \033[33m未检测到\033[0m"
-    [ -n "$RAW_IP6" ] && echo -e "  IPv6 地址: \033[32m$RAW_IP6\033[0m" || echo -e "  IPv6 地址: \033[33m未检测到\033[0m"
-    echo "-----------------------------------------------"
+    [ -n "$RAW_IP4" ] && echo " IPv4 地址: $RAW_IP4" || echo -e " IPv4 地址: \033[33m未检测到\033[0m"
+    [ -n "$RAW_IP6" ] && echo " IPv6 地址: $RAW_IP6" || echo -e " IPv6 地址: \033[33m未检测到\033[0m"
 }
 
 
@@ -607,7 +605,7 @@ display_system_status() {
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
     echo -e "Initcwnd: \033[1;33m${CWND_VAL}${CWND_STATUS}\033[0m"
-    echo -e "伪装SNI: \033[1;33m${RAW_SNI:-未检测}\033[0m"
+    echo -e "伪装SNI:  \033[1;33m${RAW_SNI:-未检测}\033[0m"
     echo -e "IPv4地址: \033[1;33m${RAW_IP4:-无}\033[0m"
     echo -e "IPv6地址: \033[1;33m${RAW_IP6:-无}\033[0m"
 }
