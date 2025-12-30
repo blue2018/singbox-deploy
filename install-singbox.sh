@@ -82,32 +82,69 @@ detect_os() {
     esac
 }
 
+# 依赖安装 (静默 & 容错增强版)
+install_dependencies() {
+    info "正在检查并安装必要依赖 (curl, jq, openssl)..."
+    
+    # 定义静默运行函数：成功无声，失败报错
+    run_silent() {
+        if ! "$@" >/dev/null 2>&1; then
+            warn "命令执行有误，正在重试非静默模式: $*"
+            "$@" || { err "依赖安装失败，请检查网络或源"; exit 1; }
+        fi
+    }
+
+    case "$OS" in
+        alpine)
+            # Alpine 需要 coreutils 来获得完整的 base64/sha256sum 等工具
+            run_silent apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep
+            ;;
+        debian)
+            export DEBIAN_FRONTEND=noninteractive
+            # apt-get update 允许失败 (|| true)，因为只要能安装包就行
+            apt-get update -y -q >/dev/null 2>&1 || true
+            run_silent apt-get install -y -q curl jq openssl coreutils grep
+            ;;
+        redhat)
+            run_silent yum install -y -q curl jq openssl coreutils grep
+            ;;
+        *)
+            err "不支持的系统发行版: $OS"
+            exit 1
+            ;;
+    esac
+    succ "依赖检查完成"
+}
+
 
 # ==========================================
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 # ==========================================
 optimize_system() {
     # ==========================================================
-    # 0. RTT 感知模块 (修复：增加 set +e 防止 Ping 失败导致脚本退出)
+    # 0. RTT 感知模块 (关键修复：set +e 防止 Ping 失败退出)
     # ==========================================================
     local RTT_AVG
     
-    # 临时关闭错误中断，防止 Ping 不通导致脚本自杀
+    # [关键] 临时关闭“错误即退出”，防止因网络波动导致 Ping 返回非 0 值杀掉脚本
     set +e 
     
-    # 尝试 Ping 114 (中国方向)
+    # 策略 1: 优先探测 114 (评估回国链路拥塞度)
+    # -c 2: 发包2次
+    # -W 1: 超时等待1秒，防止卡死
     RTT_AVG=$(ping -c 2 -W 1 114.114.114.114 2>/dev/null | awk -F'/' 'END{print int($5)}')
     
-    # 如果 114 失败，尝试 Google (国际方向)
+    # 策略 2: 如果 114 失败，探测 Google (评估国际链路)
     if [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ]; then
         RTT_AVG=$(ping -c 2 -W 1 8.8.8.8 2>/dev/null | awk -F'/' 'END{print int($5)}')
     fi
     
-    # 恢复错误中断
+    # [关键] 恢复“错误即退出”模式
     set -e
 
-    # 兜底：如果都 Ping 不通，默认给 50ms (防止 RTT 为空报错)
+    # 策略 3: 最终兜底，如果全都不通，默认 50ms (防止变量为空导致数学计算报错)
     [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ] && RTT_AVG=50
+
 
     # ==========================================================
     # 1. 内存检测逻辑（Cgroup / Host / Proc 多路径容错）
@@ -117,75 +154,90 @@ optimize_system() {
     local mem_host_total
     mem_host_total=$(free -m | awk '/Mem:/ {print $2}')
 
+    # 路径 A: Cgroup v1 (容器常用)
     if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
         mem_cgroup=$(($(cat /sys/fs/cgroup/memory/memory.limit_in_bytes) / 1024 / 1024))
+    # 路径 B: Cgroup v2 (新版系统)
     elif [ -f /sys/fs/cgroup/memory.max ]; then
         local m_max
         m_max=$(cat /sys/fs/cgroup/memory.max)
+        # 排除 "max" 字符串的情况
         [[ "$m_max" =~ ^[0-9]+$ ]] && mem_cgroup=$((m_max / 1024 / 1024))
+    # 路径 C: /proc/meminfo (物理机/虚拟机)
     elif grep -q "MemTotal" /proc/meminfo; then
         local m_proc
         m_proc=$(grep MemTotal /proc/meminfo | awk '{print $2}')
         mem_cgroup=$((m_proc / 1024))
     fi
 
+    # 决策逻辑：如果 Cgroup 读取有效且小于物理总内存，则认为是容器限制
     if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_host_total" ]; then
         mem_total=$mem_cgroup
     else
         mem_total=$mem_host_total
     fi
+    # 异常值修正
     if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=64; fi
 
-    info "系统状态: 内存=${mem_total}MB | RTT=${RTT_AVG}ms"
+    info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
+
 
     # ==========================================================
-    # 2. 差异化档位计算（RTT 加权 + 内存安全钳位）
+    # 2. 差异化档位计算（核心算法：RTT 放大 + 内存钳位）
     # ==========================================================
     local udp_mem_scale
-    # 安全锁：UDP 内存池最大值不超过物理内存的 40%
+    
+    # [安全锁] 计算物理内存的 40% 作为 UDP 缓冲区的绝对上限 (Page单位, 1Page=4KB)
+    # 40% 内存 (MB) * 1024 / 4 = Pages
     local max_udp_mb=$((mem_total * 40 / 100)) 
-    local max_udp_pages=$((max_udp_mb * 1024 / 4))
+    local max_udp_pages=$((max_udp_mb * 256)) 
 
+    # 基础档位选择
     if [ "$mem_total" -ge 450 ]; then
         SBOX_GOLIMIT="420MiB"; SBOX_GOGC="120"
-        VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
+        VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432" # 32MB
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
         SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
-        VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
+        VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216" # 16MB
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
         SBOX_GOLIMIT="100MiB"; SBOX_GOGC="70"
-        VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
+        VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608" # 8MB
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
         SBOX_GOLIMIT="52MiB"; SBOX_GOGC="50"
-        VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304"
+        VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304" # 4MB
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
     fi
 
-    # RTT 驱动的 UDP 动态池
+    # [动态算法] RTT 驱动的 UDP 动态缓冲池 (High BDP Tuning)
     local rtt_scale_min=$((RTT_AVG * 128))
     local rtt_scale_pressure=$((RTT_AVG * 256))
     local rtt_scale_max=$((RTT_AVG * 512))
 
+    # [钳位逻辑] 如果 RTT 计算出的内存需求超过了安全锁，强制降级
     if [ "$rtt_scale_max" -gt "$max_udp_pages" ]; then
         rtt_scale_max=$max_udp_pages
         rtt_scale_pressure=$((max_udp_pages / 2))
         rtt_scale_min=$((max_udp_pages / 4))
-        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (受限)"
+        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (安全受限)"
     else
         SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (RTT自适应)"
     fi
 
+    # 拼接最终参数 vector
     udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
+    
+    # Systemd 内存硬限制 (留 8% 给系统内核)
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
+
 
     # ==========================================================
     # 3. Swap 兜底 (Alpine 跳过)
@@ -193,61 +245,78 @@ optimize_system() {
     if [ "$OS" != "alpine" ]; then
         local swap_total
         swap_total=$(free -m | awk '/Swap:/ {print $2}')
+        # 仅在内存 < 150M 且无 Swap 时创建，防止小内存机器 OOM
         if [ "$swap_total" -lt 10 ] && [ "$mem_total" -lt 150 ]; then
-            warn "内存极小，正在创建 128MB Swap..."
+            warn "检测到内存吃紧，正在创建 128MB 应急 Swap..."
             fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null
             chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
             grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-            succ "Swap 兜底已就绪"
+            succ "应急 Swap 已启用"
         fi
     fi
 
+
     # ==========================================================
-    # 4. 内核网络栈写入
+    # 4. 内核网络栈写入 (智能探测 BBRv3)
     # ==========================================================
     local tcp_cca="bbr"
+    # 尝试加载 bbr 模块
     modprobe tcp_bbr >/dev/null 2>&1 || true
 
+    # 检测可用拥塞控制算法
     if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr2"; then
         tcp_cca="bbr2"
-        succ "内核支持 BBRv3 (bbr2)，已自动启用"
+        succ "内核支持 BBRv3 (bbr2)，已自动激活"
     elif sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr"; then
         tcp_cca="bbr"
+        info "内核支持标准 BBR，已激活"
     else
         tcp_cca="cubic"
-        warn "内核不支持 BBR，回退至 Cubic"
+        warn "内核不支持 BBR，已降级为 Cubic"
     fi
 
     cat > /etc/sysctl.conf <<SYSCTL
+# === 拥塞控制与队列 ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = $tcp_cca
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_fastopen = 3
+
+# === 核心网络缓冲 ===
 net.core.netdev_max_backlog = 65536
 net.core.somaxconn = 32768
 net.ipv4.tcp_max_syn_backlog = 32768
+
+# === UDP 极限优化 (变量注入) ===
 net.core.rmem_max = $VAR_UDP_RMEM
 net.core.wmem_max = $VAR_UDP_WMEM
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
+# 动态计算的 UDP 内存池
 net.ipv4.udp_mem = $udp_mem_scale
+# 提升 UDP 最小水位
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
+
+# === 路由与 MTU ===
 net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.ip_forward = 1
 vm.swappiness = 10
 SYSCTL
 
+    # 立即应用参数，忽略无关报错
     sysctl -p >/dev/null 2>&1 || true
 
+
     # ==========================================================
-    # 5. InitCWND 注入
+    # 5. InitCWND 注入 (提升握手速度)
     # ==========================================================
     if command -v ip >/dev/null; then
         local default_route
         default_route=$(ip route show default | head -n1)
         if [[ "$default_route" == *"via"* ]]; then
+            # 尝试设置 InitCWND=15，失败则忽略
             ip route change $default_route initcwnd 15 initrwnd 15 2>/dev/null || true
         fi
     fi
@@ -680,12 +749,8 @@ EOF
 detect_os
 [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
 
-# 安装必要依赖
-case "$OS" in
-    alpine) apk add --no-cache bash curl jq openssl openrc iproute2 coreutils ;;
-    debian) apt-get update && apt-get install -y curl jq openssl ;;
-    redhat) yum install -y curl jq openssl ;;
-esac
+# 调用安装依赖函数
+install_dependencies
 
 # 首次安装时采集 IP 信息
 info "正在获取本地网络地址..."
