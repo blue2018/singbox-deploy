@@ -136,7 +136,7 @@ get_network_info() {
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 # ==========================================
 optimize_system() {
-    #0. RTT 感知模块 (全能适配版)
+    # 0. RTT 感知模块 (全能适配版)
     local RTT_AVG
     # 临时关闭“错误即退出”，防止因禁 Ping 杀掉脚本
     set +e 
@@ -214,6 +214,13 @@ optimize_system() {
     else
         mem_total=$mem_host_total
     fi
+
+    # 针对 OpenVZ/LXC 的特殊补丁：如果检测到 user_beancounters，强制信任 free -m
+    if [ -f /proc/user_beancounters ]; then
+        mem_total=$mem_host_total
+        SBOX_OPTIMIZE_LEVEL="OpenVZ容器版"
+    fi
+
     if [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then mem_total=64; fi
 
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
@@ -224,6 +231,9 @@ optimize_system() {
     # 40% 内存 (MB) * 1024 / 4 = Pages
     local max_udp_mb=$((mem_total * 40 / 100)) 
     local max_udp_pages=$((max_udp_mb * 256)) 
+
+    # 初始化小鸡调度变量
+    SBOX_GOMAXPROCS=""
 
     # 基础档位选择
     if [ "$mem_total" -ge 450 ]; then
@@ -245,6 +255,7 @@ optimize_system() {
         SBOX_GOLIMIT="52MiB"; SBOX_GOGC="50"
         VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304" # 4MB
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
+        SBOX_GOMAXPROCS="1" # 针对极小内存单核优化
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
     fi
 
@@ -267,6 +278,9 @@ optimize_system() {
     udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
     # Systemd 内存硬限制 (留 8% 给系统内核)
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
+    # 软限制水位线 (80% 处触发激进回收)
+    SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
+
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
     # 3. Swap 兜底 (Alpine 跳过)
@@ -309,7 +323,7 @@ net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_fastopen = 3
 
 # === 核心网络缓冲 ===
-net.core.netdev_max_backlog = 65536
+net.core.netdev_max_backlog = 10000
 net.core.somaxconn = 32768
 net.ipv4.tcp_max_syn_backlog = 32768
 
@@ -506,6 +520,8 @@ create_config() {
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": true,
+    "udp_timeout": "5m",
+    "udp_fragment": true,
     "tls": {
       "enabled": true,
       "alpn": ["h3"],
@@ -526,14 +542,31 @@ EOF
 setup_service() {
     info "配置系统服务 (MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
     
+    # 动态判断 GODEBUG 与内核兼容性 (4.5 之后 madvdontneed 不是必须)
+    local kernel_main=$(uname -r | cut -d. -f1)
+    local kernel_minor=$(uname -r | cut -d. -f2)
+    local go_debug_val=""
+    if [ "$kernel_main" -lt 4 ] || { [ "$kernel_main" -eq 4 ] && [ "$kernel_minor" -lt 5 ]; }; then
+        go_debug_val="GODEBUG=madvdontneed=1"
+    fi
+
+    # 准备运行时环境变量
+    local env_list=(
+        "Environment=GOGC=${SBOX_GOGC:-80}"
+        "Environment=GOMEMLIMIT=$SBOX_GOLIMIT"
+    )
+    [ -n "$go_debug_val" ] && env_list+=("Environment=$go_debug_val")
+    # 如果是极低内存机器，注入单核调度环境变量
+    [ -n "${SBOX_GOMAXPROCS:-}" ] && env_list+=("Environment=GOMAXPROCS=$SBOX_GOMAXPROCS")
+
     if [ "$OS" = "alpine" ]; then
         # Alpine OpenRC (功能受限，主要应用内存与GC优化)
+        # 将数组转换为 export 格式
+        local openrc_exports=$(printf "export %s\n" "${env_list[@]}" | sed 's/Environment=//g')
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
-export GOGC=${SBOX_GOGC:-80}
-export GOMEMLIMIT=$SBOX_GOLIMIT
-export GODEBUG=madvdontneed=1
+$openrc_exports
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
@@ -543,6 +576,7 @@ EOF
         rc-update add sing-box default && rc-service sing-box restart
     else
         # Systemd 完整优化版
+        local systemd_envs=$(printf "%s\n" "${env_list[@]}")
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service (Optimized)
@@ -554,9 +588,7 @@ User=root
 WorkingDirectory=/etc/sing-box
 
 # --- 运行时环境优化 ---
-Environment=GOGC=${SBOX_GOGC:-80}
-Environment=GOMEMLIMIT=$SBOX_GOLIMIT
-Environment=GODEBUG=madvdontneed=1
+$systemd_envs
 
 # --- 进程调度优化 (防卡顿核心) ---
 # 负数 Nice 值赋予高优先级 CPU 抢占权
@@ -567,9 +599,16 @@ IOSchedulingPriority=0
 
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
+
+# --- 资源限制策略 ---
+# 软限制水位线，触发激进 GC (对小内存机器友好)
+MemoryHigh=${SBOX_MEM_HIGH:-}
 # 物理内存硬顶限制
 MemoryMax=$SBOX_MEM_MAX
+# 提升文件描述符上限
 LimitNOFILE=1000000
+# 允许无限制创建进程/线程 (由 Go 运行时自行管理)
+LimitNPROC=infinity
 
 [Install]
 WantedBy=multi-user.target
