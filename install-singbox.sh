@@ -1,4 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
+prepare_base() {
+    if [ -f /etc/alpine-release ]; then
+        echo "检测到 Alpine，正在初始化基础环境..."
+        apk add --no-cache bash curl jq openssl coreutils iproute2 iputils util-linux
+    fi
+}
+prepare_base
+
+if [ -z "$BASH_VERSION" ]; then
+    exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 # ==========================================
