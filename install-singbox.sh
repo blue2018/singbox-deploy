@@ -136,24 +136,45 @@ get_network_info() {
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 # ==========================================
 optimize_system() {
-    # 0. RTT 感知模块 (关键修复：set +e 防止 Ping 失败退出)
+    # 0. RTT 感知模块 (全能适配版) ---
     local RTT_AVG
-    # [关键] 临时关闭“错误即退出”，防止因网络波动导致 Ping 返回非 0 值杀掉脚本
+    # 临时关闭“错误即退出”，防止因禁 Ping 杀掉脚本
     set +e 
-    # 策略 1: 优先探测 114 (评估回国链路拥塞度)
-    # -c 2: 发包2次
-    # -W 1: 超时等待1秒，防止卡死
-    RTT_AVG=$(ping -c 2 -W 1 114.114.114.114 2>/dev/null | awk -F'/' 'END{print int($5)}')
-    
-    # 策略 2: 如果 114 失败，探测 Google (评估国际链路)
+    # 优先探测阿里 (评估移动回国链路)
+    RTT_AVG=$(ping -c 2 -W 1 223.5.5.5 2>/dev/null | awk -F'/' 'END{print int($5)}')
+    # 探测 Cloudflare (评估国际物理延迟)
     if [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ]; then
-        RTT_AVG=$(ping -c 2 -W 1 8.8.8.8 2>/dev/null | awk -F'/' 'END{print int($5)}')
+        RTT_AVG=$(ping -c 2 -W 1 1.1.1.1 2>/dev/null | awk -F'/' 'END{print int($5)}')
     fi
-    # [关键] 恢复“错误即退出”模式
+    # 恢复“错误即退出”
     set -e
-    
-    # 策略 3: 最终兜底，如果全都不通，默认 50ms (防止变量为空导致数学计算报错)
-    [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ] && RTT_AVG=50
+
+    # 智能地理位置补偿 (当 Ping 不通时触发)
+    if [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ]; then
+        info "Ping 探测受阻，正在通过 IP-API 预估 RTT..."
+        # 尝试在线查询国家名称
+        local LOC=$(curl -s --max-time 3 "http://ip-api.com/line/${RAW_IP4}?fields=country" || echo "Unknown")
+        # 根据国家名精准匹配 RTT
+        case "$LOC" in
+            "China"|"Hong Kong"|"Japan"|"Korea"|"Singapore"|"Taiwan")
+                RTT_AVG=50
+                info "判定为亚洲节点，预估 RTT: 50ms"
+                ;;
+            "Germany"|"France"|"United Kingdom"|"Netherlands"|"Spain"|"Poland"|"Italy")
+                RTT_AVG=180
+                info "判定为欧洲节点，预估 RTT: 180ms"
+                ;;
+            "United States"|"Canada"|"Mexico")
+                RTT_AVG=220
+                info "判定为北美节点，预估 RTT: 220ms"
+                ;;
+            *)
+                # 最终兜底：API 失败或位置无法匹配，统一采用 150ms
+                RTT_AVG=150
+                warn "API 查询失败或位置未知，应用全球平均预估值: 150ms"
+                ;;
+        esac
+    fi
 
     # 1. 内存检测逻辑（Cgroup / Host / Proc 多路径容错）
     local mem_total=64
