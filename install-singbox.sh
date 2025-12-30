@@ -121,6 +121,21 @@ install_dependencies() {
     succ "所需依赖已就绪！"
 }
 
+#获取公网IP
+get_network_info() {
+    info "正在获取网络地址..."
+    
+    # 获取 IP 并直接存入变量
+    RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 https://ifconfig.me)
+    RAW_IP6=$(curl -s6 --max-time 5 https://api6.ipify.org || curl -s6 --max-time 5 https://ifconfig.co)
+
+    echo "-----------------------------------------------"
+    # 使用 ${变量:-缺省值} 语法，进一步压缩代码
+    echo -e "  IPv4 地址: \033[32m${RAW_IP4:-未检测到}\033[0m"
+    echo -e "  IPv6 地址: \033[32m${RAW_IP6:-未检测到}\033[0m"
+    echo "-----------------------------------------------"
+}
+
 
 # ==========================================
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
@@ -738,12 +753,8 @@ detect_os
 # 调用安装依赖函数
 install_dependencies
 
-# 首次安装时采集 IP 信息
-info "正在获取本地网络地址..."
-RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 https://ifconfig.me || echo "")
-RAW_IP4=$(echo "$RAW_IP4" | xargs)
-RAW_IP6=$(curl -s6 --max-time 5 https://api6.ipify.org || curl -s6 --max-time 5 https://ifconfig.co || echo "")
-RAW_IP6=$(echo "$RAW_IP6" | xargs)
+# 获取并显示网络 IP
+get_network_info
 
 echo -e "-----------------------------------------------"
 USER_PORT=$(prompt_for_port)
