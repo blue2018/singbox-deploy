@@ -616,7 +616,6 @@ RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 h
 # 清洗：剔除空格和换行
 RAW_IP4=$(echo "$RAW_IP4" | xargs)
 RAW_IP6=$(curl -s6 --max-time 5 https://api6.ipify.org || curl -s6 --max-time 5 https://ifconfig.co || echo "")
-# 清洗：剔除空格和换行
 RAW_IP6=$(echo "$RAW_IP6" | xargs)
 
 echo -e "-----------------------------------------------"
