@@ -143,17 +143,17 @@ optimize_system() {
     # 策略 1: 优先探测 114 (评估回国链路拥塞度)
     # -c 2: 发包2次
     # -W 1: 超时等待1秒，防止卡死
-    RTT_AVG=$(ping -c 2 -W 1 114.114.114.114 2>/dev/null | awk -F'/' 'END{print int($5)}')
+    RTT_AVG=$(ping -c 2 -W 1 223.5.5.5 2>/dev/null | awk -F'/' 'END{print int($5)}')
     
     # 策略 2: 如果 114 失败，探测 Google (评估国际链路)
     if [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ]; then
-        RTT_AVG=$(ping -c 2 -W 1 8.8.8.8 2>/dev/null | awk -F'/' 'END{print int($5)}')
+        RTT_AVG=$(ping -c 2 -W 1 1.1.1.1 2>/dev/null | awk -F'/' 'END{print int($5)}')
     fi
     # [关键] 恢复“错误即退出”模式
     set -e
     
     # 策略 3: 最终兜底，如果全都不通，默认 50ms (防止变量为空导致数学计算报错)
-    [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ] && RTT_AVG=50
+    [ -z "$RTT_AVG" ] || [ "$RTT_AVG" -eq 0 ] && RTT_AVG=150
 
     # 1. 内存检测逻辑（Cgroup / Host / Proc 多路径容错）
     local mem_total=64
