@@ -285,58 +285,6 @@ optimize_system() {
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
-    # ==========================================
-    # QUIC 专用调度层 (HY2 / H3 专用)
-    # ==========================================
-    
-    # Busy Poll：减少用户态/内核态切换（QUIC 抖动杀手）
-    sysctl -w net.core.busy_read=50 >/dev/null 2>&1 || true
-    sysctl -w net.core.busy_poll=50 >/dev/null 2>&1 || true
-    
-    # FQ pacing 深度补偿（QUIC pacing 核心）
-    sysctl -w net.ipv4.tcp_limit_output_bytes=262144 >/dev/null 2>&1 || true
-    sysctl -w net.core.netdev_budget_usecs=8000 >/dev/null 2>&1 || true
-    
-    # RTT 自适应 QUIC UDP 模板
-    if [ "$RTT_AVG" -ge 150 ]; then
-        # 远程国际链路（高 BDP）
-        QUIC_UDP_MEM_MIN=262144
-        QUIC_UDP_MEM_PRESS=524288
-        QUIC_UDP_MEM_MAX=1048576
-        QUIC_UDP_RMEM_MIN=32768
-        QUIC_UDP_WMEM_MIN=32768
-        QUIC_OPT_LEVEL="QUIC 国际高 RTT 模式"
-    else
-        # 亚洲低 RTT 链路
-        QUIC_UDP_MEM_MIN=131072
-        QUIC_UDP_MEM_PRESS=262144
-        QUIC_UDP_MEM_MAX=524288
-        QUIC_UDP_RMEM_MIN=16384
-        QUIC_UDP_WMEM_MIN=16384
-        QUIC_OPT_LEVEL="QUIC 低 RTT 模式"
-    fi
-    
-    # 合并进你原来的 udp_mem（取更大值，防止互相限制）
-    udp_mem_scale="$(
-      echo $udp_mem_scale | awk -v a=$QUIC_UDP_MEM_MIN -v b=$QUIC_UDP_MEM_PRESS -v c=$QUIC_UDP_MEM_MAX \
-      '{print ($1>a?$1:a), ($2>b?$2:b), ($3>c?$3:c)}'
-    )"
-    
-    # QUIC pacing socket 专用 buffer
-    sysctl -w net.ipv4.udp_rmem_min=$QUIC_UDP_RMEM_MIN >/dev/null 2>&1 || true
-    sysctl -w net.ipv4.udp_wmem_min=$QUIC_UDP_WMEM_MIN >/dev/null 2>&1 || true
-    sysctl -w net.core.optmem_max=1048576 >/dev/null 2>&1 || true
-    
-    # NIC 卸载自动打开（只在存在 ethtool 时执行）
-    if command -v ethtool >/dev/null 2>&1; then
-        IFACE=$(ip route show default | awk '{print $5; exit}')
-        [ -n "$IFACE" ] && {
-            ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
-        }
-    fi
-    
-    SBOX_OPTIMIZE_LEVEL="$SBOX_OPTIMIZE_LEVEL + $QUIC_OPT_LEVEL"
-
     # 3. Swap 兜底 (Alpine 跳过)
     if [ "$OS" != "alpine" ]; then
         local swap_total
@@ -612,9 +560,6 @@ setup_service() {
     [ -n "$go_debug_val" ] && env_list+=("Environment=$go_debug_val")
     # 如果是极低内存机器，注入单核调度环境变量
     [ -n "${SBOX_GOMAXPROCS:-}" ] && env_list+=("Environment=GOMAXPROCS=$SBOX_GOMAXPROCS")
-
-    env_list+=("Environment=GODEBUG=memprofilerate=0,madvdontneed=1")
-    env_list+=("Environment=GOTRACEBACK=none")
 
     if [ "$OS" = "alpine" ]; then
         # Alpine OpenRC (功能受限，主要应用内存与GC优化)
