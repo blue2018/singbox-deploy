@@ -62,11 +62,11 @@ detect_os() {
         ID="unknown"
     fi
 
-    if echo "$ID $ID_LIKE" | grep -qi "alpine"; then
+    if echo "${ID:-} ${ID_LIKE:-}" | grep -qi "alpine"; then
         OS="alpine"
-    elif echo "$ID $ID_LIKE" | grep -Ei "debian|ubuntu" >/dev/null; then
+    elif echo "${ID:-} ${ID_LIKE:-}" | grep -Ei "debian|ubuntu" >/dev/null; then
         OS="debian"
-    elif echo "$ID $ID_LIKE" | grep -Ei "centos|rhel|fedora" >/dev/null; then
+    elif echo "${ID:-} ${ID_LIKE:-}" | grep -Ei "centos|rhel|fedora|rocky|almalinux" >/dev/null; then
         OS="redhat"
     else
         OS="unknown"
