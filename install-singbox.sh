@@ -648,7 +648,7 @@ EOF
 detect_os
 [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
 install_dependencies
-info "正在探测网络环境..."
+info "正在探测公网IP..."
 get_network_info
 echo -e "IPv4 地址: \033[32m${RAW_IP4:-未检测到}\033[0m"
 echo -e "IPv6 地址: \033[32m${RAW_IP6:-未检测到}\033[0m"
