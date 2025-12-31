@@ -509,7 +509,6 @@ get_env_data() {
 
 display_links() {
     local FULL_CLIP=""
-    get_network_info
     echo -e "\n\033[1;32m[节点信息]\033[0m \033[1;34m>>>\033[0m 运行端口: \033[1;33m${RAW_PORT}\033[0m"
     if [ -n "${RAW_IP4:-}" ]; then
         local LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v4"
@@ -629,9 +628,9 @@ while true; do
                 service_ctrl stop
                 rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
                        /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-                info -e "\033[32m卸载完成！\033[0m" && exit 0
+                info "\033[32m卸载完成！\033[0m" && exit 0
             else
-                info -e "\033[33m操作已取消\033[0m"
+                info "\033[33m操作已取消\033[0m"
                 sleep 1
             fi ;;
         0) exit 0 ;;
