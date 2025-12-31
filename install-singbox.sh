@@ -575,13 +575,15 @@ display_links() {
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | sed 's/version /v/')
     local ACTIVE_BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
-    local CWND_VAL=$(ip route show default 2>/dev/null | grep -oP 'initcwnd \K\d+' || echo "10")
+    # 兼容性更强的提取方式：先抓取包含 initcwnd 的部分，再提取数字
+    local CWND_VAL=$(ip route show default 2>/dev/null | grep -oE 'initcwnd [0-9]+' | awk '{print $2}')
+    [ -z "$CWND_VAL" ] && CWND_VAL="10"
     local CWND_ST=""; [ "$CWND_VAL" = "15" ] && CWND_ST=" (已优化)"; [ "$CWND_VAL" = "10" ] && CWND_ST=" (内核默认)"
     
     echo -e "系统版本: \033[1;33m${OS_DISPLAY:-Linux}\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
     echo -e "BBR算法:  \033[1;33m${ACTIVE_BBR}\033[0m"
-    echo -e "Initcwnd: \033[1;33m${CWND_VAL}${CWND_STATUS}\033[0m"
+    echo -e "Initcwnd: \033[1;33m${CWND_VAL}${CWND_ST}\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
     echo -e "伪装SNI:  \033[1;33m${RAW_SNI:-未检测}\033[0m"
     echo -e "IPv4地址: \033[1;33m${RAW_IP4:-未检测}\033[0m"
