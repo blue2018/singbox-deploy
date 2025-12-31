@@ -332,36 +332,67 @@ install_singbox() {
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')
 
     info "正在获取 GitHub 最新版本..."
+    
+    # 策略 1: GitHub API (首选)
     local RELEASE_JSON=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
     local LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "null")
+    local DOWNLOAD_SOURCE="GitHub"
 
+    # 策略 2: 官方镜像备用
     if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+        warn "GitHub API 超时，切换官方镜像源..."
         LATEST_TAG=$(curl -sL --max-time 10 https://sing-box.org/ | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo "")
+        DOWNLOAD_SOURCE="官方镜像"
     fi
 
+    # 策略 3: 本地兜底逻辑
     if [ -z "$LATEST_TAG" ]; then
-        if [ "$LOCAL_VER" != "未安装" ]; then return 0; else err "获取版本失败"; exit 1; fi
+        if [ "$LOCAL_VER" != "未安装" ]; then
+            warn "远程获取失败，保持当前版本 v$LOCAL_VER"; return 0
+        else
+            err "获取版本失败且本地无内核，请检查网络"; exit 1
+        fi
     fi
 
     local REMOTE_VER="${LATEST_TAG#v}"
-    if [[ "$MODE" == "update" ]] && [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then succ "内核已是最新版本"; return 1; fi
 
+    # ==========================================
+    # 核心显示：保留你最满意的对比面板
+    # ==========================================
+    if [[ "$MODE" == "update" ]]; then
+        echo -e "\033[1;34m---------------------------------\033[0m"
+        echo -e "当前已装版本: \033[1;33m${LOCAL_VER}\033[0m"
+        echo -e "官方最新版本: \033[1;32m${REMOTE_VER}\033[0m (源: $DOWNLOAD_SOURCE)"
+        echo -e "\033[1;34m---------------------------------\033[0m"
+        
+        if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then
+            succ "内核已是最新版本，无需更新"; return 1
+        fi
+        info "发现新版本，准备开始下载..."
+    fi
+
+    # 下载与安装
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
     local TMP_D=$(mktemp -d)
+    info "正在下载内核 (源: $DOWNLOAD_SOURCE)..."
+    
     if ! curl -fL --max-time 20 "$URL" -o "$TMP_D/sb.tar.gz"; then
+        warn "主链接下载失败，尝试加速镜像..."
         URL="https://mirror.ghproxy.com/${URL}"
         curl -fL --max-time 20 "$URL" -o "$TMP_D/sb.tar.gz"
     fi
 
-    if [ -f "$TMP_D/sb.tar.gz" ]; then
+    # 增加安全性检查：防止下载空文件或错误网页
+    if [ -f "$TMP_D/sb.tar.gz" ] && [ $(stat -c%s "$TMP_D/sb.tar.gz") -gt 1000000 ]; then
         tar -xf "$TMP_D/sb.tar.gz" -C "$TMP_D"
-        pgrep sing-box >/dev/null && (systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true)
+        pgrep sing-box >/dev/null && (service_ctrl stop >/dev/null 2>&1 || true)
         install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box
         rm -rf "$TMP_D"
         succ "内核安装成功: v$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')"
         return 0
     fi
-    return 1
+
+    err "内核下载损坏或失败 (文件过小)"; rm -rf "$TMP_D"; return 1
 }
 
 # ==========================================
