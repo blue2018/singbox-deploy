@@ -331,7 +331,7 @@ install_singbox() {
     local LOCAL_VER="未安装"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')
 
-    info "正在获取 GitHub 最新版本..."
+    info "正在获取 SingBox 最新版本..."
     
     # 策略 1: GitHub API (首选)
     local RELEASE_JSON=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
