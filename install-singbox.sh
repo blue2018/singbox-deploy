@@ -444,24 +444,18 @@ generate_cert() {
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
+    # 如果没传端口，先读旧的，读不到再随机
     if [ -z "$PORT_HY2" ]; then
-        [ -f /etc/sing-box/config.json ] && PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json) || PORT_HY2=$(shuf -i 10000-60000 -n 1)
+        PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json 2>/dev/null || echo "")
+        [[ ! "$PORT_HY2" =~ ^[0-9]+$ ]] && PORT_HY2=$(shuf -i 10000-60000 -n 1)
     fi
-
-    local PSK
-    if [ -f /etc/sing-box/config.json ]; then
-        PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
-    else
-        PSK=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
-    fi
-
-    local CURRENT_SNI
-    if [ -f /etc/sing-box/certs/fullchain.pem ]; then
-        CURRENT_SNI=$(openssl x509 -in /etc/sing-box/certs/fullchain.pem -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "bing.com")
-    else
-        CURRENT_SNI="$TLS_DOMAIN"
-    fi
-
+    # 获取/保留密码
+    local PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json 2>/dev/null || echo "")
+    [ -z "$PSK" ] && PSK=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
+    # 【关键改进】同步刷新到内存变量，确保 display_links 拿到的不是“未知”
+    RAW_PORT="$PORT_HY2"
+    RAW_PSK="$PSK"
+    # 写入 JSON
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -475,7 +469,7 @@ create_config() {
     "udp_timeout": "5m",
     "udp_fragment": true,
     "tls": {
-      "enabled": true,  
+      "enabled": true,
       "alpn": ["h3"],
       "certificate_path": "/etc/sing-box/certs/fullchain.pem",
       "key_path": "/etc/sing-box/certs/privkey.pem",
@@ -485,7 +479,6 @@ create_config() {
   "outbounds": [{ "type": "direct", "tag": "direct-out" }]
 }
 EOF
-    chmod 600 "/etc/sing-box/config.json"
 }
 
 # ==========================================
@@ -548,20 +541,28 @@ EOF
 # ==========================================
 get_env_data() {
     local CONFIG_FILE="/etc/sing-box/config.json"
-    local CERT_PATH="/etc/sing-box/certs/fullchain.pem"
-    get_network_info   
-    # 2. 提取 SNI (关键修复：优先从现有证书读取)
-    if [ -f "$CERT_PATH" ]; then
-        RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "bing.com")
+    get_network_info 
+    # 1. 获取 SNI
+    if [ -f "/etc/sing-box/certs/fullchain.pem" ]; then
+        RAW_SNI=$(openssl x509 -in /etc/sing-box/certs/fullchain.pem -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "bing.com")
     else
-        # 只有在完全没有证书时，才使用安装时随机生成的那个
         RAW_SNI="${TLS_DOMAIN:-bing.com}"
     fi
-    # 3. 读取配置
-    if [ -f "$CONFIG_FILE" ]; then
-        RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE" 2>/dev/null || echo "未知")
-        RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE" 2>/dev/null || echo "未知")
+    # 2. 获取端口和密码 (如果内存变量为空，则从文件提取)
+    if [ -z "${RAW_PORT:-}" ] || [ "${RAW_PORT}" = "未知" ]; then
+        if [ -f "$CONFIG_FILE" ]; then
+            # 方案 A: 尝试 jq (优雅)
+            RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE" 2>/dev/null || echo "")
+            # 方案 B: 失败则正则提取 (稳健)
+            [ -z "$RAW_PORT" ] && RAW_PORT=$(grep -oE '"listen_port": [0-9]+' "$CONFIG_FILE" | awk '{print $2}')
+            
+            RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE" 2>/dev/null || echo "")
+            [ -z "$RAW_PSK" ] && RAW_PSK=$(grep -oE '"password": "[^"]+"' "$CONFIG_FILE" | cut -d'"' -f4)
+        fi
     fi
+    # 最终确保不是空的
+    [ -z "${RAW_PORT:-}" ] && RAW_PORT="未知"
+    [ -z "${RAW_PSK:-}" ] && RAW_PSK="未知"
 }
 
 display_links() {
