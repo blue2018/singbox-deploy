@@ -686,18 +686,34 @@ while true; do
             succ "重启成功：已同步最新的内核优化与内存限制"
             read -r -p "按回车键返回菜单..." ;;
         6) 
-            read -r -p "确定卸载？(y/N)(默认取消): " confirm
+            read -r -p "确定彻底卸载？此操作将还原系统设置 (y/N): " confirm
             confirm=$(echo "${confirm:-n}" | tr '[:upper:]' '[:lower:]')
             if [[ "$confirm" == "y" ]]; then
-                # 停止服务
-                service_ctrl stop || true
-                # 移除自启项
+                info "正在停止并移除服务..."
+                service_ctrl stop >/dev/null 2>&1 || true
                 if [ -f /etc/init.d/sing-box ]; then
-                    rc-update del sing-box || true
+                    rc-update del sing-box >/dev/null 2>&1 || true
                 fi
-                # 彻底删除文件
-                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-                succ "卸载完成" && exit 0
+                systemctl disable sing-box >/dev/null 2>&1 || true
+
+                info "正在还原内核网络参数..."
+                # 删除脚本写入的 sysctl 配置并重新加载系统默认值
+                rm -f /etc/sysctl.conf
+                touch /etc/sysctl.conf
+                sysctl --system >/dev/null 2>&1 || true
+
+                info "正在清理文件与应急 Swap..."
+                # 卸载并删除可能的 Swap 文件
+                if [ -f /swapfile ]; then
+                    swapoff /swapfile 2>/dev/null || true
+                    rm -f /swapfile
+                fi
+                
+                # 删除所有相关文件和快捷方式
+                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
+                       /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
+                
+                succ "彻底卸载完成！系统已恢复干净状态" && exit 0
             else
                 info "已取消操作"
                 sleep 1
