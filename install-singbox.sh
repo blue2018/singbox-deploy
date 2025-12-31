@@ -302,6 +302,13 @@ vm.swappiness = 10
 SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
+    case "$VAR_TCP_CONG" in
+        bbr3) succ "极致性能：内核支持 BBRv3，已开启最新算法" ;;
+        bbr2) succ "先行版本：内核支持 BBRv2，已激活增强控制" ;;
+        bbr)  succ "标准版本：内核支持 BBRv1，已完成自动调优" ;;
+        *)    warn "兼容模式：内核不支持 BBR，已应用 Cubic 优化" ;;
+    esac
+
     # InitCWND 注入 (提升握手速度)
     # 取黄金分割点 15 (比默认 10 强 50%，比 20 更隐蔽)
     if command -v ip >/dev/null; then
@@ -623,14 +630,17 @@ while true; do
         6) 
             read -r -p "确定卸载？(y/N)(默认取消): " confirm
             confirm=$(echo "${confirm:-n}" | tr '[:upper:]' '[:lower:]')
-            
             if [[ "$confirm" == "y" ]]; then
-                service_ctrl stop
-                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
+                info "正在停止服务并清理..."
+                service_ctrl stop || true
+                # 清理自启项 (Alpine/OpenRC)
+                [ -f /etc/init.d/sing-box ] && rc-update del sing-box 2>/dev/null || true
+                # 清理文件
+                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \  
                        /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
                 succ "卸载完成！" && exit 0
             else
-                warn "操作已取消"
+                info "已取消操作"
                 sleep 1
             fi ;;
         0) exit 0 ;;
