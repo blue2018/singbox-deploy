@@ -91,22 +91,20 @@ install_dependencies() {
     case "$OS" in
         alpine)
             info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
-            # --no-cache 确保获取最新索引，不保留临时文件
-            apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep
+            apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep haveged
+            rc-update add haveged default && rc-service haveged start || true
             ;;
         debian)
-            # Ubuntu 和 Debian 都走这个逻辑
             info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
             export DEBIAN_FRONTEND=noninteractive
-            # 允许 update 失败以便在某些源失效时仍尝试安装
             apt-get update -y || true
-            # 移除 -q 参数，让你看到实时安装滚动条
-            apt-get install -y curl jq openssl coreutils grep
+            apt-get install -y curl jq openssl coreutils grep haveged
+            systemctl enable --now haveged || true
             ;;
         redhat)
             info "检测到 RHEL/CentOS 系统，正在安装依赖..."
-            # yum/dnf 安装过程通常比较详细
-            yum install -y curl jq openssl coreutils grep
+            yum install -y curl jq openssl coreutils grep haveged
+            systemctl enable --now haveged || true
             ;;
         *)
             err "不支持的系统发行版: $OS"
@@ -114,12 +112,11 @@ install_dependencies() {
             ;;
     esac
 
-    # 验证关键工具是否安装成功
+    # 原有的验证逻辑
     if ! command -v jq >/dev/null 2>&1; then
         err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"
         exit 1
     fi
-    
     succ "所需依赖已就绪！"
 }
 
