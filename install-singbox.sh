@@ -455,6 +455,13 @@ create_config() {
         PSK=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
     fi
 
+    local CURRENT_SNI
+    if [ -f /etc/sing-box/certs/fullchain.pem ]; then
+        CURRENT_SNI=$(openssl x509 -in /etc/sing-box/certs/fullchain.pem -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "bing.com")
+    else
+        CURRENT_SNI="$TLS_DOMAIN"
+    fi
+
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -468,7 +475,7 @@ create_config() {
     "udp_timeout": "5m",
     "udp_fragment": true,
     "tls": {
-      "enabled": true,
+      "enabled": true,  
       "alpn": ["h3"],
       "certificate_path": "/etc/sing-box/certs/fullchain.pem",
       "key_path": "/etc/sing-box/certs/privkey.pem",
@@ -541,18 +548,19 @@ EOF
 # ==========================================
 get_env_data() {
     local CONFIG_FILE="/etc/sing-box/config.json"
-    # 1. 无论如何先刷新网络 IP (解决安装前显示问题)
-    get_network_info 
-    # 2. 只有文件存在时才读取配置变量
+    local CERT_PATH="/etc/sing-box/certs/fullchain.pem"
+    get_network_info   
+    # 2. 提取 SNI (关键修复：优先从现有证书读取)
+    if [ -f "$CERT_PATH" ]; then
+        RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "bing.com")
+    else
+        # 只有在完全没有证书时，才使用安装时随机生成的那个
+        RAW_SNI="${TLS_DOMAIN:-bing.com}"
+    fi
+    # 3. 读取配置
     if [ -f "$CONFIG_FILE" ]; then
         RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE" 2>/dev/null || echo "未知")
         RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE" 2>/dev/null || echo "未知")
-        local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG_FILE" 2>/dev/null)
-        if [ -f "${CERT_PATH:-}" ]; then
-            RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "bing.com")
-        else
-            RAW_SNI="bing.com"
-        fi
     fi
 }
 
