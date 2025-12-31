@@ -564,9 +564,8 @@ display_links() {
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | sed 's/version /v/')
     local ACTIVE_BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
-    local CWND_VAL=$(ip route show default | awk -F 'initcwnd ' '{if($2) {split($2,a," "); print a[1]}}' || echo "10")
-
-    local CWND_STATUS=""; [[ "$CWND_VAL" == "15" ]] && CWND_STATUS=" (已优化)"; [[ "$CWND_VAL" == "10" ]] && CWND_STATUS=" (内核默认)"
+    local CWND_VAL=$(ip route show default 2>/dev/null | grep -oP 'initcwnd \K\d+' || echo "10")
+    local CWND_ST=""; [ "$CWND_VAL" = "15" ] && CWND_ST=" (已优化)"; [ "$CWND_VAL" = "10" ] && CWND_ST=" (内核默认)"
     
     echo -e "系统版本: \033[1;33m${OS_DISPLAY:-Linux}\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
