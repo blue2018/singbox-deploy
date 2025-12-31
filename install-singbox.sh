@@ -637,7 +637,9 @@ while true; do
     esac
 done
 EOF
-    chmod +x "$SB_PATH"; ln -sf "$SB_PATH" "/usr/local/bin/SB"
+    chmod +x "$SB_PATH"
+    ln -sf "$SB_PATH" /usr/local/bin/sb 2>/dev/null || true
+    ln -sf "$SB_PATH" /usr/local/bin/SB 2>/dev/null || true
 }
 
 # ==========================================
