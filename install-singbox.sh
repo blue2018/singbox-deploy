@@ -653,11 +653,38 @@ while true; do
     fi
     
     case "${opt}" in
-        1) source "$CORE" --show-only; read -r -p "按回车键返回菜单..." ;;
-        2) vi /etc/sing-box/config.json && source "$CORE" --reset-port "";;
-        3) NEW_PORT=$(prompt_for_port); source "$CORE" --reset-port "$NEW_PORT";;
-        4) source "$CORE" --update-kernel; read -r -p "按回车键返回菜单..." ;;
-        5) source "$CORE" --reset-port ""; succ "服务已重启"; read -r -p "按回车键返回菜单..." ;;
+        1) 
+            source "$CORE" --show-only
+            read -r -p "按回车键返回菜单..." ;;
+        2) 
+            local CONF="/etc/sing-box/config.json"
+            local OLD_MD5=$(md5sum "$CONF" 2>/dev/null | awk '{print $1}')
+            vi "$CONF"
+            local NEW_MD5=$(md5sum "$CONF" 2>/dev/null | awk '{print $1}')
+            
+            if [[ "$OLD_MD5" != "$NEW_MD5" ]]; then
+                source "$CORE" --reset-port ""
+                succ "配置已更新并重启"
+            else
+                info "配置未更改，跳过重启"
+            fi
+            read -r -p "按回车键返回菜单..." ;;
+        3) 
+            NEW_PORT=$(prompt_for_port)
+            source "$CORE" --reset-port "$NEW_PORT"
+            read -r -p "按回车键返回菜单..." ;;
+        4) 
+            source "$CORE" --update-kernel
+            read -r -p "按回车键返回菜单..." ;;
+        5) 
+            # 重新探测环境并执行性能优化
+            info "正在执行系统性能调优..."
+            check_kernel_env && check_memory_limit && optimize_system
+            # 重新应用配置与服务注入
+            info "正在同步服务配置..."
+            setup_service >/dev/null 2>&1 || service_ctrl restart
+            succ "重启成功：已同步最新的内核优化与内存限制"
+            read -r -p "按回车键返回菜单..." ;;
         6) 
             read -r -p "确定卸载？(y/N)(默认取消): " confirm
             confirm=$(echo "${confirm:-n}" | tr '[:upper:]' '[:lower:]')
@@ -670,7 +697,7 @@ while true; do
                 fi
                 # 彻底删除文件
                 rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-                succ "卸载完成！" && exit 0
+                succ "卸载完成" && exit 0
             else
                 info "已取消操作"
                 sleep 1
