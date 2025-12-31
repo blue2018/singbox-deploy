@@ -90,33 +90,43 @@ detect_os() {
 
 # 依赖安装
 install_dependencies() {
-    info "正在检查并安装必要依赖..."
+    info "正在检查并安装必要依赖 (curl, jq, openssl)..."
+    
     case "$OS" in
         alpine)
+            info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
             apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep haveged
             rc-update add haveged default && rc-service haveged start || true
             ;;
         debian)
+            info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -y || true
             apt-get install -y curl jq openssl coreutils grep haveged
             systemctl enable --now haveged || true
             ;;
         redhat)
+            info "检测到 RHEL/CentOS 系统，正在安装依赖..."
             yum install -y curl jq openssl coreutils grep haveged
             systemctl enable --now haveged || true
             ;;
+        *)
+            err "不支持的系统发行版: $OS"
+            exit 1
+            ;;
     esac
+
+    if ! command -v jq >/dev/null 2>&1; then
+        err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"
+        exit 1
+    fi
     succ "所需依赖已就绪！"
 }
 
-# 获取公网IP
+# 获取公网IP (实时更新)
 get_network_info() {
-    info "正在获取网络地址..."
     RAW_IP4=$(curl -s4 --max-time 5 https://api.ipify.org || curl -s4 --max-time 5 https://ifconfig.me || echo "")
     RAW_IP6=$(curl -s6 --max-time 5 https://api6.ipify.org || curl -s6 --max-time 5 https://ifconfig.co || echo "")
-    [ -n "$RAW_IP4" ] && echo -e "IPv4 地址: \033[32m$RAW_IP4\033[0m" || echo -e "IPv4 地址: \033[33m未检测到\033[0m"
-    [ -n "$RAW_IP6" ] && echo -e "IPv6 地址: \033[32m$RAW_IP6\033[0m" || echo -e "IPv6 地址: \033[33m未检测到\033[0m"
 }
 
 # ==========================================
@@ -209,55 +219,57 @@ optimize_system() {
 
     info "系统画像: 核心数=${CPU_CORES} | 可用内存=${MEM_TOTAL}MB | 拥塞控制=${VAR_TCP_CONG}"
 
-    # 2. 差异化档位计算（核心算法：RTT 放大 + 内存钳位）
+    # 2. 差异化档位计算
     local max_udp_mb=$((MEM_TOTAL * 40 / 100)) 
     local max_udp_pages=$((max_udp_mb * 256)) 
     SBOX_GOMAXPROCS=""
-    [ "$IS_OPENVZ" = true ] && SBOX_OPTIMIZE_LEVEL="OpenVZ容器版" || SBOX_OPTIMIZE_LEVEL=""
+    local CURRENT_OPT=""
+    [ "$IS_OPENVZ" = true ] && CURRENT_OPT="OpenVZ容器版"
 
     if [ "$MEM_TOTAL" -ge 450 ]; then
         SBOX_GOLIMIT="420MiB"; SBOX_GOGC="120"; VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
-        VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"; SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} 512M 旗舰版"
+        VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"; CURRENT_OPT="${CURRENT_OPT} 512M 旗舰版"
     elif [ "$MEM_TOTAL" -ge 200 ]; then
         SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"; VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
-        VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"; SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} 256M 增强版"
+        VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"; CURRENT_OPT="${CURRENT_OPT} 256M 增强版"
     elif [ "$MEM_TOTAL" -ge 100 ]; then
         SBOX_GOLIMIT="100MiB"; SBOX_GOGC="70"; VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
-        VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"; SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} 128M 紧凑版"
+        VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"; CURRENT_OPT="${CURRENT_OPT} 128M 紧凑版"
     else
         SBOX_GOLIMIT="52MiB"; SBOX_GOGC="50"; VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304"
-        VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"; SBOX_GOMAXPROCS="1"; SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} 64M 生存版"
+        VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"; SBOX_GOMAXPROCS="1"; CURRENT_OPT="${CURRENT_OPT} 64M 生存版"
     fi
 
-    # 性能分流注入 (CPU 核心数二次校验)
+    # 性能分流注入
     if [ "$CPU_CORES" -gt 1 ]; then
         local mask=$(printf '%x' $(( (1 << CPU_CORES) - 1 )))
         for rps_file in /sys/class/net/*/queues/rx-*/rps_cpus; do echo "$mask" > "$rps_file" 2>/dev/null || true; done
         sysctl -w net.core.rps_sock_flow_entries=32768 >/dev/null 2>&1 || true
-        SBOX_GOMAXPROCS=""; SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} + 多核RPS"
+        CURRENT_OPT="${CURRENT_OPT} + 多核RPS"
     else
         SBOX_GOMAXPROCS="1"
-        [[ ! "$SBOX_OPTIMIZE_LEVEL" == *"(单核"* ]] && SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (单核优化)"
+        [[ ! "$CURRENT_OPT" == *"(单核"* ]] && CURRENT_OPT="${CURRENT_OPT} (单核优化)"
     fi
 
-    # [动态算法] RTT 驱动的 UDP 动态缓冲池 (High BDP Tuning)
+    # [动态算法] RTT 驱动的 UDP 动态缓冲池
     local rtt_scale_min=$((RTT_AVG * 128))
     local rtt_scale_pressure=$((RTT_AVG * 256))
     local rtt_scale_max=$((RTT_AVG * 512))
 
     if [ "$rtt_scale_max" -gt "$max_udp_pages" ]; then
         rtt_scale_max=$max_udp_pages; rtt_scale_pressure=$((max_udp_pages / 2)); rtt_scale_min=$((max_udp_pages / 4))
-        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (安全受限)"
+        CURRENT_OPT="${CURRENT_OPT} (安全受限)"
     else
-        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (RTT自适应)"
+        CURRENT_OPT="${CURRENT_OPT} (RTT自适应)"
     fi
+    SBOX_OPTIMIZE_LEVEL="$CURRENT_OPT"
 
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
     SBOX_MEM_MAX="$((MEM_TOTAL * 92 / 100))M"
     SBOX_MEM_HIGH="$((MEM_TOTAL * 80 / 100))M"
 
-    # 3. Swap 兜底 (Alpine 跳过)
-    if [ "$OS" != "alpine" ]; then
+    # Swap 兜底
+    if [ "${OS:-}" != "alpine" ]; then
         local swap_total=$(free -m | awk '/Swap:/ {print $2}')
         if [ "$swap_total" -lt 10 ] && [ "$MEM_TOTAL" -lt 150 ]; then
             warn "创建 128MB 应急 Swap..."
@@ -266,10 +278,8 @@ optimize_system() {
         fi
     fi
 
-    # 4. 内核网络栈写入
+    # 内核网络栈写入
     [[ "$VAR_TCP_CONG" != "cubic" ]] && SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} + ${VAR_TCP_CONG}"
-    info "优化策略: $SBOX_OPTIMIZE_LEVEL"
-
     cat > /etc/sysctl.conf <<SYSCTL
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = $VAR_TCP_CONG
@@ -292,7 +302,7 @@ vm.swappiness = 10
 SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
-    # 5. InitCWND 注入 (提升握手速度)
+    # InitCWND 注入 (提升握手速度)
     # 取黄金分割点 15 (比默认 10 强 50%，比 20 更隐蔽)
     if command -v ip >/dev/null; then
         local default_route=$(ip route show default | head -n1)
@@ -314,14 +324,12 @@ install_singbox() {
     local LOCAL_VER="未安装"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')
 
-    info "正在连接 GitHub API 获取版本信息..."
-    local RELEASE_JSON=$(curl -sL --max-time 23 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
+    info "正在获取 GitHub 最新版本..."
+    local RELEASE_JSON=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null)
     local LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "null")
-    local DOWNLOAD_SOURCE="GitHub"
 
     if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
-        LATEST_TAG=$(curl -sL --max-time 15 https://sing-box.org/ | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo "")
-        DOWNLOAD_SOURCE="官方镜像"
+        LATEST_TAG=$(curl -sL --max-time 10 https://sing-box.org/ | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo "")
     fi
 
     if [ -z "$LATEST_TAG" ]; then
@@ -329,15 +337,13 @@ install_singbox() {
     fi
 
     local REMOTE_VER="${LATEST_TAG#v}"
-    if [[ "$MODE" == "update" ]]; then
-        if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then succ "内核已是最新版本"; return 1; fi
-    fi
+    if [[ "$MODE" == "update" ]] && [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then succ "内核已是最新版本"; return 1; fi
 
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
     local TMP_D=$(mktemp -d)
-    if ! curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz"; then
+    if ! curl -fL --max-time 20 "$URL" -o "$TMP_D/sb.tar.gz"; then
         URL="https://mirror.ghproxy.com/${URL}"
-        curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz"
+        curl -fL --max-time 20 "$URL" -o "$TMP_D/sb.tar.gz"
     fi
 
     if [ -f "$TMP_D/sb.tar.gz" ]; then
@@ -347,10 +353,8 @@ install_singbox() {
         rm -rf "$TMP_D"
         succ "内核安装成功: v$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')"
         return 0
-    else
-        rm -rf "$TMP_D"
-        return 0
     fi
+    return 1
 }
 
 # ==========================================
@@ -371,7 +375,7 @@ prompt_for_port() {
         elif is_valid_port "$input_port"; then
             echo "$input_port"; return 0
         else
-            echo -e "\033[1;31m[错误]\033[0m 端口无效" >&2
+            err "端口无效"
         fi
     done
 }
@@ -488,23 +492,31 @@ EOF
 # ==========================================
 get_env_data() {
     local CONFIG_FILE="/etc/sing-box/config.json"
-    [ ! -f "$CONFIG_FILE" ] && return 1
-    RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE")
-    RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE")
-    local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG_FILE")
-    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' || echo "unknown")
+    # 1. 无论如何先刷新网络 IP (解决安装前显示问题)
+    get_network_info 
+    # 2. 只有文件存在时才读取配置变量
+    if [ -f "$CONFIG_FILE" ]; then
+        RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE" 2>/dev/null || echo "未知")
+        RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE" 2>/dev/null || echo "未知")
+        local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG_FILE" 2>/dev/null)
+        if [ -f "${CERT_PATH:-}" ]; then
+            RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' 2>/dev/null || echo "bing.com")
+        else
+            RAW_SNI="bing.com"
+        fi
+    fi
 }
 
 display_links() {
-    local LINK_V4="" LINK_V6="" FULL_CLIP=""
-    [ -z "${RAW_IP4:-}" ] && [ -z "${RAW_IP6:-}" ] && { echo "未检测到 IP"; return; }
+    local FULL_CLIP=""
+    get_network_info
     echo -e "\n\033[1;32m[节点信息]\033[0m \033[1;34m>>>\033[0m 运行端口: \033[1;33m${RAW_PORT}\033[0m"
     if [ -n "${RAW_IP4:-}" ]; then
-        LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v4"
+        local LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v4"
         FULL_CLIP="$LINK_V4"; echo -e "\n\033[1;35m[IPv4节点链接]\033[0m\n$LINK_V4\n"
     fi
     if [ -n "${RAW_IP6:-}" ]; then
-        LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v6"
+        local LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v6"
         [ -n "$FULL_CLIP" ] && FULL_CLIP="${FULL_CLIP}\n${LINK_V6}" || FULL_CLIP="$LINK_V6"
         echo -e "\033[1;36m[IPv6节点链接]\033[0m\n$LINK_V6"
     fi
@@ -514,15 +526,13 @@ display_links() {
 
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | sed 's/version /v/')
-    # 实时获取内核生效的 TCP 拥塞控制算法
     local ACTIVE_BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
-    # 获取当前的 InitCWND 值
     local CWND_VAL=$(ip route show default | awk -F 'initcwnd ' '{if($2) {split($2,a," "); print a[1]}}' || echo "10")
     
-    echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
+    echo -e "系统版本: \033[1;33m${OS_DISPLAY:-Linux}\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
-    echo -e "BBR 算法: \033[1;33m${ACTIVE_BBR}\033[0m"
+    echo -e "BBR算法:  \033[1;33m${ACTIVE_BBR}\033[0m"
     echo -e "Initcwnd: \033[1;33m${CWND_VAL:-10}\033[0m"
     echo -e "伪装SNI:  \033[1;33m${RAW_SNI:-未检测}\033[0m"
     echo -e "IPv4地址: \033[1;33m${RAW_IP4:-未检测}\033[0m"
@@ -530,76 +540,49 @@ display_system_status() {
 }
 
 # ==========================================
-# 管理脚本生成 (固化优化变量与逻辑)
+# 管理脚本生成
 # ==========================================
 create_sb_tool() {
     mkdir -p /etc/sing-box
-    # 写入固化变量 (确保管理脚本知晓当前的优化状态)
     cat > "$SBOX_CORE" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 SBOX_CORE='$SBOX_CORE'
-# 基础硬件画像固化
 CPU_CORES=$CPU_CORES
 MEM_TOTAL=$MEM_TOTAL
 VAR_TCP_CONG='$VAR_TCP_CONG'
 IS_OPENVZ=$IS_OPENVZ
-# 优化参数固化
 SBOX_GOLIMIT='$SBOX_GOLIMIT'
-SBOX_GOGC='${SBOX_GOGC:-80}'
+SBOX_GOGC='$SBOX_GOGC'
 SBOX_MEM_MAX='$SBOX_MEM_MAX'
-SBOX_MEM_HIGH='${SBOX_MEM_HIGH:-}'
-SBOX_GOMAXPROCS='${SBOX_GOMAXPROCS:-}'
+SBOX_MEM_HIGH='$SBOX_MEM_HIGH'
+SBOX_GOMAXPROCS='$SBOX_GOMAXPROCS'
 SBOX_OPTIMIZE_LEVEL='$SBOX_OPTIMIZE_LEVEL'
 VAR_SYSTEMD_NICE='$VAR_SYSTEMD_NICE'
 VAR_SYSTEMD_IOSCHED='$VAR_SYSTEMD_IOSCHED'
-VAR_UDP_RMEM='${VAR_UDP_RMEM:-4194304}'
-VAR_UDP_WMEM='${VAR_UDP_WMEM:-4194304}'
 TLS_DOMAIN_POOL=(${TLS_DOMAIN_POOL[@]})
-RAW_IP4='${RAW_IP4:-}'
-RAW_IP6='${RAW_IP6:-}'
 EOF
 
-    # 声明函数并追加到核心脚本 (按逻辑顺序排列)
-    # 1. 基础工具类
     declare -f info warn err succ copy_to_clipboard detect_os get_network_info >> "$SBOX_CORE"
-    # 2. 探测与优化核心类 (必须包含 check_kernel_env 和 check_memory_limit)
     declare -f check_kernel_env check_memory_limit optimize_system >> "$SBOX_CORE"
-    # 3. 安装与配置类
     declare -f install_singbox is_valid_port prompt_for_port generate_cert create_config setup_service >> "$SBOX_CORE"
-    # 4. 数据展示类
     declare -f get_env_data display_links display_system_status >> "$SBOX_CORE"
 
-    # 写入核心控制逻辑
     cat >> "$SBOX_CORE" <<'EOF'
 if [[ "${1:-}" == "--detect-only" ]]; then
     detect_os
 elif [[ "${1:-}" == "--show-only" ]]; then
-    detect_os
-    get_env_data
+    detect_os; get_env_data
     echo -e "\n\033[1;34m==========================================\033[0m"
-    display_system_status # 系统信息 (内含 BBR/IP/InitCWND 显示)
-    echo -e "\033[1;34m------------------------------------------\033[0m"
-    display_links         # 节点链接 (内含 OSC52 复制)
+    display_system_status; echo -e "\033[1;34m------------------------------------------\033[0m"; display_links
 elif [[ "${1:-}" == "--reset-port" ]]; then
-    detect_os 
-    # 重新触发探测与优化，确保 Systemd 限制与内核参数同步更新
-    check_kernel_env
-    check_memory_limit
-    optimize_system 
-    create_config "$2" 
-    setup_service 
-    sleep 1
-    get_env_data
-    display_links
+    detect_os; check_kernel_env; check_memory_limit; optimize_system
+    create_config "$2"; setup_service; sleep 1; get_env_data; display_links
 elif [[ "${1:-}" == "--update-kernel" ]]; then
     detect_os
     if install_singbox "update"; then
-        check_kernel_env
-        check_memory_limit
-        optimize_system # 更新后重新应用优化
-        setup_service
-        echo -e "\033[1;32m[OK]\033[0m 内核已更新并重新应用相关优化"
+        check_kernel_env; check_memory_limit; optimize_system; setup_service
+        succ "内核已更新并同步优化"
     fi
 fi
 EOF
@@ -610,15 +593,8 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 CORE="/etc/sing-box/core_script.sh"
-if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
 source "$CORE" --detect-only
-
-info() { echo -e "\033[1;34m[INFO]\033[0m $*"; }
-service_ctrl() {
-    if [ -f /etc/init.d/sing-box ]; then rc-service sing-box $1
-    else systemctl $1 sing-box; fi
-}
-
+service_ctrl() { systemctl $1 sing-box 2>/dev/null || rc-service sing-box $1; }
 while true; do
     echo "=========================="
     echo " Sing-box HY2 管理 (快捷键: sb)"
@@ -629,54 +605,40 @@ while true; do
     echo "4. 更新内核"
     echo "=========================="
     read -r -p "请选择 [0-6]: " opt
+    # 去除首尾空格
     opt=$(echo "$opt" | xargs echo -n 2>/dev/null || echo "$opt")
-    
+    # 校验：不能为空，且必须是 0-6 之间的数字
     if [[ -z "$opt" ]] || [[ ! "$opt" =~ ^[0-6]$ ]]; then
-        echo -e "\033[1;31m输入有误 [$opt]，请重新输入\033[0m"
+        # 这里增加了一个清除空输入显示的效果
+        echo -e "\n\033[1;31m错误：请输入 0 到 6 之间的有效数字！\033[0m"
         sleep 1.5
         continue
     fi
     
-    case "$opt" in
-        1) 
-            source "$CORE" --show-only
-            read -r -p $'\n按回车键返回菜单...' ;;
-        2) 
-            vi /etc/sing-box/config.json
-            # 编辑配置后触发“重置逻辑”以应用可能的端口变更或优化重新加载
-            source "$CORE" --reset-port ""
-            echo -e "\n\033[1;32m[OK]\033[0m 配置已保存，优化参数已重新同步。"
-            read -r -p $'\n按回车键返回菜单...' ;;
-        3) 
-            NEW_PORT=$(prompt_for_port)
-            source "$CORE" --reset-port "$NEW_PORT"
-            read -r -p $'\n按回车键返回菜单...' ;;
-        4) 
-            source "$CORE" --update-kernel
-            read -r -p $'\n按回车键返回菜单...' ;;
-        5) 
-            # 重启服务选项也改为调用 reset-port 以确保优化配置被刷新
-            source "$CORE" --reset-port ""
-            info "服务已重启并重新应用优化参数"
-            read -r -p $'\n按回车键返回菜单...' ;;
+    case "${opt}" in
+        1) source "$CORE" --show-only; read -r -p "按回车键返回菜单..." ;;
+        2) vi /etc/sing-box/config.json && source "$CORE" --reset-port "";;
+        3) NEW_PORT=$(prompt_for_port); source "$CORE" --reset-port "$NEW_PORT";;
+        4) source "$CORE" --update-kernel; read -r -p "按回车键返回菜单..." ;;
+        5) source "$CORE" --reset-port ""; succ "服务已重启"; read -r -p "按回车键返回菜单..." ;;
         6) 
-            read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
-            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            read -r -p "确定卸载？(y/N)(默认取消): " confirm
+            confirm=$(echo "${confirm:-n}" | tr '[:upper:]' '[:lower:]')
+            
+            if [[ "$confirm" == "y" ]]; then
                 service_ctrl stop
-                [ -f /etc/init.d/sing-box ] && rc-update del sing-box || true
-                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-                info "卸载完成！"
-                exit 0
+                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
+                       /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
+                info -e "\033[32m卸载完成！\033[0m" && exit 0
             else
-                info "已取消卸载！"
-            fi
-            ;;
+                info -e "\033[33m操作已取消\033[0m"
+                sleep 1
+            fi ;;
         0) exit 0 ;;
     esac
 done
 EOF
-    chmod +x "$SB_PATH"
-    ln -sf "$SB_PATH" "/usr/local/bin/SB"
+    chmod +x "$SB_PATH"; ln -sf "$SB_PATH" "/usr/local/bin/SB"
 }
 
 # ==========================================
@@ -685,22 +647,20 @@ EOF
 detect_os
 [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
 install_dependencies
+info "正在探测网络环境..."
 get_network_info
+echo -e "IPv4 地址: \033[32m${RAW_IP4:-未检测到}\033[0m"
+echo -e "IPv6 地址: \033[32m${RAW_IP6:-未检测到}\033[0m"
 echo -e "-----------------------------------------------"
 USER_PORT=$(prompt_for_port)
-
-# 探测阶段
 check_kernel_env
 check_memory_limit
-
-# 执行阶段
 optimize_system
 install_singbox "install"
 generate_cert
 create_config "$USER_PORT"
 setup_service
 create_sb_tool
-
 get_env_data
 echo -e "\n\033[1;34m==========================================\033[0m"
 display_system_status
