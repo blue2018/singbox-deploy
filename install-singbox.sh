@@ -621,7 +621,7 @@ EOF
     declare -f install_singbox is_valid_port prompt_for_port generate_cert create_config setup_service >> "$SBOX_CORE"
     declare -f get_env_data display_links display_system_status >> "$SBOX_CORE"
 
-    cat >> "$SBOX_CORE" <<EOF
+    cat >> "$SBOX_CORE" <<'EOF'
 if [[ "${1:-}" == "--detect-only" ]]; then
     detect_os
 elif [[ "${1:-}" == "--show-only" ]]; then
