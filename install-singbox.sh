@@ -232,33 +232,29 @@ probe_memory_total() {
     echo "$mem_total"  
 }
 
-#生成端口
+# 获取并校验端口 (范围：1025-65535)
 prompt_for_port() {
     local input_port
     while true; do
         read -p "请输入端口 [1025-65535] (回车随机生成): " input_port
+        
+        # 情况 1: 用户直接回车，生成随机端口 (范围已更新)
         if [[ -z "$input_port" ]]; then
-            input_port=$(shuf -i 10000-60000 -n 1)
+            input_port=$(shuf -i 1025-65535 -n 1)
             echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $input_port" >&2
             echo "$input_port"
             return 0
-        elif is_valid_port "$input_port"; then
+        fi
+        
+        # 情况 2: 手动输入校验 (逻辑合并)
+        if [[ "$input_port" =~ ^[0-9]+$ ]] && [ "$input_port" -ge 1025 ] && [ "$input_port" -le 65535 ]; then
             echo "$input_port"
             return 0
         else
+            # 情况 3: 输入无效报错
             echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
         fi
     done
-}
-
-#校验端口
-is_valid_port() {
-    local port="$1"
-    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1025 ] && [ "$port" -le 65535 ]; then
-        return 0
-    else
-        return 1
-    fi
 }
 
 #生成 ECC P-256 高性能证书
@@ -735,7 +731,7 @@ RAW_IP6='${RAW_IP6:-}'
 EOF
 
     # 声明函数并追加到核心脚本
-    declare -f is_valid_port prompt_for_port get_env_data display_links display_system_status detect_os copy_to_clipboard create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
+    declare -f prompt_for_port get_env_data display_links display_system_status detect_os copy_to_clipboard create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
     
     # 追加逻辑部分 (这里需要重新计算optimize_system吗？不需要，因为变量已固化，但若更新内核或重置端口需要用到)
     # 为方便起见，管理脚本中的 update/reset 将复用 optimize_system 的逻辑，所以我们也追加 optimize_system 函数
