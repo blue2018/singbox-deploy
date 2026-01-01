@@ -596,33 +596,30 @@ install_singbox() {
 # 配置文件生成
 # ==========================================
 create_config() {
-    local PORT_HY2="${1:-}"
+    # 1. 初始化局部变量，并显式赋予空值
+    local PORT_HY2 PSK SBOX_OBFS HY2_BW
+    PORT_HY2="${1:-}"
+    PSK=""
+    SBOX_OBFS=""
+    HY2_BW="${VAR_HY2_BW:-100}" 
+
     mkdir -p /etc/sing-box
-    
-    # --- 核心修复：强制初始化所有变量 ---
-    local PSK=""
-    local SBOX_OBFS=""
-    local HY2_BW="100" 
 
-    # 1. 尝试从现有配置读取 (容错处理)
+    # 2. 从旧配置读取 (增加兜底逻辑)
     if [ -f /etc/sing-box/config.json ]; then
-        # 使用 || true 确保即使 jq 出错，脚本也不中断
-        PORT_HY2=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null) || PORT_HY2=""
-        PSK=$(jq -r '.inbounds[0].users[0].password // empty' /etc/sing-box/config.json 2>/dev/null) || PSK=""
-        SBOX_OBFS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null) || SBOX_OBFS=""
+        # 如果读取失败，确保变量不被置为 undefined
+        PORT_HY2=$(jq -r '.inbounds[0].listen_port // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
+        PSK=$(jq -r '.inbounds[0].users[0].password // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
+        SBOX_OBFS=$(jq -r '.inbounds[0].obfs.password // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
     fi
 
-    # 2. 确定最终参数
+    # 3. 变量生成 (确保此时变量至少是空字符串)
     [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 10000-60000 -n 1)
-    [ -z "$PSK" ] && PSK=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12)
-    [ -z "$SBOX_OBFS" ] && SBOX_OBFS=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)
-    
-    # 处理带宽变量，如果全局变量 VAR_HY2_BW 没定义，则使用默认值 100
-    if [ -n "${VAR_HY2_BW:-}" ]; then
-        HY2_BW="$VAR_HY2_BW"
-    fi
+    [ -z "$PSK" ] && PSK=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12 2>/dev/null || echo "psk$(date +%s)")
+    [ -z "$SBOX_OBFS" ] && SBOX_OBFS=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16 2>/dev/null || echo "obfs$(date +%s)")
 
-    # 3. 写入配置 (使用 ${VAR} 格式确保解析安全)
+    # 4. 写入配置 (关键改动：对所有变量使用 ${VAR:-} 语法)
+    # 这种语法即使在 set -u 下，如果变量未定义也会视为空值，不会报错
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -630,11 +627,11 @@ create_config() {
     "type": "hysteria2",
     "tag": "hy2-in",
     "listen": "::",
-    "listen_port": ${PORT_HY2},
-    "users": [ { "password": "${PSK}" } ],
+    "listen_port": ${PORT_HY2:-12369},
+    "users": [ { "password": "${PSK:-123456}" } ],
     "ignore_client_bandwidth": false,
-    "up_mbps": ${HY2_BW},
-    "down_mbps": ${HY2_BW},
+    "up_mbps": ${HY2_BW:-100},
+    "down_mbps": ${HY2_BW:-100},
     "udp_timeout": "10s",
     "udp_fragment": true,
     "tls": {
@@ -645,7 +642,7 @@ create_config() {
     },
     "obfs": {
       "type": "salamander",
-      "password": "${SBOX_OBFS}"
+      "password": "${SBOX_OBFS:-12345678}"
     },
     "masquerade": "https://www.bing.com"
   }],
