@@ -752,34 +752,31 @@ EOF
     declare -f optimize_system >> "$SBOX_CORE"
 
     cat >> "$SBOX_CORE" <<'EOF'
+detect_os
 if [[ "${1:-}" == "--detect-only" ]]; then
-    detect_os
+    : # 已在上方执行，此处保持空操作或返回
 elif [[ "${1:-}" == "--show-only" ]]; then
-    detect_os
     get_env_data
     echo -e "\n\033[1;34m==========================================\033[0m"
-    display_system_status # 系统信息
+    display_system_status
     echo -e "\033[1;34m------------------------------------------\033[0m"
-    display_links         # 链接信息
+    display_links
 elif [[ "${1:-}" == "--reset-port" ]]; then
-    detect_os 
-    optimize_system # 重新加载优化参数以防环境变动
+    optimize_system 
     create_config "$2" 
     setup_service 
     sleep 1
     get_env_data
     display_links
 elif [[ "${1:-}" == "--update-kernel" ]]; then
-    detect_os
     if install_singbox "update"; then
-        optimize_system # 更新后重新应用优化
+        optimize_system 
         setup_service
         echo -e "\033[1;32m[OK]\033[0m 内核已更新并重新应用优化"
     fi
 elif [[ "${1:-}" == "--apply-cwnd" ]]; then
-    # 调用我们独立出来的全能版优化函数
-    # 使用静默模式，防止 Systemd 日志里出现太多颜色代码
-    apply_initcwnd_optimization "true"
+    # 核心修复点：增加空格和容错
+    apply_initcwnd_optimization "true" || true
 fi
 EOF
 
