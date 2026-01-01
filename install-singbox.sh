@@ -304,17 +304,39 @@ prompt_for_port() {
     done
 }
 
-#生成 ECC P-256 高性能证书
+# 生成 ECC P-256 高性能证书
 generate_cert() {
-    info "生成 ECC P-256 高性能证书 (伪装: $TLS_DOMAIN)..."
+    [ -f /etc/sing-box/certs/fullchain.pem ] && return 0
+    info "生成深度伪装 ECC P-256 证书 (目标: $TLS_DOMAIN)..."
     mkdir -p /etc/sing-box/certs
-    if [ ! -f /etc/sing-box/certs/fullchain.pem ]; then
-        openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem
-        openssl req -new -x509 -days 3650 \
-          -key /etc/sing-box/certs/privkey.pem \
-          -out /etc/sing-box/certs/fullchain.pem \
-          -subj "/CN=$TLS_DOMAIN"
-    fi
+
+    # 1. 生成随机组织名与随机有效期
+    local ORG=$(tr -dc 'a-z' < /dev/urandom | head -c 8 | sed 's/^./\U&/')
+    local RANDOM_DAYS=$((RANDOM % 500 + 300)) 
+
+    # 2. 紧凑排列的配置文件逻辑
+    cat > /tmp/ssl_ext.conf <<EOF
+[req]
+distinguished_name = dn; x509_extensions = v3; prompt = no
+[dn]
+C = US; ST = California; L = Mountain View; O = $ORG Inc.; OU = IT Security; CN = $TLS_DOMAIN
+[v3]
+keyUsage = critical,digitalSignature,keyEncipherment; extendedKeyUsage = serverAuth
+subjectAltName = DNS:$TLS_DOMAIN, DNS:*.$TLS_DOMAIN
+EOF
+
+    # 3. 生成 ECC 私钥并签发 (合并输出到 /dev/null 保持界面整洁)
+    openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem
+    openssl req -new -x509 -sha256 \
+        -key /etc/sing-box/certs/privkey.pem \
+        -out /etc/sing-box/certs/fullchain.pem \
+        -config /tmp/ssl_ext.conf \
+        -days $RANDOM_DAYS \
+        -set_serial $RANDOM >/dev/null 2>&1
+
+    rm -f /tmp/ssl_ext.conf
+    chmod 600 /etc/sing-box/certs/*.pem
+    succ "ECC 证书加固完成，指纹已随机化"
 }
 
 #卸载脚本，清理系统
