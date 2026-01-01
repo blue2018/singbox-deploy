@@ -633,8 +633,8 @@ $systemd_envs
 ExecStartPre=/usr/local/bin/sb --apply-cwnd
 
 # 进程调度优化
-Nice=${VAR_SYSTEMD_NICE}
-IOSchedulingClass=${VAR_SYSTEMD_IOSCHED}
+Nice=${VAR_SYSTEMD_NICE:-0}
+IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
 IOSchedulingPriority=0
 
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
@@ -645,7 +645,7 @@ RestartSec=5s
 
 # 资源限制策略
 MemoryHigh=${SBOX_MEM_HIGH:-}
-MemoryMax=$SBOX_MEM_MAX
+MemoryMax=${SBOX_MEM_MAX:-64M}
 LimitNOFILE=1000000
 
 [Install]
