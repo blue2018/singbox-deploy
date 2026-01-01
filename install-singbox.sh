@@ -227,44 +227,51 @@ probe_memory_total() {
     echo "$mem_total"
 }
 
-# InitCWND 专项优化模块 (全能兼容版：含替换、变更、强制注入)
-# InitCWND 专项优化模块 (全能兼容版：含替换、变更、强制注入)
+# InitCWND 专项优化模块 (全能兼容版：含强制替换、MTU自适应与advmss注入)
 apply_initcwnd_optimization() {
     local is_silent="${1:-false}"
     if ! command -v ip >/dev/null; then return 0; fi
 
-    # 获取当前默认路由信息
+    # 1. 提取 IPv4 默认路由的完整画像
     local default_route=$(ip -4 route show default | head -n1)
+    
     if [ -z "$default_route" ]; then
         [[ "$is_silent" == "false" ]] && warn "未发现默认路由，跳过 CWND 优化"
         return 0
     fi
 
-    # 提取网关、网卡、当前的 MTU
+    # 2. 提取网关 (gw)、网卡 (dev) 和 MTU
     local gw=$(echo "$default_route" | awk '/via/ {print $3}')
     local dev=$(echo "$default_route" | awk '/dev/ {print $5}')
     local mtu=$(echo "$default_route" | awk '/mtu/ {print $7}')
+    # 如果没探测到 MTU，默认设为 1500
     [ -z "$mtu" ] && mtu=1500
-    
-    # 针对现代网络，设置 initcwnd/initrwnd 为 20 (比 15 更进取)
-    # 同时设置 advmss (MTU - 40)，这能有效解决某些虚化环境不认 initcwnd 的问题
+    # 核心优化：计算 advmss (针对虚化小鸡成功率的关键)
     local advmss=$((mtu - 40))
+    # 设置 20 是因为现代网络环境下 20 比 15 的冷启动性能更优
     local route_cmd="initcwnd 20 initrwnd 20 advmss $advmss"
     
-    # 尝试方案 A: 强制 replace (最有效的方式)
+    # 3. 尝试多重注入方案
+    # 方案 A: 完整路径强制替换 (最推荐)
     if [ -n "$gw" ] && [ -n "$dev" ]; then
         if ip route replace default via "$gw" dev "$dev" $route_cmd 2>/dev/null; then
-            [[ "$is_silent" == "false" ]] && succ "InitCWND 强制注入成功"
+            [[ "$is_silent" == "false" ]] && succ "InitCWND 强制注入成功 (Standard)"
             return 0
         fi
     fi
 
-    # 尝试方案 B: 针对 OpenVZ，不带网关直接操作设备
+    # 方案 B: 针对 OpenVZ/LXC，不带网关直接操作网卡设备
     if [ -n "$dev" ]; then
         if ip route replace default dev "$dev" $route_cmd 2>/dev/null; then
-            [[ "$is_silent" == "false" ]] && succ "InitCWND 设备级注入成功"
+            [[ "$is_silent" == "false" ]] && succ "InitCWND 设备级注入成功 (Interface-only)"
             return 0
         fi
+    fi
+
+    # 方案 C: 最后的尝试，不破坏原有路由，直接使用 change 变更
+    if ip route change default $route_cmd 2>/dev/null; then
+         [[ "$is_silent" == "false" ]] && succ "InitCWND 变更成功 (Change-mode)"
+         return 0
     fi
 
     [[ "$is_silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层已锁定路由表)"
@@ -307,6 +314,26 @@ generate_cert() {
           -out /etc/sing-box/certs/fullchain.pem \
           -subj "/CN=$TLS_DOMAIN"
     fi
+}
+
+#卸载脚本，清理系统
+uninstall_all() {
+    info "正在执行深度卸载..."
+    # 1. 停服务
+    if command -v systemctl >/dev/null; then
+        systemctl disable --now sing-box && rm -f /etc/systemd/system/sing-box.service && systemctl daemon-reload
+    else
+        rc-service sing-box stop && rc-update del sing-box default && rm -f /etc/init.d/sing-box
+    fi
+    # 2. 删内核配置并即时还原
+    rm -f /etc/sysctl.d/99-singbox.conf && sysctl --system >/dev/null 2>&1
+    # 3. 还原路由表到默认 10
+    local dev=$(ip route show default | awk '/dev/ {print $5; exit}')
+    [[ -n "$dev" ]] && ip route change default dev "$dev" initcwnd 10 2>/dev/null
+    # 4. 删文件
+    rm -rf "/etc/sing-box" "/usr/bin/sing-box" "/usr/local/bin/sb" "/usr/local/bin/SB"
+    succ "卸载完成，系统已恢复纯净。"
+    exit 0
 }
 
 
@@ -391,7 +418,7 @@ optimize_system() {
     fi
 
     # 5. 写入 Sysctl (深度 BBR 锐化参数)
-    cat > /etc/sysctl.conf <<SYSCTL
+    cat > /etc/sysctl.d/99-singbox.conf <<SYSCTL
 # === BBR 锐化与拥塞控制 ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = $tcp_cca
@@ -425,7 +452,7 @@ vm.swappiness = $swappiness_val
 net.ipv4.ip_forward = 1
 SYSCTL
 
-    sysctl -p >/dev/null 2>&1 || true
+    sysctl --system >/dev/null 2>&1 || true
 
     # 6. NIC 卸载与 InitCWND
     if command -v ethtool >/dev/null 2>&1; then
@@ -737,11 +764,11 @@ RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 EOF
 
-    # 声明函数并追加到核心脚本
-    # [修复] 补全所有依赖函数，确保 optimize_system 能够独立运行
-    declare -f probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
-               get_env_data display_links display_system_status detect_os copy_to_clipboard \
-               create_config setup_service install_singbox info err warn succ optimize_system >> "$SBOX_CORE"
+    # 声明函数并追加到核心脚本，补全所有依赖函数，确保 optimize_system 能够独立运行
+    declare -f probe_network_rtt probe_memory_total apply_initcwnd_optimization \
+               get_env_data display_links display_system_status detect_os \
+               create_config setup_service install_singbox optimize_system \
+               uninstall_all info err warn succ copy_to_clipboard prompt_for_port >> "$SBOX_CORE"
 
     cat >> "$SBOX_CORE" <<'EOF'
 detect_os
@@ -834,17 +861,14 @@ while true; do
            service_ctrl restart && info "服务已重启"
            read -r -p $'\n按回车键返回菜单...' ;;
         6) 
-           read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
-           if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-               service_ctrl stop
-               [ -f /etc/init.d/sing-box ] && rc-update del sing-box
-               rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-               info "卸载完成！"
-               exit 0
-           else
-               info "已取消卸载！"
-           fi
-           ;;
+            # 提示用户，并注明默认值为 N
+            read -p "是否确定卸载？(默认N) [Y/N]: " confirm  
+            if [[ "$confirm" =~ ^[yY]$ ]]; then
+                uninstall_all
+            else
+                info "卸载操作已取消"
+            fi
+            ;;
         0) exit 0 ;;
     esac
 done
