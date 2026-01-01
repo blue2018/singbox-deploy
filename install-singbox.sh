@@ -319,20 +319,35 @@ generate_cert() {
 #卸载脚本，清理系统
 uninstall_all() {
     info "正在执行深度卸载..."
-    # 1. 停服务
-    if command -v systemctl >/dev/null; then
-        systemctl disable --now sing-box && rm -f /etc/systemd/system/sing-box.service && systemctl daemon-reload
+    # 1. 停止并清理服务
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now sing-box 2>/dev/null
+        rm -f /etc/systemd/system/sing-box.service
+        systemctl daemon-reload
     else
-        rc-service sing-box stop && rc-update del sing-box default && rm -f /etc/init.d/sing-box
+        rc-service sing-box stop 2>/dev/null
+        rc-update del sing-box default 2>/dev/null
+        rm -f /etc/init.d/sing-box
     fi
-    # 2. 删内核配置并即时还原
-    rm -f /etc/sysctl.d/99-singbox.conf && sysctl --system >/dev/null 2>&1
-    # 3. 还原路由表到默认 10
+    # 2. 还原内核参数 (删除独立配置并重载)
+    if [ -f /etc/sysctl.d/99-singbox.conf ]; then
+        rm -f /etc/sysctl.d/99-singbox.conf
+        sysctl --system >/dev/null 2>&1 || true
+        info "内核优化参数已清理"
+    fi
+    # 3. 还原路由表 InitCWND 到默认值 10
     local dev=$(ip route show default | awk '/dev/ {print $5; exit}')
-    [[ -n "$dev" ]] && ip route change default dev "$dev" initcwnd 10 2>/dev/null
-    # 4. 删文件
-    rm -rf "/etc/sing-box" "/usr/bin/sing-box" "/usr/local/bin/sb" "/usr/local/bin/SB"
-    succ "卸载完成，系统已恢复纯净。"
+    if [ -n "$dev" ]; then
+        ip route change default dev "$dev" initcwnd 10 initrwnd 10 2>/dev/null || true
+        info "InitCWND 已还原"
+    fi
+    # 4. 彻底删除文件与快捷键
+    rm -rf "/etc/sing-box"
+    rm -f "/usr/bin/sing-box"
+    rm -f "/usr/local/bin/sb"
+    rm -f "/usr/local/bin/SB"
+
+    succ "卸载完成！系统已被重置"
     exit 0
 }
 
@@ -861,9 +876,9 @@ while true; do
            service_ctrl restart && info "服务已重启"
            read -r -p $'\n按回车键返回菜单...' ;;
         6) 
-            # 提示用户，并注明默认值为 N
-            read -p "是否确定卸载？(默认N) [Y/N]: " confirm  
-            if [[ "$confirm" =~ ^[yY]$ ]]; then
+            read -r -p "是否确定卸载？(默认N) [Y/N]: " confirm
+            confirm="${confirm,,}" 
+            if [[ "$confirm" == "y" ]]; then
                 uninstall_all
             else
                 info "卸载操作已取消"
@@ -874,6 +889,7 @@ while true; do
 done
 EOF
     chmod +x "$SB_PATH"
+    ln -sf "$SB_PATH" "/usr/local/bin/sb"
     ln -sf "$SB_PATH" "/usr/local/bin/SB"
 }
 
