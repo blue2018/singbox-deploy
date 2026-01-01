@@ -719,8 +719,8 @@ Restart=on-failure
 RestartSec=5s
 
 # 资源限制策略
-MemoryHigh=$SBOX_MEM_HIGH
-MemoryMax=$SBOX_MEM_MAX
+MemoryHigh=${SBOX_MEM_HIGH:-}
+MemoryMax=${SBOX_MEM_MAX:-64M}
 LimitNOFILE=1000000
 
 [Install]
