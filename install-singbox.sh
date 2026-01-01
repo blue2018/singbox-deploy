@@ -375,14 +375,6 @@ optimize_system() {
 
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
 
-    # --- 核心修改：极限内存限制计算 (8% 方案) ---
-    # Systemd 内存硬限制 (留 8% 给系统内核)
-    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
-    # 软限制水位线 (80% 处触发激进回收)
-    SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
-    # Go 运行时内存限制 (动态对齐软限制，使用 MiB 确保精准)
-    SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"
-
     # 差异化档位计算（核心算法：RTT 放大 + 内存钳位）
     local udp_mem_scale
     # [安全锁] 计算物理内存的 40% 作为 UDP 缓冲区的绝对上限 (Page单位, 1Page=4KB)
@@ -393,24 +385,24 @@ optimize_system() {
     # 初始化小鸡调度变量
     SBOX_GOMAXPROCS=""
 
-    # 基础档位选择 (注意：此处已移除硬编码的 SBOX_GOLIMIT 以支持动态计算)
+    # 基础档位选择
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOGC="120"
+        SBOX_GOLIMIT="420MiB"; SBOX_GOGC="120"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432" # 32MB
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="1000"; SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOGC="100"
+        SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216" # 16MB
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="500"; SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOGC="70"
+        SBOX_GOLIMIT="100MiB"; SBOX_GOGC="70"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608" # 8MB
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
-        SBOX_GOGC="50"
+        SBOX_GOLIMIT="52MiB"; SBOX_GOGC="50"
         VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304" # 4MB
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
         SBOX_GOMAXPROCS="1" # 针对极小内存单核优化
@@ -434,8 +426,12 @@ optimize_system() {
 
     # 拼接最终参数 vector
     udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
+    # Systemd 内存硬限制 (留 8% 给系统内核)
+    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
+    # 软限制水位线 (80% 处触发激进回收)
+    SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
 
-    info "优化策略: $SBOX_OPTIMIZE_LEVEL | 内存硬限: $SBOX_MEM_MAX"
+    info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
     # 3. Swap 兜底 (Alpine 跳过)
     if [ "$OS" != "alpine" ]; then
@@ -513,6 +509,7 @@ SYSCTL
     # 5. InitCWND 注入 (提升握手速度)
     apply_initcwnd_optimization "false"
 }
+
 
 # ==========================================
 # 安装/更新 Sing-box 内核
@@ -650,7 +647,7 @@ EOF
 # ==========================================
 # 服务配置 (核心优化：应用 Nice/IOSched/Env)
 # ==========================================
-setup_service() {  
+setup_service() {
     info "配置系统服务 (MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
     
     # 动态判断 GODEBUG 与内核兼容性 (4.5 之后 madvdontneed 不是必须)
@@ -708,7 +705,7 @@ ExecStartPre=/usr/local/bin/sb --apply-cwnd
 
 # 进程调度优化
 Nice=${VAR_SYSTEMD_NICE:-0}
-IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
+IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-}
 IOSchedulingPriority=0
 
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
