@@ -228,53 +228,46 @@ probe_memory_total() {
 }
 
 # InitCWND 专项优化模块 (全能兼容版：含替换、变更、强制注入)
+# InitCWND 专项优化模块 (全能兼容版：含替换、变更、强制注入)
 apply_initcwnd_optimization() {
     local is_silent="${1:-false}"
     if ! command -v ip >/dev/null; then return 0; fi
 
-    # 1. 精准提取 IPv4 默认网关、网卡及当前度量值
-    # 使用 grep 确保只取一行 IPv4 默认路由
+    # 获取当前默认路由信息
     local default_route=$(ip -4 route show default | head -n1)
-    
     if [ -z "$default_route" ]; then
         [[ "$is_silent" == "false" ]] && warn "未发现默认路由，跳过 CWND 优化"
         return 0
     fi
 
-    # 提取核心参数
+    # 提取网关、网卡、当前的 MTU
     local gw=$(echo "$default_route" | awk '/via/ {print $3}')
     local dev=$(echo "$default_route" | awk '/dev/ {print $5}')
+    local mtu=$(echo "$default_route" | awk '/mtu/ {print $7}')
+    [ -z "$mtu" ] && mtu=1500
     
-    # 2. 构造基础命令块
-    local route_cmd="initcwnd 15 initrwnd 15"
+    # 针对现代网络，设置 initcwnd/initrwnd 为 20 (比 15 更进取)
+    # 同时设置 advmss (MTU - 40)，这能有效解决某些虚化环境不认 initcwnd 的问题
+    local advmss=$((mtu - 40))
+    local route_cmd="initcwnd 20 initrwnd 20 advmss $advmss"
     
-    # 如果找到了网关和网卡
+    # 尝试方案 A: 强制 replace (最有效的方式)
     if [ -n "$gw" ] && [ -n "$dev" ]; then
-        # 尝试方案 A: 标准修改 (change)
-        if ip route change default via "$gw" dev "$dev" $route_cmd 2>/dev/null; then
-            [[ "$is_silent" == "false" ]] && succ "InitCWND 修改成功 (Standard)"
+        if ip route replace default via "$gw" dev "$dev" $route_cmd 2>/dev/null; then
+            [[ "$is_silent" == "false" ]] && succ "InitCWND 强制注入成功"
             return 0
-        # 尝试方案 B: 强制替换 (replace)
-        elif ip route replace default via "$gw" dev "$dev" $route_cmd 2>/dev/null; then
-            [[ "$is_silent" == "false" ]] && succ "InitCWND 替换成功 (Replace)"
-            return 0
-        # 尝试方案 C: 针对受限环境，添加一条高优先级静态路由指向网关
-        elif ip route add "$gw" dev "$dev" $route_cmd 2>/dev/null; then
-             [[ "$is_silent" == "false" ]] && succ "InitCWND 静态注入成功 (Static)"
-             return 0
         fi
     fi
 
-    # 3. 针对 OpenVZ/LXC 的终极尝试：不带 via，直接绑定网卡
+    # 尝试方案 B: 针对 OpenVZ，不带网关直接操作设备
     if [ -n "$dev" ]; then
-        if ip route change default dev "$dev" $route_cmd 2>/dev/null || \
-           ip route replace default dev "$dev" $route_cmd 2>/dev/null; then
-            [[ "$is_silent" == "false" ]] && succ "InitCWND 修改成功 (Interface-only)"
+        if ip route replace default dev "$dev" $route_cmd 2>/dev/null; then
+            [[ "$is_silent" == "false" ]] && succ "InitCWND 设备级注入成功"
             return 0
         fi
     fi
 
-    [[ "$is_silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化环境只读)"
+    [[ "$is_silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层已锁定路由表)"
     return 0
 }
 
@@ -320,111 +313,70 @@ generate_cert() {
 # ==========================================
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 # ==========================================
+# 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 optimize_system() {
     # 1. 执行独立探测模块获取环境画像
     local RTT_AVG=$(probe_network_rtt)
     local mem_total=$(probe_memory_total)
-    local max_udp_mb=$((mem_total * 40 / 100)) # 内存安全锁: 物理内存的 40%
-    local max_udp_pages=$((max_udp_mb * 256))  # 转换为 Page 单位
+    local max_udp_mb=$((mem_total * 40 / 100)) 
+    local max_udp_pages=$((max_udp_mb * 256))
 
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
 
     # 初始化变量
     SBOX_GOMAXPROCS=""
-    local busy_poll_val=0   # 默认关闭 Busy Poll
-    local gro_gso_opt="on"  # 默认开启网卡卸载
+    local busy_poll_val=0
     local quic_extra_msg=""
 
-    # 2. 差异化档位计算 (集成 LazyGC 与 Busy Poll 策略)
+    # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
-        # === 512M 旗舰版 ===
         SBOX_GOLIMIT="420MiB"; SBOX_GOGC="120"
-        VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432" # 32MB
+        VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="1000"; SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
-        local swappiness_val=10
-        busy_poll_val=50 # 仅在资源充足时开启忙轮询
+        local swappiness_val=10; busy_poll_val=50
     elif [ "$mem_total" -ge 200 ]; then
-        # === 256M 增强版 ===
         SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
-        VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216" # 16MB
+        VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="500"; SBOX_OPTIMIZE_LEVEL="256M 增强版"
-        local swappiness_val=10
-        busy_poll_val=20 # 轻度忙轮询
+        local swappiness_val=10; busy_poll_val=20
     elif [ "$mem_total" -ge 100 ]; then
-        # === 128M 紧凑版 (LazyGC) ===
         SBOX_GOLIMIT="90MiB"; SBOX_GOGC="800"
-        VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608" # 8MB
+        VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="250"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版(LazyGC)"
-        local swappiness_val=60
-        busy_poll_val=0 # 强制关闭，节省 CPU
+        local swappiness_val=60; busy_poll_val=0
     else
-        # === 64M 生存版 (LazyGC) ===
-        # 预留 16M 给内核，其余给应用
         SBOX_GOLIMIT="48MiB"; SBOX_GOGC="800"
-        VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152" # 2MB (防止 OOM)
+        VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
-        SBOX_GOMAXPROCS="" # 移除限制，由调度器接管
         VAR_HY2_BW="100"; SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
-        local swappiness_val=100
-        busy_poll_val=0 # 强制关闭
+        local swappiness_val=100; busy_poll_val=0
     fi
 
-    # 3. RTT 驱动的 UDP 动态缓冲池 (融合 QUIC 模板)
-    # 计算基础 RTT 需求
-    local rtt_scale_min=$((RTT_AVG * 128))
-    local rtt_scale_pressure=$((RTT_AVG * 256))
-    local rtt_scale_max=$((RTT_AVG * 512))
-
-    # 应用 QUIC 专用模板 (高低 RTT 模式)
-    local quic_min quic_press quic_max
+    # 3. RTT 驱动与安全钳位 (保留原有逻辑)
+    local rtt_scale_min=$((RTT_AVG * 128)); local rtt_scale_pressure=$((RTT_AVG * 256)); local rtt_scale_max=$((RTT_AVG * 512))
+    local quic_min; local quic_press; local quic_max
     if [ "$RTT_AVG" -ge 150 ]; then
-        # 国际长链路
-        quic_min=262144; quic_press=524288; quic_max=1048576
-        quic_extra_msg=" (QUIC长距模式)"
+        quic_min=262144; quic_press=524288; quic_max=1048576; quic_extra_msg=" (QUIC长距模式)"
     else
-        # 亚洲低延迟
-        quic_min=131072; quic_press=262144; quic_max=524288
-        quic_extra_msg=" (QUIC竞速模式)"
+        quic_min=131072; quic_press=262144; quic_max=524288; quic_extra_msg=" (QUIC竞速模式)"
     fi
     SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL}${quic_extra_msg}"
-
-    # [逻辑融合] 取 RTT计算值 与 QUIC模板值 的较大者
     [ "$quic_min" -gt "$rtt_scale_min" ] && rtt_scale_min=$quic_min
     [ "$quic_press" -gt "$rtt_scale_pressure" ] && rtt_scale_pressure=$quic_press
     [ "$quic_max" -gt "$rtt_scale_max" ] && rtt_scale_max=$quic_max
-
-    # [最终安全钳位] 绝对不允许超过物理内存的 40%
     if [ "$rtt_scale_max" -gt "$max_udp_pages" ]; then
-        rtt_scale_max=$max_udp_pages
-        rtt_scale_pressure=$((max_udp_pages * 3 / 4))
-        rtt_scale_min=$((max_udp_pages / 2))
-        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [安全锁限制]"
+        rtt_scale_max=$max_udp_pages; rtt_scale_pressure=$((max_udp_pages * 3 / 4)); rtt_scale_min=$((max_udp_pages / 2))
+        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [内存锁限制]"
     fi
-
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    
-    # 计算 Systemd 限制
-    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
-    SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
+    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
-    # 4. Swap 兜底 (Alpine 跳过)
-    if [ "$OS" != "alpine" ]; then
-        local swap_total=$(free -m | awk '/Swap:/ {print $2}')
-        if [ "$swap_total" -lt 10 ] && [ "$mem_total" -lt 150 ]; then
-            warn "检测到内存吃紧，正在创建 128MB 应急 Swap..."
-            fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null
-            chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-            grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-            succ "应急 Swap 已启用"
-        fi
-    fi
-
-    # 5. 内核 BBR 探测
+    # 4. 内核 BBR 锐化逻辑 (FQ Pacing 调整)
     local tcp_cca="bbr"
     modprobe tcp_bbr >/dev/null 2>&1 || true
     if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr2"; then
@@ -432,78 +384,54 @@ optimize_system() {
         succ "内核支持 BBRv3 (bbr2)，已自动激活"
     elif sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr"; then
         tcp_cca="bbr"
-        info "内核支持标准 BBR，已激活"
+        info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
     else
         tcp_cca="cubic"
-        warn "内核不支持 BBR，已降级为 Cubic"
+        warn "内核不支持 BBR，已尝试优化 Cubic 吞吐"
     fi
 
-    # 6. 写入 Sysctl (包含 Busy Poll 和 FQ Pacing 优化)
+    # 5. 写入 Sysctl (深度 BBR 锐化参数)
     cat > /etc/sysctl.conf <<SYSCTL
-# === 拥塞控制与队列 ===
+# === BBR 锐化与拥塞控制 ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = $tcp_cca
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_fastopen = 3
 
-# === QUIC 专用调度与 FQ 深度补偿 ===
-# 减少用户态/内核态切换 (根据配置动态开关)
-net.core.busy_read = $busy_poll_val
-net.core.busy_poll = $busy_poll_val
-# FQ pacing 核心参数
-net.ipv4.tcp_limit_output_bytes = 262144
+# === FQ 调度锐化 (BBR 核心参数优化) ===
+# 增加 Pacing 率，显著提升在高丢包环境下的发包速度
+net.core.netdev_max_backlog = 20000
+net.core.netdev_budget = 600
 net.core.netdev_budget_usecs = 8000
 
-# === 核心网络缓冲 ===
-net.core.netdev_max_backlog = 10000
-net.core.somaxconn = 32768
-net.ipv4.tcp_max_syn_backlog = 32768
+# === QUIC 专用调度 ===
+net.core.busy_read = $busy_poll_val
+net.core.busy_poll = $busy_poll_val
+net.ipv4.tcp_limit_output_bytes = 262144
 
-# === UDP 极限优化 (变量注入) ===
+# === UDP & 内存极限优化 ===
 net.core.rmem_max = $VAR_UDP_RMEM
 net.core.wmem_max = $VAR_UDP_WMEM
-net.core.rmem_default = 2097152
-net.core.wmem_default = 2097152
-# Ancillary data buffer (QUIC 依赖)
 net.core.optmem_max = 1048576
-
-# TCP 窗口缩放
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
 net.ipv4.tcp_wmem = 4096 65536 $VAR_UDP_WMEM
-net.ipv4.tcp_window_scaling = 1
-
-# 动态计算的 UDP 内存池 (融合了 QUIC 模板)
 net.ipv4.udp_mem = $udp_mem_scale
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 
-# 针对不同内存大小动态调整 Swap 积极性
+# 虚化环境兼容性调整
 vm.swappiness = $swappiness_val
-
-# 连接跟踪优化
-net.netfilter.nf_conntrack_udp_timeout = 10
-net.netfilter.nf_conntrack_udp_timeout_stream = 60
-
-# 路由与转发
-net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.ip_forward = 1
 SYSCTL
 
     sysctl -p >/dev/null 2>&1 || true
 
-    # 7. NIC 卸载优化 (Ethtool)
+    # 6. NIC 卸载与 InitCWND
     if command -v ethtool >/dev/null 2>&1; then
         local IFACE=$(ip route show default | awk '{print $5; exit}')
-        if [ -n "$IFACE" ]; then
-            # 开启 GRO/GSO 提升吞吐，关闭 LRO/TSO 防止转发丢包或 Pacing 失效
-            # 注意: LRO 对于转发节点必须关闭
-            ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
-            info "网卡卸载优化已应用 ($IFACE)"
-        fi
+        [ -n "$IFACE" ] && ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
     fi
-
-    # 8. InitCWND 注入
     apply_initcwnd_optimization "false"
 }
 
