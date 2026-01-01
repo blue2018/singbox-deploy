@@ -958,7 +958,7 @@ optimize_system    # 计算差异化优化参数
 install_singbox "install"
 PSK="${PSK:-}"
 SBOX_OBFS="${SBOX_OBFS:-}"
-VAR_HY2_BW="${VAR_HY2_BW:-100}"
+VAR_HY2_BW="${VAR_HY2_BW:-200}"
 TLS_DOMAIN="${TLS_DOMAIN:-www.bing.com}" # 确保域名变量也存在
 generate_cert      # 生成证书
 create_config "$USER_PORT" # 创建配置
