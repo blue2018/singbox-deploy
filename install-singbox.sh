@@ -599,27 +599,32 @@ create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
+    # --- 变量预初始化 (解决 PSK: unbound variable) ---
+    local PSK=""
+    local SBOX_OBFS=""
+    local HY2_BW="${VAR_HY2_BW:-100}" # 预存带宽，防止引用未定义变量
+
     # 1. 端口确定逻辑
     if [ -z "$PORT_HY2" ]; then
         if [ -f /etc/sing-box/config.json ]; then
-            PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
-        else
-            PORT_HY2=$(shuf -i 10000-60000 -n 1)
+            # 增加 jq 运行失败的容错
+            PORT_HY2=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
         fi
+        # 如果读取失败或新安装，随机生成
+        [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 10000-60000 -n 1)
     fi
 
-    # 2. PSK (密码) 与 OBFS (混淆) 确定逻辑
-    local PSK
+    # 2. PSK (密码) 与 OBFS (混淆) 读取逻辑
     if [ -f /etc/sing-box/config.json ]; then
-        PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
-        # 从配置中读取现有的混淆密码，如果没有则新生成
-        SBOX_OBFS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json)
+        PSK=$(jq -r '.inbounds[0].users[0].password // empty' /etc/sing-box/config.json 2>/dev/null)
+        SBOX_OBFS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null)
     fi
     
+    # 3. 兜底生成逻辑 (防止变量为空导致 JSON 损坏)
     [ -z "$PSK" ] && PSK=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12)
     [ -z "$SBOX_OBFS" ] && SBOX_OBFS=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)
 
-    # 3. 写入配置 (加入混淆与伪装)
+    # 4. 写入配置
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -630,8 +635,8 @@ create_config() {
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": false,
-    "up_mbps": ${VAR_HY2_BW:-100},
-    "down_mbps": ${VAR_HY2_BW:-100},
+    "up_mbps": $HY2_BW,
+    "down_mbps": $HY2_BW,
     "udp_timeout": "10s",
     "udp_fragment": true,
     "tls": {
