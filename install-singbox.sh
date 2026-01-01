@@ -316,54 +316,6 @@ generate_cert() {
     fi
 }
 
-# 深度卸载与系统还原模块
-do_uninstall_process() {
-    info "正在启动深度卸载，还原系统至安装前状态..."
-
-    # 1. 停止并移除服务 (OpenRC & Systemd)
-    if [ -f /etc/init.d/sing-box ]; then
-        rc-service sing-box stop 2>/dev/null || true
-        rc-update del sing-box default 2>/dev/null || true
-        rm -f /etc/init.d/sing-box
-    fi
-    if command -v systemctl >/dev/null; then
-        systemctl disable --now sing-box 2>/dev/null || true
-        rm -f /etc/systemd/system/sing-box.service
-        systemctl daemon-reload
-    fi
-
-    # 2. 还原内核优化参数
-    if [ -f /etc/sysctl.conf ]; then
-        # 精准删除脚本写入的配置
-        sed -i '/# === 拥塞控制与队列 ===/d' /etc/sysctl.conf
-        sed -i '/net.core.default_qdisc = fq/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.tcp_congestion_control =/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.tcp_slow_start_after_idle = 0/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.tcp_fastopen = 3/d' /etc/sysctl.conf
-        sed -i '/# === UDP 极限优化/d' /etc/sysctl.conf
-        sed -i '/net.core.rmem_max =/d' /etc/sysctl.conf
-        sed -i '/net.core.wmem_max =/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.udp_mem =/d' /etc/sysctl.conf
-        
-        # 重新应用剩余的系统默认参数
-        sysctl -p >/dev/null 2>&1 || true
-        succ "内核参数已尝试还原"
-    fi
-
-    # 3. 还原 InitCWND (恢复为 Linux 默认 10)
-    local route_core=$(ip route show default | head -n1 | awk '{print "via " $3 " dev " $5}')
-    if [ -n "$route_core" ]; then
-        ip route change default $route_core initcwnd 10 initrwnd 10 2>/dev/null || true
-        succ "网络初始窗口已恢复默认 (10)"
-    fi
-
-    # 4. 清理残留文件
-    rm -f /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB "$SBOX_CORE"
-    rm -rf /etc/sing-box
-    
-    succ "卸载完成，系统已恢复初始状态"
-}
-
 
 # ==========================================
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
