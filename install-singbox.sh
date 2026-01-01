@@ -959,8 +959,9 @@ install_singbox "install"
 PSK="${PSK:-}"
 SBOX_OBFS="${SBOX_OBFS:-}"
 VAR_HY2_BW="${VAR_HY2_BW:-100}"
-generate_cert
-create_config "$USER_PORT"
+TLS_DOMAIN="${TLS_DOMAIN:-www.bing.com}" # 确保域名变量也存在
+generate_cert      # 生成证书
+create_config "$USER_PORT" # 创建配置
 setup_service      # 应用 Systemd 优化参数
 create_sb_tool     # 生成管理脚本
 
