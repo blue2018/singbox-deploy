@@ -865,27 +865,26 @@ EOF
 # ==========================================
 # 主运行逻辑
 # ==========================================
-# === 建议的 Main 运行逻辑顺序 ===
 detect_os
 [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
 
+# 调用安装依赖函数
 install_dependencies
+
+# 获取并显示网络 IP
 get_network_info
 
 echo -e "-----------------------------------------------"
 USER_PORT=$(prompt_for_port)
 
-optimize_system    
+optimize_system    # 计算差异化优化参数
 install_singbox "install"
 generate_cert
 create_config "$USER_PORT"
+setup_service      # 应用 Systemd 优化参数
+create_sb_tool     # 生成管理脚本
 
-# --- 先生成管理脚本，确保即便服务启动卡住，你也能用 'sb' 命令手动操作 ---
-create_sb_tool     
-
-# --- 最后启动服务 ---
-setup_service      
-
+# 初始显示
 get_env_data
 echo -e "\n\033[1;34m==========================================\033[0m"
 display_system_status
