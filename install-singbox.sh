@@ -321,75 +321,100 @@ generate_cert() {
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 # ==========================================
 optimize_system() {
-    # 执行独立探测模块获取环境画像
+    # 1. 执行独立探测模块获取环境画像
     local RTT_AVG=$(probe_network_rtt)
     local mem_total=$(probe_memory_total)
+    local max_udp_mb=$((mem_total * 40 / 100)) # 内存安全锁: 物理内存的 40%
+    local max_udp_pages=$((max_udp_mb * 256))  # 转换为 Page 单位
 
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
 
-    # 差异化档位计算（核心算法：RTT 放大 + 内存钳位）
-    local udp_mem_scale
-    # [安全锁] 计算物理内存的 40% 作为 UDP 缓冲区的绝对上限 (Page单位, 1Page=4KB)
-    # 40% 内存 (MB) * 1024 / 4 = Pages
-    local max_udp_mb=$((mem_total * 40 / 100)) 
-    local max_udp_pages=$((max_udp_mb * 256)) 
-
-    # 初始化小鸡调度变量
+    # 初始化变量
     SBOX_GOMAXPROCS=""
+    local busy_poll_val=0   # 默认关闭 Busy Poll
+    local gro_gso_opt="on"  # 默认开启网卡卸载
+    local quic_extra_msg=""
 
-    # 基础档位选择
+    # 2. 差异化档位计算 (集成 LazyGC 与 Busy Poll 策略)
     if [ "$mem_total" -ge 450 ]; then
+        # === 512M 旗舰版 ===
         SBOX_GOLIMIT="420MiB"; SBOX_GOGC="120"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432" # 32MB
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="1000"; SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
+        local swappiness_val=10
+        busy_poll_val=50 # 仅在资源充足时开启忙轮询
     elif [ "$mem_total" -ge 200 ]; then
+        # === 256M 增强版 ===
         SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216" # 16MB
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="500"; SBOX_OPTIMIZE_LEVEL="256M 增强版"
+        local swappiness_val=10
+        busy_poll_val=20 # 轻度忙轮询
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="100MiB"; SBOX_GOGC="70"
+        # === 128M 紧凑版 (LazyGC) ===
+        SBOX_GOLIMIT="90MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608" # 8MB
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="300"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
+        VAR_HY2_BW="250"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版(LazyGC)"
+        local swappiness_val=60
+        busy_poll_val=0 # 强制关闭，节省 CPU
     else
-        SBOX_GOLIMIT="52MiB"; SBOX_GOGC="50"
-        VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304" # 4MB
+        # === 64M 生存版 (LazyGC) ===
+        # 预留 16M 给内核，其余给应用
+        SBOX_GOLIMIT="48MiB"; SBOX_GOGC="800"
+        VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152" # 2MB (防止 OOM)
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
-        SBOX_GOMAXPROCS="1" # 针对极小内存单核优化
-        VAR_HY2_BW="200"; SBOX_OPTIMIZE_LEVEL="64M 生存版"
+        SBOX_GOMAXPROCS="" # 移除限制，由调度器接管
+        VAR_HY2_BW="100"; SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
+        local swappiness_val=100
+        busy_poll_val=0 # 强制关闭
     fi
 
-    # [动态算法] RTT 驱动的 UDP 动态缓冲池 (High BDP Tuning)
+    # 3. RTT 驱动的 UDP 动态缓冲池 (融合 QUIC 模板)
+    # 计算基础 RTT 需求
     local rtt_scale_min=$((RTT_AVG * 128))
     local rtt_scale_pressure=$((RTT_AVG * 256))
     local rtt_scale_max=$((RTT_AVG * 512))
 
-    # [钳位逻辑] 如果 RTT 计算出的内存需求超过了安全锁，强制降级
+    # 应用 QUIC 专用模板 (高低 RTT 模式)
+    local quic_min quic_press quic_max
+    if [ "$RTT_AVG" -ge 150 ]; then
+        # 国际长链路
+        quic_min=262144; quic_press=524288; quic_max=1048576
+        quic_extra_msg=" (QUIC长距模式)"
+    else
+        # 亚洲低延迟
+        quic_min=131072; quic_press=262144; quic_max=524288
+        quic_extra_msg=" (QUIC竞速模式)"
+    fi
+    SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL}${quic_extra_msg}"
+
+    # [逻辑融合] 取 RTT计算值 与 QUIC模板值 的较大者
+    [ "$quic_min" -gt "$rtt_scale_min" ] && rtt_scale_min=$quic_min
+    [ "$quic_press" -gt "$rtt_scale_pressure" ] && rtt_scale_pressure=$quic_press
+    [ "$quic_max" -gt "$rtt_scale_max" ] && rtt_scale_max=$quic_max
+
+    # [最终安全钳位] 绝对不允许超过物理内存的 40%
     if [ "$rtt_scale_max" -gt "$max_udp_pages" ]; then
         rtt_scale_max=$max_udp_pages
-        rtt_scale_pressure=$((max_udp_pages / 2))
-        rtt_scale_min=$((max_udp_pages / 4))
-        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (安全受限)"
-    else
-        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} (RTT自适应)"
+        rtt_scale_pressure=$((max_udp_pages * 3 / 4))
+        rtt_scale_min=$((max_udp_pages / 2))
+        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [安全锁限制]"
     fi
 
-    # 拼接最终参数 vector
-    udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    # Systemd 内存硬限制 (留 8% 给系统内核)
+    local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
+    
+    # 计算 Systemd 限制
     SBOX_MEM_MAX="$((mem_total * 92 / 100))M"
-    # 软限制水位线 (80% 处触发激进回收)
     SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
-    # 3. Swap 兜底 (Alpine 跳过)
+    # 4. Swap 兜底 (Alpine 跳过)
     if [ "$OS" != "alpine" ]; then
-        local swap_total
-        swap_total=$(free -m | awk '/Swap:/ {print $2}')
-        # 仅在内存 < 150M 且无 Swap 时创建，防止小内存机器 OOM
+        local swap_total=$(free -m | awk '/Swap:/ {print $2}')
         if [ "$swap_total" -lt 10 ] && [ "$mem_total" -lt 150 ]; then
             warn "检测到内存吃紧，正在创建 128MB 应急 Swap..."
             fallocate -l 128M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=128 2>/dev/null
@@ -399,12 +424,9 @@ optimize_system() {
         fi
     fi
 
-    # 4. 内核网络栈写入 (智能探测 BBRv3)
+    # 5. 内核 BBR 探测
     local tcp_cca="bbr"
-    # 尝试加载 bbr 模块
     modprobe tcp_bbr >/dev/null 2>&1 || true
-
-    # 检测可用拥塞控制算法
     if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr2"; then
         tcp_cca="bbr2"
         succ "内核支持 BBRv3 (bbr2)，已自动激活"
@@ -416,6 +438,7 @@ optimize_system() {
         warn "内核不支持 BBR，已降级为 Cubic"
     fi
 
+    # 6. 写入 Sysctl (包含 Busy Poll 和 FQ Pacing 优化)
     cat > /etc/sysctl.conf <<SYSCTL
 # === 拥塞控制与队列 ===
 net.core.default_qdisc = fq
@@ -423,6 +446,14 @@ net.ipv4.tcp_congestion_control = $tcp_cca
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_fastopen = 3
+
+# === QUIC 专用调度与 FQ 深度补偿 ===
+# 减少用户态/内核态切换 (根据配置动态开关)
+net.core.busy_read = $busy_poll_val
+net.core.busy_poll = $busy_poll_val
+# FQ pacing 核心参数
+net.ipv4.tcp_limit_output_bytes = 262144
+net.core.netdev_budget_usecs = 8000
 
 # === 核心网络缓冲 ===
 net.core.netdev_max_backlog = 10000
@@ -434,31 +465,45 @@ net.core.rmem_max = $VAR_UDP_RMEM
 net.core.wmem_max = $VAR_UDP_WMEM
 net.core.rmem_default = 2097152
 net.core.wmem_default = 2097152
+# Ancillary data buffer (QUIC 依赖)
+net.core.optmem_max = 1048576
 
-# TCP 窗口缩放 (确保高延迟下 TCP 协议也能压榨带宽)
+# TCP 窗口缩放
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
 net.ipv4.tcp_wmem = 4096 65536 $VAR_UDP_WMEM
 net.ipv4.tcp_window_scaling = 1
 
-# 动态计算的 UDP 内存池
+# 动态计算的 UDP 内存池 (融合了 QUIC 模板)
 net.ipv4.udp_mem = $udp_mem_scale
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 
-# 针对高延迟线路的连接跟踪优化 (防止丢包僵死)
+# 针对不同内存大小动态调整 Swap 积极性
+vm.swappiness = $swappiness_val
+
+# 连接跟踪优化
 net.netfilter.nf_conntrack_udp_timeout = 10
 net.netfilter.nf_conntrack_udp_timeout_stream = 60
 
-# === 路由与 MTU ===
+# 路由与转发
 net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.ip_forward = 1
-vm.swappiness = 10
 SYSCTL
 
-    # 立即应用参数，忽略无关报错
     sysctl -p >/dev/null 2>&1 || true
 
-    # 5. InitCWND 注入 (提升握手速度)
+    # 7. NIC 卸载优化 (Ethtool)
+    if command -v ethtool >/dev/null 2>&1; then
+        local IFACE=$(ip route show default | awk '{print $5; exit}')
+        if [ -n "$IFACE" ]; then
+            # 开启 GRO/GSO 提升吞吐，关闭 LRO/TSO 防止转发丢包或 Pacing 失效
+            # 注意: LRO 对于转发节点必须关闭
+            ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
+            info "网卡卸载优化已应用 ($IFACE)"
+        fi
+    fi
+
+    # 8. InitCWND 注入
     apply_initcwnd_optimization "false"
 }
 
@@ -602,26 +647,24 @@ EOF
 setup_service() {
     info "配置系统服务 (MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
     
-    # 动态判断 GODEBUG 与内核兼容性 (4.5 之后 madvdontneed 不是必须)
-    local kernel_main=$(uname -r | cut -d. -f1)
-    local kernel_minor=$(uname -r | cut -d. -f2)
-    local go_debug_val=""
-    if [ "$kernel_main" -lt 4 ] || { [ "$kernel_main" -eq 4 ] && [ "$kernel_minor" -lt 5 ]; }; then
-        go_debug_val="GODEBUG=madvdontneed=1"
-    fi
+    # 动态判断 GODEBUG
+    # madvdontneed=1: 强制立即释放内存给系统 (对小内存至关重要)
+    # memprofilerate=0: 禁用内部内存分析，节省 CPU
+    local go_debug_val="GODEBUG=memprofilerate=0,madvdontneed=1"
 
     # 准备运行时环境变量
     local env_list=(
         "Environment=GOGC=${SBOX_GOGC:-80}"
         "Environment=GOMEMLIMIT=$SBOX_GOLIMIT"
+        "Environment=GOTRACEBACK=none"  # 崩溃时不打印巨型堆栈
+        "Environment=$go_debug_val"
     )
-    [ -n "$go_debug_val" ] && env_list+=("Environment=$go_debug_val")
-    # 如果是极低内存机器，注入单核调度环境变量
+    
+    # 如果是极低内存机器且设置了单核优化
     [ -n "${SBOX_GOMAXPROCS:-}" ] && env_list+=("Environment=GOMAXPROCS=$SBOX_GOMAXPROCS")
 
     if [ "$OS" = "alpine" ]; then
-        # Alpine OpenRC (功能受限，主要应用内存与GC优化)
-        # 将数组转换为 export 格式
+        # Alpine OpenRC
         local openrc_exports=$(printf "export %s\n" "${env_list[@]}" | sed 's/Environment=//g')
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
@@ -640,7 +683,6 @@ EOF
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service (Optimized)
-# 确保执行 Pre 脚本时网卡已完全就绪
 After=network-online.target
 Wants=network-online.target
 
@@ -652,17 +694,17 @@ WorkingDirectory=/etc/sing-box
 # 运行时环境优化
 $systemd_envs
 
-# --- 自动修复 InitCWND (调用模式) ---
+# --- 自动修复 InitCWND ---
 ExecStartPre=/usr/local/bin/sb --apply-cwnd
 
 # 进程调度优化
 Nice=${VAR_SYSTEMD_NICE:-0}
-IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-}
+IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
 IOSchedulingPriority=0
 
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 
-# 增加重启延迟
+# 重启策略
 Restart=on-failure
 RestartSec=5s
 
@@ -747,7 +789,7 @@ display_system_status() {
 # ==========================================
 create_sb_tool() {
     mkdir -p /etc/sing-box
-    # 写入固化变量 (确保管理脚本知晓当前的优化状态)
+    # 写入固化变量
     cat > "$SBOX_CORE" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -768,16 +810,15 @@ RAW_IP6='${RAW_IP6:-}'
 EOF
 
     # 声明函数并追加到核心脚本
-    declare -f do_uninstall_process apply_initcwnd_optimization prompt_for_port get_env_data display_links display_system_status detect_os copy_to_clipboard create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
-    
-    # 追加逻辑部分 (这里需要重新计算optimize_system吗？不需要，因为变量已固化，但若更新内核或重置端口需要用到)
-    # 为方便起见，管理脚本中的 update/reset 将复用 optimize_system 的逻辑，所以我们也追加 optimize_system 函数
-    declare -f optimize_system >> "$SBOX_CORE"
+    # [修复] 补全所有依赖函数，确保 optimize_system 能够独立运行
+    declare -f probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
+               get_env_data display_links display_system_status detect_os copy_to_clipboard \
+               create_config setup_service install_singbox info err warn succ optimize_system >> "$SBOX_CORE"
 
     cat >> "$SBOX_CORE" <<'EOF'
 detect_os
 if [[ "${1:-}" == "--detect-only" ]]; then
-    : # 已在上方执行，此处保持空操作或返回
+    : 
 elif [[ "${1:-}" == "--show-only" ]]; then
     get_env_data
     echo -e "\n\033[1;34m==========================================\033[0m"
@@ -785,6 +826,7 @@ elif [[ "${1:-}" == "--show-only" ]]; then
     echo -e "\033[1;34m------------------------------------------\033[0m"
     display_links
 elif [[ "${1:-}" == "--reset-port" ]]; then
+    # 重置端口时，重新计算优化参数并应用
     optimize_system 
     create_config "$2" 
     setup_service 
@@ -799,13 +841,14 @@ elif [[ "${1:-}" == "--update-kernel" ]]; then
     fi
 elif [[ "${1:-}" == "--apply-cwnd" ]]; then
     apply_initcwnd_optimization "true" || true
-elif [[ "${1:-}" == "--uninstall" ]]; then
-    do_uninstall_process
 fi
 EOF
 
     chmod 700 "$SBOX_CORE"
     local SB_PATH="/usr/local/bin/sb"
+    
+    # 写入 sb 管理菜单入口 (无需变动，保持原样即可，这里省略重复代码)
+    # ... (如果你需要我也把这部分贴出来，请告诉我，通常这部分没变) ...
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -823,9 +866,9 @@ while true; do
     echo "=========================="
     echo " Sing-box HY2 管理 (快捷键: sb)"
     echo "=========================="
-    echo "1. 查看信息   5. 重启服务"
-    echo "2. 修改配置   6. 卸载脚本"
-    echo "3. 重置端口   0. 退出"
+    echo "1. 查看信息    5. 重启服务"
+    echo "2. 修改配置    6. 卸载脚本"
+    echo "3. 重置端口    0. 退出"
     echo "4. 更新内核"
     echo "=========================="
     read -r -p "请选择 [0-6]: " opt
@@ -842,7 +885,7 @@ while true; do
            source "$CORE" --show-only
            read -r -p $'\n按回车键返回菜单...' ;;
         2) 
-           OLD_MD5=$(md5sum /etc/sing-box/config.json 2>/dev/null | awk '{print $1}')  
+           OLD_MD5=$(md5sum /etc/sing-box/config.json 2>/dev/null | awk '{print $1}')  
            vi /etc/sing-box/config.json
            NEW_MD5=$(md5sum /etc/sing-box/config.json 2>/dev/null | awk '{print $1}')
            if [[ "$OLD_MD5" != "$NEW_MD5" ]]; then
@@ -863,10 +906,12 @@ while true; do
            service_ctrl restart && info "服务已重启"
            read -r -p $'\n按回车键返回菜单...' ;;
         6) 
-           read -p "确定深度卸载并还原系统状态？[Y/N](默认N): " confirm
+           read -p "是否确定卸载？输入 y 确认，直接回车取消: " confirm
            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-               # 调用核心脚本中的卸载函数（增加 --uninstall 参数支持）
-               source "$CORE" --uninstall
+               service_ctrl stop
+               [ -f /etc/init.d/sing-box ] && rc-update del sing-box
+               rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
+               info "卸载完成！"
                exit 0
            else
                info "已取消卸载！"
