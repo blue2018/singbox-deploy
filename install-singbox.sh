@@ -803,8 +803,15 @@ while true; do
            source "$CORE" --show-only
            read -r -p $'\n按回车键返回菜单...' ;;
         2) 
-           vi /etc/sing-box/config.json && service_ctrl restart
-           echo -e "\n\033[1;32m[OK]\033[0m 配置已应用并重启服务。"
+           OLD_MD5=$(md5sum /etc/sing-box/config.json 2>/dev/null | awk '{print $1}')  
+           vi /etc/sing-box/config.json
+           NEW_MD5=$(md5sum /etc/sing-box/config.json 2>/dev/null | awk '{print $1}')
+           if [[ "$OLD_MD5" != "$NEW_MD5" ]]; then
+               service_ctrl restart
+               echo -e "\n\033[1;32m[OK]\033[0m 配置变更，已重启服务"
+           else
+               echo -e "\n\033[1;33m[INFO]\033[0m 配置未作变更"
+           fi
            read -r -p $'\n按回车键返回菜单...' ;;
         3) 
            NEW_PORT=$(prompt_for_port)
