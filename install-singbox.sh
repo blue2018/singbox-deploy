@@ -304,45 +304,44 @@ prompt_for_port() {
     done
 }
 
-# 生成 ECC P-256 高性能证书
+# 生成 ECC P-256 高性能证书 (绝对兼容稳定版)
 generate_cert() {
-    set +e 
-    
-    [ -f /etc/sing-box/certs/fullchain.pem ] && { set -e; return 0; }
+    [ -f /etc/sing-box/certs/fullchain.pem ] && return 0
     info "生成深度伪装 ECC P-256 证书 (目标: $TLS_DOMAIN)..."
     mkdir -p /etc/sing-box/certs
 
-    # 1. 更加稳健的随机组织名生成方式
-    local ORG
-    ORG=$(cat /dev/urandom | tr -dc 'a-zA-Z' | head -c 8 2>/dev/null)
-    [ -z "$ORG" ] && ORG="CloudData"
-    local RANDOM_DAYS=$((RANDOM % 500 + 300)) 
+    # 1. 简单的变量准备 (不使用复杂管道，防止 pipefail)
+    local ORG="CloudData"
+    local DAYS=3650
+    local SERIAL=$((RANDOM + 10000))
 
-    # 2. 写入配置文件 (确保变量 TLS_DOMAIN 已存在)
-    cat > /tmp/ssl_ext.conf <<EOF
-[req]
-distinguished_name = dn; x509_extensions = v3; prompt = no
-[dn]
-C = US; ST = California; L = Mountain View; O = $ORG Inc.; OU = IT Security; CN = $TLS_DOMAIN
-[v3]
-keyUsage = critical,digitalSignature,keyEncipherment; extendedKeyUsage = serverAuth
-subjectAltName = DNS:$TLS_DOMAIN, DNS:*.$TLS_DOMAIN
-EOF
+    # 2. 直接通过管道传递配置，不产生临时文件，避免权限或路径问题
+    # 使用 printf 构造配置，兼容性最强
+    local SSL_CONF=$(printf "[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=%s\nO=%s Inc.\n[v3]\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:%s,DNS:*.%s" "$TLS_DOMAIN" "$ORG" "$TLS_DOMAIN" "$TLS_DOMAIN")
 
-    # 3. 生成 ECC 私钥并签发
-    openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem >/dev/null 2>&1
+    # 3. 执行生成
+    # 先生成私钥
+    openssl ecparam -genkey -name prime256v1 -out /etc/sing-box/certs/privkey.pem >/dev/null 2>&1 || true
+    
+    # 核心步骤：使用 -config <(echo ...) 语法
     openssl req -new -x509 -sha256 \
         -key /etc/sing-box/certs/privkey.pem \
         -out /etc/sing-box/certs/fullchain.pem \
-        -config /tmp/ssl_ext.conf \
-        -days $RANDOM_DAYS \
-        -set_serial $RANDOM >/dev/null 2>&1
+        -days "$DAYS" \
+        -set_serial "$SERIAL" \
+        -config <(echo -e "$SSL_CONF") >/dev/null 2>&1
 
-    rm -f /tmp/ssl_ext.conf
+    # 检查结果，如果失败则尝试最简生成
+    if [ ! -f /etc/sing-box/certs/fullchain.pem ]; then
+        warn "加固证书生成失败，尝试基础模式..."
+        openssl req -new -x509 -days 3650 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
+            -keyout /etc/sing-box/certs/privkey.pem \
+            -out /etc/sing-box/certs/fullchain.pem \
+            -subj "/CN=$TLS_DOMAIN" >/dev/null 2>&1
+    fi
+
     chmod 600 /etc/sing-box/certs/*.pem
-    
-    set -e
-    succ "ECC 证书加固完成"
+    succ "ECC 证书就绪"
 }
 
 #卸载脚本，清理系统
