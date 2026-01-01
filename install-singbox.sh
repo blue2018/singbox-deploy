@@ -316,54 +316,6 @@ generate_cert() {
     fi
 }
 
-# 深度卸载与系统还原模块
-do_uninstall_process() {
-    info "正在启动深度卸载，还原系统至安装前状态..."
-
-    # 1. 停止并移除服务 (OpenRC & Systemd)
-    if [ -f /etc/init.d/sing-box ]; then
-        rc-service sing-box stop 2>/dev/null || true
-        rc-update del sing-box default 2>/dev/null || true
-        rm -f /etc/init.d/sing-box
-    fi
-    if command -v systemctl >/dev/null; then
-        systemctl disable --now sing-box 2>/dev/null || true
-        rm -f /etc/systemd/system/sing-box.service
-        systemctl daemon-reload
-    fi
-
-    # 2. 还原内核优化参数
-    if [ -f /etc/sysctl.conf ]; then
-        # 精准删除脚本写入的配置
-        sed -i '/# === 拥塞控制与队列 ===/d' /etc/sysctl.conf
-        sed -i '/net.core.default_qdisc = fq/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.tcp_congestion_control =/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.tcp_slow_start_after_idle = 0/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.tcp_fastopen = 3/d' /etc/sysctl.conf
-        sed -i '/# === UDP 极限优化/d' /etc/sysctl.conf
-        sed -i '/net.core.rmem_max =/d' /etc/sysctl.conf
-        sed -i '/net.core.wmem_max =/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.udp_mem =/d' /etc/sysctl.conf
-        
-        # 重新应用剩余的系统默认参数
-        sysctl -p >/dev/null 2>&1 || true
-        succ "内核参数已尝试还原"
-    fi
-
-    # 3. 还原 InitCWND (恢复为 Linux 默认 10)
-    local route_core=$(ip route show default | head -n1 | awk '{print "via " $3 " dev " $5}')
-    if [ -n "$route_core" ]; then
-        ip route change default $route_core initcwnd 10 initrwnd 10 2>/dev/null || true
-        succ "网络初始窗口已恢复默认 (10)"
-    fi
-
-    # 4. 清理残留文件
-    rm -f /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB "$SBOX_CORE"
-    rm -rf /etc/sing-box
-    
-    succ "卸载完成，系统已恢复初始状态"
-}
-
 
 # ==========================================
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
@@ -397,16 +349,24 @@ optimize_system() {
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="500"; SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="100MiB"; SBOX_GOGC="70"
-        VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608" # 8MB
+        # 紧凑版 (128M): 激进优化
+        # GOGC=off (或极大值) 配合 GOMEMLIMIT 是现代 Go 低内存最佳实践
+        # 只有当内存达到 90MiB 时才强制 GC，平时几乎不 GC，极大节省 CPU
+        SBOX_GOLIMIT="90MiB"; SBOX_GOGC="800"
+        VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="300"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
+        VAR_HY2_BW="250"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版(LazyGC)"
+        local swappiness_val=60  # 允许适当交换以保护主进程
     else
-        SBOX_GOLIMIT="52MiB"; SBOX_GOGC="50"
-        VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304" # 4MB
+        # 生存版 (64M): 极限生存
+        # 预留 14M 给系统内核，其余给 sing-box，利用 Swap 容错
+        SBOX_GOLIMIT="48MiB"; SBOX_GOGC="800"
+        VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152" # 降至 2M，防止 UDP 缓冲区撑爆 RAM
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
-        SBOX_GOMAXPROCS="1" # 针对极小内存单核优化
-        VAR_HY2_BW="200"; SBOX_OPTIMIZE_LEVEL="64M 生存版"
+        # 移除 GOMAXPROCS=1，让调度器自动处理，避免单核阻塞
+        SBOX_GOMAXPROCS="" 
+        VAR_HY2_BW="100"; SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
+        local swappiness_val=100 # 64M 机器必须激进使用 Swap，否则系统卡死
     fi
 
     # [动态算法] RTT 驱动的 UDP 动态缓冲池 (High BDP Tuning)
@@ -501,6 +461,9 @@ net.netfilter.nf_conntrack_udp_timeout_stream = 60
 net.ipv4.ip_no_pmtu_disc = 0
 net.ipv4.ip_forward = 1
 vm.swappiness = 10
+
+# 针对不同内存大小动态调整 Swap 积极性
+vm.swappiness = $swappiness_val
 SYSCTL
 
     # 立即应用参数，忽略无关报错
@@ -816,7 +779,9 @@ RAW_IP6='${RAW_IP6:-}'
 EOF
 
     # 声明函数并追加到核心脚本
-    declare -f apply_initcwnd_optimization prompt_for_port get_env_data display_links display_system_status detect_os copy_to_clipboard create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
+    declare -f probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
+               get_env_data display_links display_system_status detect_os copy_to_clipboard \
+               create_config setup_service install_singbox info err warn succ >> "$SBOX_CORE"
     
     # 追加逻辑部分 (这里需要重新计算optimize_system吗？不需要，因为变量已固化，但若更新内核或重置端口需要用到)
     # 为方便起见，管理脚本中的 update/reset 将复用 optimize_system 的逻辑，所以我们也追加 optimize_system 函数
