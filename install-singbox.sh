@@ -600,7 +600,7 @@ create_config() {
       "down_mbps": ${VAR_HY2_BW:-200},
       "udp_timeout": "10s",
       "udp_fragment": true,
-      "max_transmit_unit": 1380,
+      "mtu": 1380,
       "tls": {
         "enabled": true,
         "alpn": [
