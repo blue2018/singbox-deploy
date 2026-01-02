@@ -550,33 +550,34 @@ install_singbox() {
 # 配置文件生成
 # ==========================================
 create_config() {
-    # 1. 优先级处理：优先捕获传入的参数（新端口）
-    local INPUT_PORT="${1:-}"
-    local PORT_HY2 PSK SBOX_OBFS HY2_BW
-    
-    HY2_BW="${VAR_HY2_BW:-100}" 
+    # 1. 初始化局部变量，确保在 set -u 下安全
+    local INPUT_PORT="${1:-}"; local PORT_HY2=""; local PSK=""
+    local SBOX_OBFS=""; local HY2_BW="${VAR_HY2_BW:-200}"
 
     mkdir -p /etc/sing-box
 
     # 2. 从旧配置读取 (增加优先级判断)
     if [ -f /etc/sing-box/config.json ]; then
+        # 只有在没传新端口参数时，才读取旧端口
         if [ -z "$INPUT_PORT" ]; then
             PORT_HY2=$(jq -r '.inbounds[0].listen_port // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
         else
             PORT_HY2="$INPUT_PORT"
         fi
+        # 读取旧凭据
         PSK=$(jq -r '.inbounds[0].users[0].password // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
         SBOX_OBFS=$(jq -r '.inbounds[0].obfs.password // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
     else
         PORT_HY2="$INPUT_PORT"
     fi
 
-    # 3. 变量生成 (仅在变量为空时生成，并移除带时间戳的兜底)
+    # 3. 变量生成 (确保此时变量绝对非空)
     [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 1025-65535 -n 1)
-    [ -z "$PSK" ] && PSK=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12 2>/dev/null || echo "pskRandom789")
-    [ -z "$SBOX_OBFS" ] && SBOX_OBFS=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16 2>/dev/null || echo "GW8DG9p7uBAtPdNw")
+    # 使用 ${PSK:-} 语法绕过 set -u 的检测，并提供可靠兜底
+    [ -z "${PSK:-}" ] && PSK=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12 2>/dev/null || echo "pskRandom789")
+    [ -z "${SBOX_OBFS:-}" ] && SBOX_OBFS=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16 2>/dev/null || echo "GW8DG9p7uBAtPdNw")
 
-    # 4. 写入配置
+    # 4. 写入配置 (关键：在引用变量时使用引号包裹)
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "error", "timestamp": true },
@@ -602,7 +603,7 @@ create_config() {
       "type": "salamander",
       "password": "${SBOX_OBFS}"
     },
-    "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
+    "masquerade": "https://${TLS_DOMAIN}"
   }],
   "outbounds": [{ "type": "direct", "tag": "direct-out" }]
 }
@@ -907,29 +908,25 @@ EOF
 # ==========================================
 # 主运行逻辑
 # ==========================================
-# 1. 基础环境检查 (最优先，避免无效执行)
-detect_os
-[ "$(id -u)" != "0" ] && echo "错误: 请使用 root 运行" && exit 1
-
-# 2. 显式初始化所有全局变量 (防止 set -u 报错)
-# 即使这些变量稍后会被 get_env_data 或 create_config 覆盖，也要先给个初始值
+# 1. 变量显式初始化 (必须放在所有函数调用之前，防止 set -u 报错)
 USER_PORT=""; PSK=""; SBOX_OBFS=""; TLS_DOMAIN="${TLS_DOMAIN:-www.bing.com}"
 RAW_SNI=""; RAW_IP4=""; RAW_IP6=""; SBOX_OPTIMIZE_LEVEL=""
 VAR_HY2_BW="${VAR_HY2_BW:-200}"; VAR_HY2_MTU="${VAR_HY2_MTU:-1350}"; SBOX_UDP_FRAG="${SBOX_UDP_FRAG:-true}"
-
-# 3. 交互与安装
-install_dependencies
-get_network_info            # 获取 IP 等信息
+# 2. 基础环境与权限检查
+detect_os
+[ "$(id -u)" != "0" ] && echo "错误: 请使用 root 运行" && exit 1
+# 3. 交互与执行流程
+install_dependencies        # 安装 jq, curl 等
+get_network_info            # 获取公网 IP (此时 RAW_IP4/6 已定义，不会报错)
 echo -e "-----------------------------------------------"
-USER_PORT=$(prompt_for_port) # 获取用户输入的端口
-optimize_system             # 核心：计算延迟并设置优化等级
-install_singbox "install"    # 安装内核
-generate_cert               # 生成证书 (此时 TLS_DOMAIN 已有值)
-create_config "$USER_PORT"   # 写入配置 (此时所有变量已定义)
-setup_service               # 注入 InitCWND 和服务优化
-create_sb_tool              # 写入管理脚本
-
-# 4. 获取环境数据并展示
+USER_PORT=$(prompt_for_port) # 获取端口输入
+optimize_system             # 延迟探测与系统调优
+install_singbox "install"    # 下载内核
+generate_cert               # 证书生成
+create_config "$USER_PORT"   
+setup_service               # 启动服务
+create_sb_tool              # 生成管理工具
+# 4. 结果展示
 get_env_data
 echo -e "\n\033[1;34m==========================================\033[0m"
 display_system_status
