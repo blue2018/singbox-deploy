@@ -907,25 +907,31 @@ EOF
 # ==========================================
 # 主运行逻辑
 # ==========================================
+# 1. 基础环境检查 (最优先，避免无效执行)
 detect_os
-[ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
-# 调用安装依赖函数
+[ "$(id -u)" != "0" ] && echo "错误: 请使用 root 运行" && exit 1
+
+# 2. 显式初始化所有全局变量 (防止 set -u 报错)
+# 即使这些变量稍后会被 get_env_data 或 create_config 覆盖，也要先给个初始值
+# 2. 显式初始化所有全局变量 (每行4个，防止 set -u 报错)
+USER_PORT=""; PSK=""; SBOX_OBFS=""; TLS_DOMAIN="${TLS_DOMAIN:-www.bing.com}"
+RAW_SNI=""; RAW_IP4=""; RAW_IP6=""; SBOX_OPTIMIZE_LEVEL=""
+VAR_HY2_BW="${VAR_HY2_BW:-200}"; VAR_HY2_MTU="${VAR_HY2_MTU:-1350}"; SBOX_UDP_FRAG="${SBOX_UDP_FRAG:-true}"
+
+# 3. 交互与安装
 install_dependencies
-# 获取并显示网络 IP
-get_network_info
+get_network_info            # 获取 IP 等信息
+
 echo -e "-----------------------------------------------"
-USER_PORT=$(prompt_for_port)
-optimize_system    # 计算差异化优化参数
-install_singbox "install"
-PSK="${PSK:-}"
-SBOX_OBFS="${SBOX_OBFS:-}"
-VAR_HY2_BW="${VAR_HY2_BW:-200}"
-TLS_DOMAIN="${TLS_DOMAIN:-www.bing.com}" # 确保域名变量也存在
-generate_cert      # 生成证书
-create_config "$USER_PORT" # 创建配置
-setup_service      # 应用 Systemd 优化参数
-create_sb_tool     # 生成管理脚本
-# 初始显示
+USER_PORT=$(prompt_for_port) # 获取用户输入的端口
+optimize_system             # 核心：计算延迟并设置优化等级
+install_singbox "install"    # 安装内核
+generate_cert               # 生成证书 (此时 TLS_DOMAIN 已有值)
+create_config "$USER_PORT"   # 写入配置 (此时所有变量已定义)
+setup_service               # 注入 InitCWND 和服务优化
+create_sb_tool              # 写入管理脚本
+
+# 4. 获取环境数据并展示
 get_env_data
 echo -e "\n\033[1;34m==========================================\033[0m"
 display_system_status
