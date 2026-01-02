@@ -449,18 +449,26 @@ SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
     # === 6. NIC 卸载与高级 MTU 探测 (防分片精调版) ===
+    if ! command -v ethtool >/dev/null 2>&1; then
+        apk add --no-cache ethtool >/dev/null 2>&1 || true
+    fi
+
     if command -v ethtool >/dev/null 2>&1; then
         local IFACE=$(ip route show default | awk '{print $5; exit}')
         if [ -n "$IFACE" ]; then
-            # 禁用 TSO/LRO 防止产生越界的巨型帧，保留 GSO/GRO 维持高性能
+            # 禁用 TSO/LRO 防止产生越界的巨型帧。
+            # 这里的逻辑是：让 CPU 来分片，而不是让网卡硬件瞎分片，这能解决很多“握手通了但没速度”的问题。
             ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
             info "网卡优化：已禁用 TSO/LRO，规避分片丢包"
         fi
     fi
 
     # 注入路径 MTU 动态发现逻辑
+    # 既然 Sing-box 内部不让填 mtu 字段，我们就在系统层面开启探测
+    # net.ipv4.tcp_mtu_probing=1 可以让内核自动尝试发现链路上的最佳 MTU
     sysctl -w net.ipv4.ip_no_pmtu_disc=0 >/dev/null 2>&1 || true
     sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null 2>&1 || true
+    info "系统优化：已开启 PMTU 发现与探测"
     
     apply_initcwnd_optimization "false"
 }
@@ -600,7 +608,6 @@ create_config() {
       "down_mbps": ${VAR_HY2_BW:-200},
       "udp_timeout": "10s",
       "udp_fragment": true,
-      "mtu": 1380,
       "tls": {
         "enabled": true,
         "alpn": [
