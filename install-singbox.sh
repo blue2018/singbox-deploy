@@ -18,6 +18,7 @@ VAR_UDP_WMEM=""
 VAR_SYSTEMD_NICE=""
 VAR_SYSTEMD_IOSCHED=""
 VAR_HY2_BW="200"
+VAR_HY2_MTU="1350"
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
@@ -368,7 +369,8 @@ optimize_system() {
         SBOX_GOLIMIT="48MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="100"; SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
+        VAR_HY2_BW="100"; VAR_HY2_MTU="1200"; SBOX_GOMAXPROCS="1"
+        SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
         local swappiness_val=100; busy_poll_val=0
     fi
 
@@ -578,6 +580,7 @@ create_config() {
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "10s",
     "udp_fragment": true,
+    "mtu": ${VAR_HY2_MTU:-1350},
     "tls": {
       "enabled": true,
       "alpn": ["h3"],
