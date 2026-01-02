@@ -213,49 +213,51 @@ apply_initcwnd_optimization() {
     local is_silent="${1:-false}"
     if ! command -v ip >/dev/null; then return 0; fi
 
-    # 1. 提取 IPv4 默认路由的完整画像
-    local default_route=$(ip -4 route show default | head -n1)
+    # 1. 探测真正的出站路由 (比直接查找 default 更精准)
+    local route_info=$(ip route get 1.1.1.1 2>/dev/null || ip route show default | head -n1)
     
-    if [ -z "$default_route" ]; then
-        [[ "$is_silent" == "false" ]] && warn "未发现默认路由，跳过 CWND 优化"
+    if [ -z "$route_info" ]; then
+        [[ "$is_silent" == "false" ]] && warn "未发现可用路由，跳过 CWND 优化"
         return 0
     fi
 
-    # 2. 提取网关 (gw)、网卡 (dev) 和 MTU
-    local gw=$(echo "$default_route" | awk '/via/ {print $3}')
-    local dev=$(echo "$default_route" | awk '/dev/ {print $5}')
-    local mtu=$(echo "$default_route" | awk '/mtu/ {print $7}')
-    # 如果没探测到 MTU，默认设为 1500
-    [ -z "$mtu" ] && mtu=1500
-    # 核心优化：计算 advmss (针对虚化小鸡成功率的关键)
-    local advmss=$((mtu - 40))
-    # 设置 20 是因为现代网络环境下 20 比 15 的冷启动性能更优
-    local route_cmd="initcwnd 20 initrwnd 20 advmss $advmss"
+    # 2. 提取参数
+    local gw=$(echo "$route_info" | awk '/via/ {print $3}')
+    local dev=$(echo "$route_info" | awk '/dev/ {print $5}')
+    local mtu=$(echo "$route_info" | awk '/mtu/ {print $NF}')
     
-    # 3. 尝试多重注入方案
-    # 方案 A: 完整路径强制替换 (最推荐)
+    # 兜底 MTU
+    [ -z "$mtu" ] || [[ ! "$mtu" =~ ^[0-9]+$ ]] && mtu=1500
+    
+    # 计算 advmss (MSS = MTU - TCP/IP Header 40字节)
+    local advmss=$((mtu - 40))
+    # 取黄金分割点 15 (比默认 10 强 50%，比 20 更隐蔽)
+    local route_cmd="initcwnd 15 initrwnd 15 advmss $advmss"
+    
+    # 3. 尝试多重注入方案 (移除 proto 等标识的干扰)
     if [ -n "$gw" ] && [ -n "$dev" ]; then
+        # 方案 A: 标准 KVM/物理机
         if ip route replace default via "$gw" dev "$dev" $route_cmd 2>/dev/null; then
-            [[ "$is_silent" == "false" ]] && succ "InitCWND 强制注入成功 (Standard)"
+            [[ "$is_silent" == "false" ]] && succ "InitCWND 设置为 15 (Standard)"
             return 0
         fi
     fi
 
-    # 方案 B: 针对 OpenVZ/LXC，不带网关直接操作网卡设备
+    # 方案 B: 针对 OpenVZ/LXC (无网关或点对点)
     if [ -n "$dev" ]; then
         if ip route replace default dev "$dev" $route_cmd 2>/dev/null; then
-            [[ "$is_silent" == "false" ]] && succ "InitCWND 设备级注入成功 (Interface-only)"
+            [[ "$is_silent" == "false" ]] && succ "InitCWND 设置为 15 (Device-only)"
             return 0
         fi
     fi
 
-    # 方案 C: 最后的尝试，不破坏原有路由，直接使用 change 变更
+    # 方案 C: 兜底通用变更
     if ip route change default $route_cmd 2>/dev/null; then
-         [[ "$is_silent" == "false" ]] && succ "InitCWND 变更成功 (Change-mode)"
+         [[ "$is_silent" == "false" ]] && succ "InitCWND 设置为 15 (Change-mode)"
          return 0
     fi
 
-    [[ "$is_silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层已锁定路由表)"
+    [[ "$is_silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定)"
     return 0
 }
 
