@@ -550,52 +550,38 @@ install_singbox() {
 # 配置文件生成
 # ==========================================
 create_config() {
-    # 定义局部变量并赋予默认值，防止 JSON 破损
-    local INPUT_PORT="${1:-}"
-    local PORT_HY2=""
-    local PSK_VAL=""
-    local OBFS_VAL=""
-    
-    # 确保目录存在
+    # 1. 强制创建目录
     mkdir -p /etc/sing-box
+    mkdir -p /etc/sing-box/certs
 
-    # 1. 尝试从旧配置中提取（如果存在）
-    if [ -f /etc/sing-box/config.json ]; then
-        PORT_HY2=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
-        PSK_VAL=$(jq -r '.inbounds[0].users[0].password // empty' /etc/sing-box/config.json 2>/dev/null)
-        OBFS_VAL=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null)
+    # 2. 预设参数，避免读取旧文件失败导致中断
+    # 如果外部没有传入端口，则随机生成
+    if [ -z "${1:-}" ]; then
+        PORT_HY2=$(shuf -i 1025-65535 -n 1)
+    else
+        PORT_HY2="$1"
     fi
 
-    # 2. 确定最终使用的参数
-    [ -n "$INPUT_PORT" ] && PORT_HY2="$INPUT_PORT"
-    [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 1025-65535 -n 1)
-    
-    if [ -z "$PSK_VAL" ]; then
-        PSK_VAL=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12 2>/dev/null)
-        [ -z "$PSK_VAL" ] && PSK_VAL="pskRandom789"
-    fi
-    
-    if [ -z "$OBFS_VAL" ]; then
-        OBFS_VAL=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16 2>/dev/null)
-        [ -z "$OBFS_VAL" ] && OBFS_VAL="GW8DG9p7uBAtPdNw"
-    fi
+    # 3. 密码生成（简单暴力，防止管道崩溃）
+    PSK_VAL="pass$(tr -dc 'a-z0-9' < /dev/urandom | head -c 8)"
+    OBFS_VAL="obfs$(tr -dc 'a-z0-9' < /dev/urandom | head -c 8)"
 
-    # 重要：同步给全局变量，供 display_links 使用
-    # 确保脚本其他地方引用的是这些名字
+    # 4. 同步给全局变量供后续生成链接使用
+    # 注意：这里必须赋值给脚本全局使用的变量名
     RAW_PORT="$PORT_HY2"
     RAW_PSK="$PSK_VAL"
     SBOX_OBFS="$OBFS_VAL"
 
-    # 3. 写入配置（使用引号包裹变量，防止空值导致语法错误）
+    # 5. 直接生成 JSON (不使用变量嵌套，防止转义错误)
     cat > /etc/sing-box/config.json <<EOF
 {
-  "log": { "level": "error", "timestamp": true },
+  "log": { "level": "error" },
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
     "listen": "0.0.0.0",
-    "listen_port": 25968,
-    "users": [ { "password": "your_password_123" } ],
+    "listen_port": ${PORT_HY2},
+    "users": [ { "password": "${PSK_VAL}" } ],
     "tls": {
       "enabled": true,
       "alpn": ["h3"],
@@ -604,13 +590,18 @@ create_config() {
     },
     "obfs": {
       "type": "salamander",
-      "password": "your_obfs_password"
+      "password": "${OBFS_VAL}"
     }
   }],
-  "outbounds": [{ "type": "direct", "tag": "direct-out" }]
+  "outbounds": [{ "type": "direct" }]
 }
 EOF
-    chmod 600 "/etc/sing-box/config.json"
+
+    # 6. 检查文件是否生成成功
+    if [ ! -f /etc/sing-box/config.json ]; then
+        echo "[ERROR] 配置文件生成失败！"
+        exit 1
+    fi
 }
 
 # ==========================================
