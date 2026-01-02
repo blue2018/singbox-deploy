@@ -693,15 +693,8 @@ get_env_data() {
 
 display_links() {
     local LINK_V4="" LINK_V6="" FULL_CLIP=""
-    # 显式初始化所有可能用到的变量，防止 set -u 报错
     local OBFS_PART="" RAW_IP4="${RAW_IP4:-}" RAW_IP6="${RAW_IP6:-}" RAW_SALA="${RAW_SALA:-}"
-
-    # 检查是否有 IP 地址
-    if [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ]; then
-        echo -e "\n\033[1;31m警告: 未检测到任何公网 IP 地址，请检查网络！\033[0m"
-        return
-    fi
-
+    
     if [ -n "$RAW_SALA" ]; then
         OBFS_PART="&obfs=salamander&obfs-password=${RAW_SALA}"
     fi
@@ -711,15 +704,13 @@ display_links() {
     if [ -n "$RAW_IP4" ]; then
         LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1${OBFS_PART}#$(hostname)_v4"
         FULL_CLIP="$LINK_V4"
-        echo -e "\n\033[1;35m[IPv4节点链接]\033[0m"
-        echo -e "$LINK_V4\n"
+        echo -e "\n\033[1;35m[IPv4节点链接]\033[0m\n$LINK_V4\n"
     fi
 
     if [ -n "$RAW_IP6" ]; then
         LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1${OBFS_PART}#$(hostname)_v6"
         [ -n "$FULL_CLIP" ] && FULL_CLIP="${FULL_CLIP}\n${LINK_V6}" || FULL_CLIP="$LINK_V6"
-        echo -e "\033[1;36m[IPv6节点链接]\033[0m"
-        echo -e "$LINK_V6"
+        echo -e "\033[1;36m[IPv6节点链接]\033[0m\n$LINK_V6"
     fi
     
     echo -e "\033[1;34m==========================================\033[0m"
