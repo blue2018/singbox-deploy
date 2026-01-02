@@ -545,12 +545,39 @@ create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
-    # 动态获取/生成参数
-    [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 1025-65000 -n 1)
-    local PSK=$(openssl rand -hex 16)
-    local SALA_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
+    # 1. 端口确定逻辑
+    if [ -z "$PORT_HY2" ]; then
+        if [ -f /etc/sing-box/config.json ]; then
+            PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
+        else
+            PORT_HY2=$(shuf -i 10000-60000 -n 1)
+        fi
+    fi
 
-    # 关键：彻底修复 JSON 写入格式
+    # 2. PSK (密码) 确定逻辑
+    local PSK
+    if [ -f /etc/sing-box/config.json ]; then
+        PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
+    elif command -v uuidgen >/dev/null 2>&1; then
+        PSK=$(uuidgen)
+    elif [ -f /proc/sys/kernel/random/uuid ]; then
+        PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
+    else
+        # 兜底：使用 openssl 生成符合标准 UUID 格式的随机数
+        local seed=$(openssl rand -hex 16)
+        PSK="${seed:0:8}-${seed:8:4}-${seed:12:4}-${seed:16:4}-${seed:20:12}"
+    fi
+
+    # 3. 新增：Salamander 混淆密码确定逻辑 (同样遵循“存在即继承”原则)
+    local SALA_PASS="" # ⬅️ 显式初始化，防止 set -u 报错
+    if [ -f /etc/sing-box/config.json ]; then
+        SALA_PASS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
+    fi
+    # 如果为空则生成新密码
+    [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    
+    # 4. 写入 Sing-box 配置文件
+    # 修正：确保 JSON 键值对后的逗号正确，并加入 max_transmit_unit
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": {
@@ -586,7 +613,7 @@ create_config() {
         "type": "salamander",
         "password": "$SALA_PASS"
       },
-      "masquerade": "https://$TLS_DOMAIN"
+      "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
     }
   ],
   "outbounds": [
