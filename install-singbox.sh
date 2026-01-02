@@ -442,7 +442,7 @@ optimize_system() {
         SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [内存锁限制]"
     fi
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
+    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
@@ -722,7 +722,7 @@ RestartSec=5s
 
 # 资源限制策略
 MemoryHigh=${SBOX_MEM_HIGH:-}
-MemoryMax=${SBOX_MEM_MAX:-64M}
+MemoryMax=${SBOX_MEM_MAX:-58M}
 LimitNOFILE=1000000
 
 [Install]
