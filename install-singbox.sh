@@ -4,25 +4,16 @@ set -euo pipefail
 # ==========================================
 # 基础变量声明与环境准备
 # ==========================================
-SBOX_ARCH=""
-OS_DISPLAY=""
-SBOX_CORE="/etc/sing-box/core_script.sh"
-
-# 优化变量容器 (由 optimize_system 计算并填充)
-SBOX_GOLIMIT="52MiB"
-SBOX_GOGC="80"
-SBOX_MEM_MAX="55M"
-SBOX_MEM_HIGH=""
-SBOX_GOMAXPROCS=""
-SBOX_OPTIMIZE_LEVEL="未检测"
-VAR_UDP_RMEM=""
-VAR_UDP_WMEM=""
-VAR_SYSTEMD_NICE=""
-VAR_SYSTEMD_IOSCHED=""
-VAR_HY2_BW="200"
-SBOX_OBFS=""
-SBOX_UDP_FRAG="true"
-VAR_HY2_MTU="1350"
+# --- 基础与核心定义 ---
+SBOX_CORE="/etc/sing-box/core_script.sh"; SBOX_ARCH=""; OS_DISPLAY=""
+# --- 内存控制组 (Go 运行时与 Systemd 限制) ---
+SBOX_GOLIMIT="52MiB"; SBOX_GOGC="80"; SBOX_MEM_MAX="55M"
+SBOX_MEM_HIGH=""; SBOX_GOMAXPROCS=""; SBOX_OPTIMIZE_LEVEL="未检测"
+# --- 内核网络与调度组 (TCP/UDP 缓冲与优先级) ---
+VAR_UDP_RMEM=""; VAR_UDP_WMEM=""; VAR_SYSTEMD_NICE=""
+VAR_SYSTEMD_IOSCHED=""; VAR_HY2_BW="200"; SBOX_OBFS=""
+# --- 协议细项 (MTU 与分片) ---
+SBOX_UDP_FRAG="true"; VAR_HY2_MTU="1350"
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
