@@ -18,6 +18,7 @@ VAR_UDP_WMEM=""
 VAR_SYSTEMD_NICE=""
 VAR_SYSTEMD_IOSCHED=""
 VAR_HY2_BW="200"
+RAW_SALA=""
 SBOX_UDP_FRAG="true"
 VAR_HY2_MTU="1350"
 
@@ -561,7 +562,7 @@ create_config() {
     fi
 
     # 3. 新增：Salamander 混淆密码确定逻辑 (同样遵循“存在即继承”原则)
-    local SALA_PASS="" # ⬅️ 显式初始化，防止 set -u 报错
+    local SALA_PASS=""
     if [ -f /etc/sing-box/config.json ]; then
         SALA_PASS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
     fi
