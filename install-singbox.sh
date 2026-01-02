@@ -604,7 +604,7 @@ create_config() {
     },
     "obfs": {
       "type": "salamander",
-      "password": "${SBOX_OBFS:-12345678}"
+      "password": "${SBOX_OBFS:-GW8DG9p7uBAtPdNw}"
     },
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
@@ -620,7 +620,6 @@ EOF
 setup_service() {
     info "配置系统服务 (MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
     
-    # 动态判断 GODEBUG
     # madvdontneed=1: 强制立即释放内存给系统 (对小内存至关重要)
     # memprofilerate=0: 禁用内部内存分析，节省 CPU
     local go_debug_val="GODEBUG=memprofilerate=0,madvdontneed=1"
@@ -639,10 +638,16 @@ setup_service() {
     if [ "$OS" = "alpine" ]; then
         # Alpine OpenRC
         local openrc_exports=$(printf "export %s\n" "${env_list[@]}" | sed 's/Environment=//g')
+        # 微调：为 Alpine 增加进程级内存保护 (ulimit)，单位为 KB
+        local mem_limit_kb=$(( $(echo "$SBOX_MEM_MAX" | tr -d 'M') * 1024 ))
+
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
 $openrc_exports
+# 资源限制：防止小鸡内存溢出
+rc_ulimit="-v $mem_limit_kb"
+
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
@@ -683,7 +688,7 @@ RestartSec=5s
 
 # 资源限制策略
 MemoryHigh=${SBOX_MEM_HIGH:-}
-MemoryMax=${SBOX_MEM_MAX:-58M}
+MemoryMax=${SBOX_MEM_MAX}
 LimitNOFILE=1000000
 
 [Install]
