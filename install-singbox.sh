@@ -349,25 +349,25 @@ optimize_system() {
         SBOX_GOLIMIT="420MiB"; SBOX_GOGC="120"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
-        VAR_HY2_BW="1000"; SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
+        VAR_HY2_BW="500"; SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
         local swappiness_val=10; busy_poll_val=50
     elif [ "$mem_total" -ge 200 ]; then
         SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="500"; SBOX_OPTIMIZE_LEVEL="256M 增强版"
+        VAR_HY2_BW="300"; SBOX_OPTIMIZE_LEVEL="256M 增强版"
         local swappiness_val=10; busy_poll_val=20
     elif [ "$mem_total" -ge 100 ]; then
         SBOX_GOLIMIT="90MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="250"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版(LazyGC)"
+        VAR_HY2_BW="200"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版(LazyGC)"
         local swappiness_val=60; busy_poll_val=0
     else
         SBOX_GOLIMIT="48MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="100"; SBOX_GOMAXPROCS="1"
+        VAR_HY2_BW="80"; SBOX_GOMAXPROCS="1"
         SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
         local swappiness_val=100; busy_poll_val=0
     fi
@@ -409,10 +409,6 @@ optimize_system() {
 
     # 5. 写入 Sysctl (深度 BBR 锐化参数)
     cat > /etc/sysctl.conf <<SYSCTL
-# === 路径 MTU 探测优化 ===
-net.ipv4.ip_no_pmtu_disc = 0
-net.ipv4.tcp_mtu_probing = 1
-
 # === BBR 锐化与拥塞控制 ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = $tcp_cca
@@ -448,27 +444,11 @@ SYSCTL
 
     sysctl -p >/dev/null 2>&1 || true
 
-    # === 6. NIC 卸载与高级 MTU 探测 (防分片精调版) ===
+    # 6. NIC 卸载与 InitCWND
     if command -v ethtool >/dev/null 2>&1; then
         local IFACE=$(ip route show default | awk '{print $5; exit}')
-        if [ -n "$IFACE" ]; then
-            # 逐个尝试关闭，避免因为参数锁定报错导致后续命令不执行
-            ethtool -K "$IFACE" tso off >/dev/null 2>&1 || true
-            ethtool -K "$IFACE" lro off >/dev/null 2>&1 || true
-            ethtool -K "$IFACE" gro on gso on >/dev/null 2>&1 || true
-            info "网卡优化：已尝试调整 TSO/LRO 状态"
-        fi
+        [ -n "$IFACE" ] && ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
     fi
-    
-    # 核心优化：MTU 探测与缓冲区扩容
-    # 即使硬件 TSO 锁死，开启 MTU 探测也能让内核自动避开拦截大包的节点
-    sysctl -w net.ipv4.ip_no_pmtu_disc=0 >/dev/null 2>&1 || true
-    sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null 2>&1 || true
-    
-    # 扩充 UDP 缓冲区，防止 Hysteria2 在高带宽下因丢包导致的降速
-    sysctl -w net.core.rmem_max=16777216 >/dev/null 2>&1 || true
-    sysctl -w net.core.wmem_max=16777216 >/dev/null 2>&1 || true
-    
     apply_initcwnd_optimization "false"
 }
 
@@ -584,50 +564,33 @@ create_config() {
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
     
     # 4. 写入 Sing-box 配置文件
-    # 修正：确保 JSON 键值对后的逗号正确，并加入 max_transmit_unit
     cat > "/etc/sing-box/config.json" <<EOF
 {
-  "log": {
-    "level": "error",
-    "timestamp": true
-  },
-  "inbounds": [
-    {
-      "type": "hysteria2",
-      "tag": "hy2-in",
-      "listen": "::",
-      "listen_port": $PORT_HY2,
-      "users": [
-        {
-          "password": "$PSK"
-        }
-      ],
-      "ignore_client_bandwidth": false,
-      "up_mbps": ${VAR_HY2_BW:-200},
-      "down_mbps": ${VAR_HY2_BW:-200},
-      "udp_timeout": "10s",
-      "udp_fragment": true,
-      "tls": {
-        "enabled": true,
-        "alpn": [
-          "h3"
-        ],
-        "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-        "key_path": "/etc/sing-box/certs/privkey.pem"
-      },
-      "obfs": {
-        "type": "salamander",
-        "password": "$SALA_PASS"
-      },
-      "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct-out"
-    }
-  ]
+  "log": { "level": "error", "timestamp": true },
+  "inbounds": [{
+    "type": "hysteria2",
+    "tag": "hy2-in",
+    "listen": "::",
+    "listen_port": $PORT_HY2,
+    "users": [ { "password": "$PSK" } ],
+    "ignore_client_bandwidth": false,
+    "up_mbps": ${VAR_HY2_BW:-200},
+    "down_mbps": ${VAR_HY2_BW:-200},
+    "udp_timeout": "10s",
+    "udp_fragment": true,
+    "tls": {
+      "enabled": true,
+      "alpn": ["h3"],
+      "certificate_path": "/etc/sing-box/certs/fullchain.pem",
+      "key_path": "/etc/sing-box/certs/privkey.pem"
+    },
+    "obfs": {
+      "type": "salamander",
+      "password": "$SALA_PASS"
+    },
+    "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
+  }],
+  "outbounds": [{ "type": "direct", "tag": "direct-out" }]
 }
 EOF
     chmod 600 "/etc/sing-box/config.json"
