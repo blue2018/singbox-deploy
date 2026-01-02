@@ -603,7 +603,7 @@ create_config() {
       "type": "salamander",
       "password": "${SBOX_OBFS}"
     },
-    "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
+    "masquerade": "${TLS_DOMAIN:-www.microsoft.com}"
   }],
   "outbounds": [{ "type": "direct", "tag": "direct-out" }]
 }
