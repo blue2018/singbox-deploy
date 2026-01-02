@@ -913,7 +913,6 @@ detect_os
 
 # 2. 显式初始化所有全局变量 (防止 set -u 报错)
 # 即使这些变量稍后会被 get_env_data 或 create_config 覆盖，也要先给个初始值
-# 2. 显式初始化所有全局变量 (每行4个，防止 set -u 报错)
 USER_PORT=""; PSK=""; SBOX_OBFS=""; TLS_DOMAIN="${TLS_DOMAIN:-www.bing.com}"
 RAW_SNI=""; RAW_IP4=""; RAW_IP6=""; SBOX_OPTIMIZE_LEVEL=""
 VAR_HY2_BW="${VAR_HY2_BW:-200}"; VAR_HY2_MTU="${VAR_HY2_MTU:-1350}"; SBOX_UDP_FRAG="${SBOX_UDP_FRAG:-true}"
@@ -921,7 +920,6 @@ VAR_HY2_BW="${VAR_HY2_BW:-200}"; VAR_HY2_MTU="${VAR_HY2_MTU:-1350}"; SBOX_UDP_FR
 # 3. 交互与安装
 install_dependencies
 get_network_info            # 获取 IP 等信息
-
 echo -e "-----------------------------------------------"
 USER_PORT=$(prompt_for_port) # 获取用户输入的端口
 optimize_system             # 核心：计算延迟并设置优化等级
