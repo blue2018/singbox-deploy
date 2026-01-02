@@ -19,7 +19,6 @@ VAR_SYSTEMD_NICE=""
 VAR_SYSTEMD_IOSCHED=""
 VAR_HY2_BW="200"
 SBOX_UDP_FRAG="true"
-VAR_HY2_MTU="1350"
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
@@ -373,7 +372,7 @@ optimize_system() {
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="80"; SBOX_GOMAXPROCS="1"; SBOX_UDP_FRAG="false"
-        VAR_HY2_MTU="1200"; SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
+        SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
         local swappiness_val=100; busy_poll_val=0
     fi
 
@@ -582,7 +581,6 @@ create_config() {
     "up_mbps": ${VAR_HY2_BW:-200},
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "10s",
-    "mtu": ${VAR_HY2_MTU:-1350},
     "udp_fragment": ${SBOX_UDP_FRAG:-true},
     "tls": {
       "enabled": true,
@@ -779,7 +777,6 @@ VAR_SYSTEMD_IOSCHED='$VAR_SYSTEMD_IOSCHED'
 VAR_UDP_RMEM='${VAR_UDP_RMEM:-4194304}'
 VAR_UDP_WMEM='${VAR_UDP_WMEM:-4194304}'
 TLS_DOMAIN_POOL=($(printf "'%s' " "${TLS_DOMAIN_POOL[@]}"))
-TLS_DOMAIN='${TLS_DOMAIN}'
 RAW_SALA='$FINAL_SALA'
 RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
