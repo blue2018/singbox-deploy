@@ -341,8 +341,6 @@ optimize_system() {
 
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
 
-    # 初始化变量
-    SBOX_GOMAXPROCS=""
     local busy_poll_val=0
     local quic_extra_msg=""
 
