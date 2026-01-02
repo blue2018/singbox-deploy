@@ -7,8 +7,6 @@ set -euo pipefail
 SBOX_ARCH=""
 OS_DISPLAY=""
 SBOX_CORE="/etc/sing-box/core_script.sh"
-
-# 优化变量容器 (由 optimize_system 计算并填充)
 SBOX_GOLIMIT="52MiB"
 SBOX_GOGC="80"
 SBOX_MEM_MAX="55M"
@@ -20,6 +18,7 @@ VAR_UDP_WMEM=""
 VAR_SYSTEMD_NICE=""
 VAR_SYSTEMD_IOSCHED=""
 VAR_HY2_BW="200"
+SBOX_SALAMANDER=""
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
@@ -556,8 +555,16 @@ create_config() {
         local seed=$(openssl rand -hex 16)
         PSK="${seed:0:8}-${seed:8:4}-${seed:12:4}-${seed:16:4}-${seed:20:12}"
     fi
+
+    # 3. 新增：Salamander 混淆密码确定逻辑 (同样遵循“存在即继承”原则)
+    local SALA_PASS="" # ⬅️ 显式初始化，防止 set -u 报错
+    if [ -f /etc/sing-box/config.json ]; then
+        SALA_PASS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
+    fi
+    # 如果为空则生成新密码
+    [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
     
-    # 3. 写入 Sing-box 配置文件
+    # 4. 写入 Sing-box 配置文件
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "error", "timestamp": true },
@@ -568,8 +575,8 @@ create_config() {
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": false,
-    "up_mbps": ${VAR_HY2_BW:-100},
-    "down_mbps": ${VAR_HY2_BW:-100},
+    "up_mbps": ${VAR_HY2_BW:-200},
+    "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "10s",
     "udp_fragment": true,
     "tls": {
@@ -577,7 +584,12 @@ create_config() {
       "alpn": ["h3"],
       "certificate_path": "/etc/sing-box/certs/fullchain.pem",
       "key_path": "/etc/sing-box/certs/privkey.pem"
-    }
+    },
+    "obfs": {
+      "type": "salamander",
+      "password": "$SALA_PASS"
+    },
+    "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
   "outbounds": [{ "type": "direct", "tag": "direct-out" }]
 }
@@ -673,34 +685,36 @@ get_env_data() {
     local CONFIG_FILE="/etc/sing-box/config.json"
     [ ! -f "$CONFIG_FILE" ] && return 1
     
-    RAW_PSK=$(jq -r '.inbounds[0].users[0].password' "$CONFIG_FILE" | xargs)
-    RAW_PORT=$(jq -r '.inbounds[0].listen_port' "$CONFIG_FILE" | xargs)
+    # 读取 PSK、端口、混淆密码
+    RAW_PSK=$(jq -r '.inbounds[0].users[0].password // ""' "$CONFIG_FILE" | xargs)
+    RAW_PORT=$(jq -r '.inbounds[0].listen_port // ""' "$CONFIG_FILE" | xargs)
+    RAW_SALA=$(jq -r '.inbounds[0].obfs.password // ""' "$CONFIG_FILE" | xargs)
+    
     local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG_FILE" | xargs)
-    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 | sed 's/.*CN=\([^,]*\).*/\1/' | xargs || echo "unknown")
+    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/.*CN=\([^,]*\).*/\1/' | xargs || echo "unknown")
 }
 
 display_links() {
     local LINK_V4="" LINK_V6="" FULL_CLIP=""
+    local OBFS_PART="" RAW_IP4="${RAW_IP4:-}" RAW_IP6="${RAW_IP6:-}"
+    local RAW_SALA="${RAW_SALA:-}"
     
-    if [ -z "${RAW_IP4:-}" ] && [ -z "${RAW_IP6:-}" ]; then
-        echo -e "\n\033[1;31m警告: 未检测到任何公网 IP 地址，请检查网络！\033[0m"
-        return
+    if [ -n "$RAW_SALA" ]; then
+        OBFS_PART="&obfs=salamander&obfs-password=${RAW_SALA}"
     fi
 
-    echo -e "\n\033[1;32m[节点信息]\033[0m \033[1;34m>>>\033[0m 运行端口: \033[1;33m${RAW_PORT}\033[0m"
+    echo -e "\n\033[1;32m[节点信息]\033[0m \033[1;34m>>>\033[0m 运行端口: \033[1;33m${RAW_PORT:-"未知"}\033[0m"
 
-    if [ -n "${RAW_IP4:-}" ]; then
-        LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v4"
+    if [ -n "$RAW_IP4" ]; then
+        LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1${OBFS_PART}#$(hostname)_v4"
         FULL_CLIP="$LINK_V4"
-        echo -e "\n\033[1;35m[IPv4节点链接]\033[0m"
-        echo -e "$LINK_V4\n"
+        echo -e "\n\033[1;35m[IPv4节点链接]\033[0m\n$LINK_V4\n"
     fi
 
-    if [ -n "${RAW_IP6:-}" ]; then
-        LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1#$(hostname)_v6"
+    if [ -n "$RAW_IP6" ]; then
+        LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1${OBFS_PART}#$(hostname)_v6"
         [ -n "$FULL_CLIP" ] && FULL_CLIP="${FULL_CLIP}\n${LINK_V6}" || FULL_CLIP="$LINK_V6"
-        echo -e "\033[1;36m[IPv6节点链接]\033[0m"
-        echo -e "$LINK_V6"
+        echo -e "\033[1;36m[IPv6节点链接]\033[0m\n$LINK_V6"
     fi
     
     echo -e "\033[1;34m==========================================\033[0m"
@@ -741,6 +755,7 @@ display_system_status() {
 # ==========================================
 create_sb_tool() {
     mkdir -p /etc/sing-box
+    local FINAL_SALA=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
     # 写入固化变量
     cat > "$SBOX_CORE" <<EOF
 #!/usr/bin/env bash
@@ -757,12 +772,12 @@ VAR_SYSTEMD_IOSCHED='$VAR_SYSTEMD_IOSCHED'
 VAR_UDP_RMEM='${VAR_UDP_RMEM:-4194304}'
 VAR_UDP_WMEM='${VAR_UDP_WMEM:-4194304}'
 TLS_DOMAIN_POOL=($(printf "'%s' " "${TLS_DOMAIN_POOL[@]}"))
+RAW_SALA='$FINAL_SALA'
 RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 EOF
 
     # 声明函数并追加到核心脚本
-    # [修复] 补全所有依赖函数，确保 optimize_system 能够独立运行
     declare -f probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
                get_env_data display_links display_system_status detect_os copy_to_clipboard \
                create_config setup_service install_singbox info err warn succ optimize_system >> "$SBOX_CORE"
