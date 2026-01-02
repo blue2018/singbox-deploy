@@ -646,7 +646,7 @@ create_config() {
       "type": "salamander",
       "password": "${SBOX_OBFS:-12345678}"
     },
-    "masquerade": "https://www.bing.com"
+    "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
   "outbounds": [{ "type": "direct", "tag": "direct-out" }]
 }
