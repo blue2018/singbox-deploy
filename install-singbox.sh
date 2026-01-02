@@ -449,26 +449,25 @@ SYSCTL
     sysctl -p >/dev/null 2>&1 || true
 
     # === 6. NIC 卸载与高级 MTU 探测 (防分片精调版) ===
-    if ! command -v ethtool >/dev/null 2>&1; then
-        apk add --no-cache ethtool >/dev/null 2>&1 || true
-    fi
-
     if command -v ethtool >/dev/null 2>&1; then
         local IFACE=$(ip route show default | awk '{print $5; exit}')
         if [ -n "$IFACE" ]; then
-            # 禁用 TSO/LRO 防止产生越界的巨型帧。
-            # 这里的逻辑是：让 CPU 来分片，而不是让网卡硬件瞎分片，这能解决很多“握手通了但没速度”的问题。
-            ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
-            info "网卡优化：已禁用 TSO/LRO，规避分片丢包"
+            # 逐个尝试关闭，避免因为参数锁定报错导致后续命令不执行
+            ethtool -K "$IFACE" tso off >/dev/null 2>&1 || true
+            ethtool -K "$IFACE" lro off >/dev/null 2>&1 || true
+            ethtool -K "$IFACE" gro on gso on >/dev/null 2>&1 || true
+            info "网卡优化：已尝试调整 TSO/LRO 状态"
         fi
     fi
-
-    # 注入路径 MTU 动态发现逻辑
-    # 既然 Sing-box 内部不让填 mtu 字段，我们就在系统层面开启探测
-    # net.ipv4.tcp_mtu_probing=1 可以让内核自动尝试发现链路上的最佳 MTU
+    
+    # 核心优化：MTU 探测与缓冲区扩容
+    # 即使硬件 TSO 锁死，开启 MTU 探测也能让内核自动避开拦截大包的节点
     sysctl -w net.ipv4.ip_no_pmtu_disc=0 >/dev/null 2>&1 || true
     sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null 2>&1 || true
-    info "系统优化：已开启 PMTU 发现与探测"
+    
+    # 扩充 UDP 缓冲区，防止 Hysteria2 在高带宽下因丢包导致的降速
+    sysctl -w net.core.rmem_max=16777216 >/dev/null 2>&1 || true
+    sysctl -w net.core.wmem_max=16777216 >/dev/null 2>&1 || true
     
     apply_initcwnd_optimization "false"
 }
