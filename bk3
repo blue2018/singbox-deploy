@@ -543,7 +543,7 @@ create_config() {
     # 这里的 config.json 保持标准结构以避免不兼容。
     cat > "/etc/sing-box/config.json" <<EOF
 {
-  "log": { "level": "warn", "timestamp": true },
+  "log": { "level": "error", "timestamp": true },
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
