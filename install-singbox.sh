@@ -545,62 +545,56 @@ create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
     
-    # 1. 端口确定逻辑
-    if [ -z "$PORT_HY2" ]; then
-        if [ -f /etc/sing-box/config.json ]; then
-            PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
-        else
-            PORT_HY2=$(shuf -i 10000-60000 -n 1)
-        fi
-    fi
+    # 动态获取/生成参数
+    [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 1025-65000 -n 1)
+    local PSK=$(openssl rand -hex 16)
+    local SALA_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
 
-    # 2. PSK (密码) 确定逻辑
-    local PSK
-    if [ -f /etc/sing-box/config.json ]; then
-        PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
-    elif [ -f /proc/sys/kernel/random/uuid ]; then
-        PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
-    else
-        local seed=$(openssl rand -hex 16)
-        PSK="${seed:0:8}-${seed:8:4}-${seed:12:4}-${seed:16:4}-${seed:20:12}"
-    fi
-
-    # 3. Salamander 混淆密码
-    local SALA_PASS=""
-    if [ -f /etc/sing-box/config.json ]; then
-        SALA_PASS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
-    fi
-    [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-    
-    # 4. 写入 Sing-box 配置文件 (注意这里的逗号和新增的 max_transmit_unit)
+    # 关键：彻底修复 JSON 写入格式
     cat > "/etc/sing-box/config.json" <<EOF
 {
-  "log": { "level": "error", "timestamp": true },
-  "inbounds": [{
-    "type": "hysteria2",
-    "tag": "hy2-in",
-    "listen": "::",
-    "listen_port": $PORT_HY2,
-    "users": [ { "password": "$PSK" } ],
-    "ignore_client_bandwidth": false,
-    "up_mbps": ${VAR_HY2_BW:-200},
-    "down_mbps": ${VAR_HY2_BW:-200},
-    "udp_timeout": "10s",
-    "udp_fragment": true,
-    "max_transmit_unit": 1380,
-    "tls": {
-      "enabled": true,
-      "alpn": ["h3"],
-      "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-      "key_path": "/etc/sing-box/certs/privkey.pem"
-    },
-    "obfs": {
-      "type": "salamander",
-      "password": "$SALA_PASS"
-    },
-    "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
-  }],
-  "outbounds": [{ "type": "direct", "tag": "direct-out" }]
+  "log": {
+    "level": "error",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "::",
+      "listen_port": $PORT_HY2,
+      "users": [
+        {
+          "password": "$PSK"
+        }
+      ],
+      "ignore_client_bandwidth": false,
+      "up_mbps": ${VAR_HY2_BW:-200},
+      "down_mbps": ${VAR_HY2_BW:-200},
+      "udp_timeout": "10s",
+      "udp_fragment": true,
+      "max_transmit_unit": 1380,
+      "tls": {
+        "enabled": true,
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "/etc/sing-box/certs/fullchain.pem",
+        "key_path": "/etc/sing-box/certs/privkey.pem"
+      },
+      "obfs": {
+        "type": "salamander",
+        "password": "$SALA_PASS"
+      },
+      "masquerade": "https://$TLS_DOMAIN"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct-out"
+    }
+  ]
 }
 EOF
     chmod 600 "/etc/sing-box/config.json"
