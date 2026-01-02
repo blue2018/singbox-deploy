@@ -550,41 +550,53 @@ install_singbox() {
 # 配置文件生成
 # ==========================================
 create_config() {
-    local INPUT_PORT="${1:-}"; local PORT_HY2=""; local PSK=""
-    local SBOX_OBFS=""; local HY2_BW="${VAR_HY2_BW:-200}"
-    
+    local INPUT_PORT="${1:-}"
+    local PORT_HY2=""
+    local PSK_VAL=""
+    local OBFS_VAL=""
+    local HY2_BW_VAL="${VAR_HY2_BW:-200}"
+
     mkdir -p /etc/sing-box
 
+    # 1. 尝试从现有配置读取
     if [ -f /etc/sing-box/config.json ]; then
-        # 只有在没传新端口参数时，才读取旧端口
-        if [ -z "$INPUT_PORT" ]; then
-            PORT_HY2=$(jq -r '.inbounds[0].listen_port // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
-        else
-            PORT_HY2="$INPUT_PORT"
-        fi
-
-        PSK=$(jq -r '.inbounds[0].users[0].password // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
-        SBOX_OBFS=$(jq -r '.inbounds[0].obfs.password // ""' /etc/sing-box/config.json 2>/dev/null || echo "")
-    else
-        PORT_HY2="$INPUT_PORT"
+        PORT_HY2=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
+        PSK_VAL=$(jq -r '.inbounds[0].users[0].password // empty' /etc/sing-box/config.json 2>/dev/null)
+        OBFS_VAL=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null)
     fi
 
+    # 2. 只有在没有旧值且没有输入时才生成
+    [ -n "$INPUT_PORT" ] && PORT_HY2="$INPUT_PORT"
     [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 1025-65535 -n 1)
-    [ -z "${PSK:-}" ] && PSK=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12 2>/dev/null || echo "pskRandom789")
-    [ -z "${SBOX_OBFS:-}" ] && SBOX_OBFS=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16 2>/dev/null || echo "GW8DG9p7uBAtPdNw")
+    
+    # 修正密码生成逻辑：确保变量干净
+    if [ -z "$PSK_VAL" ]; then
+        PSK_VAL=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12 2>/dev/null || true)
+        [ -z "$PSK_VAL" ] && PSK_VAL="pskRandom789"
+    fi
+    if [ -z "$OBFS_VAL" ]; then
+        OBFS_VAL=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16 2>/dev/null || true)
+        [ -z "$OBFS_VAL" ] && OBFS_VAL="GW8DG9p7uBAtPdNw"
+    fi
 
+    # 3. 将值赋回给全局变量，以便 display_links 使用
+    RAW_PSK="$PSK_VAL"
+    RAW_PORT="$PORT_HY2"
+    SBOX_OBFS="$OBFS_VAL"
+
+    # 4. 写入配置 (注意：listen 改为 0.0.0.0 增加兼容性)
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "error", "timestamp": true },
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
-    "listen": "::",
+    "listen": "::"
     "listen_port": ${PORT_HY2},
-    "users": [ { "password": "${PSK}" } ],
+    "users": [ { "password": "${PSK_VAL}" } ],
     "ignore_client_bandwidth": false,
-    "up_mbps": ${HY2_BW-200},
-    "down_mbps": ${HY2_BW-200},
+    "up_mbps": ${HY2_BW_VAL},
+    "down_mbps": ${HY2_BW_VAL},
     "udp_timeout": "10s",
     "mtu": ${VAR_HY2_MTU:-1350},
     "udp_fragment": ${SBOX_UDP_FRAG:-true},
@@ -596,7 +608,7 @@ create_config() {
     },
     "obfs": {
       "type": "salamander",
-      "password": "${SBOX_OBFS}"
+      "password": "${OBFS_VAL}"
     },
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
