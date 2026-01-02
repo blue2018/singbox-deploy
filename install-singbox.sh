@@ -88,27 +88,28 @@ detect_os() {
 # 依赖安装 (容错增强版)
 install_dependencies() {
     local pkgs="curl jq openssl coreutils grep"
-    local pkg_cmd=""
-
+    
     case "$OS" in
         alpine)
-            info "检测到 Alpine 系统，正在同步并安装依赖..."
-            pkg_cmd="apk add --no-cache $pkgs bash openrc iproute2" ;;
+            info "检测到 Alpine 系统，正在安装依赖..."
+            apk add --no-cache $pkgs bash openrc iproute2 ;;
         debian)
-            info "检测到 Debian/Ubuntu 系统，正在更新并安装依赖..."
+            info "检测到 Debian/Ubuntu 系统，正在就绪环境..."
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y || true
-            pkg_cmd="apt-get install -y $pkgs" ;;
+            # 仅在 update 时显示简短提示，防止卡死没反应
+            apt-get update -y -qq || true
+            info "正在安装软件包 ($pkgs)..."
+            apt-get install -y $pkgs ;; # 去掉静默，让用户看到滚动条
         redhat)
             info "检测到 RHEL/CentOS 系统，正在安装依赖..."
-            pkg_cmd="yum install -y $pkgs" ;;
+            yum install -y $pkgs ;;
         *)
-            err "不支持的系统发行版: $OS" && exit 1 ;;
+            err "不支持的系统: $OS" && exit 1 ;;
     esac
 
-    $pkg_cmd >/dev/null 2>&1 || $pkg_cmd
-    command -v jq &>/dev/null || { err "依赖安装失败：未找到 jq" && exit 1; }
-    succ "所需依赖已安装"
+    # 验证
+    command -v jq &>/dev/null || { err "依赖安装失败，请手动检查网络" && exit 1; }
+    succ "环境依赖已准备就绪"
 }
 
 #获取公网IP
