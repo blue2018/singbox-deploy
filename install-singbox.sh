@@ -83,26 +83,27 @@ install_dependencies() {
 #获取公网IP
 get_network_info() {
     info "获取公网地址..."
+    local raw_v4="" raw_v6=""
     local ip_tool=""; command -v ip >/dev/null && ip_tool="ip" || { command -v ifconfig >/dev/null && ip_tool="ifconfig"; }
 
     if [ "$ip_tool" = "ip" ]; then
-        RAW_IP4=$(ip -4 addr show | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1)
-        RAW_IP6=$(ip -6 addr show | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1)
+        raw_v4=$(ip -4 addr show | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1 || echo "")
+        raw_v6=$(ip -6 addr show | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1 || echo "")
     elif [ "$ip_tool" = "ifconfig" ]; then
-        RAW_IP4=$(ifconfig | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1)
-        RAW_IP6=$(ifconfig | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1)
+        raw_v4=$(ifconfig | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1 || echo "")
+        raw_v6=$(ifconfig | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1 || echo "")
     fi
 
-    local t="/tmp/.sb_ip_$$"
-    {
-        [ -z "${RAW_IP4:-}" ] && (curl -s4m3 api.ipify.org || curl -s4m3 ifconfig.me || curl -s4m3 --header "Host: api.ipify.org" 1.1.1.1/cdn-cgi/trace | grep -oE "ip=[0-9.]+" | cut -d= -f2 || echo "") > "${t}4"
-        [ -z "${RAW_IP6:-}" ] && (curl -s6m3 api6.ipify.org || curl -s6m3 ifconfig.co || echo "") > "${t}6"
-    } & wait
+    if [ -z "$raw_v4" ]; then
+        raw_v4=$(curl -s4m3 api.ipify.org || curl -s4m3 ifconfig.me || curl -s4m3 --header "Host: api.ipify.org" 1.1.1.1/cdn-cgi/trace | grep -oE "ip=[0-9.]+" | cut -d= -f2 || echo "")
+    fi
 
-    [ -z "${RAW_IP4:-}" ] && [ -f "${t}4" ] && RAW_IP4=$(cat "${t}4" | tr -d '[:space:]')
-    [ -z "${RAW_IP6:-}" ] && [ -f "${t}6" ] && RAW_IP6=$(cat "${t}6" | tr -d '[:space:]')
-    rm -f "${t}4" "${t}6"
+    if [ -z "$raw_v6" ]; then
+        raw_v6=$(curl -s6m3 api6.ipify.org || curl -s6m3 ifconfig.co || echo "")
+    fi
 
+    RAW_IP4=$(echo "$raw_v4" | tr -d '[:space:]')
+    RAW_IP6=$(echo "$raw_v6" | tr -d '[:space:]')
     [ -n "${RAW_IP4:-}" ] && echo -e "IPv4 地址: \033[32m$RAW_IP4\033[0m" || echo -e "IPv4 地址: \033[33m未检测到\033[0m"
     [ -n "${RAW_IP6:-}" ] && echo -e "IPv6 地址: \033[32m$RAW_IP6\033[0m" || echo -e "IPv6 地址: \033[33m未检测到\033[0m"
 }
