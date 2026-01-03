@@ -582,12 +582,30 @@ display_links() {
 
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | sed 's/version /v/')
+    local CURRENT_CWND=$(ip route show default | awk -F 'initcwnd ' '{if($2) {split($2,a," "); print a[1]}}')
+    
+    local CWND_VAL="${CURRENT_CWND:-10}"
+    local CWND_STATUS=""
+    [ "$CWND_VAL" -ge 15 ] && CWND_STATUS=" (已优化)" || CWND_STATUS=" (默认)"
+
     local current_cca=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    local bbr_display=""
+    case "$current_cca" in
+        "bbr3") bbr_display="\033[1;32mBBRv3 (最新·极致响应)\033[0m" ;;
+        "bbr2") bbr_display="\033[1;32mBBRv2 (自适应·低丢包)\033[0m" ;;
+        "bbr")  bbr_display="\033[1;32mBBRv1 (标准·高吞吐)\033[0m" ;;
+        "cubic") bbr_display="\033[1;33mCubic (系统默认·无加速)\033[0m" ;;
+        *)      bbr_display="\033[1;31m$current_cca (未知·非标准)\033[0m" ;;
+    esac
+
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
-    echo -e "拥塞控制: \033[1;33m$current_cca\033[0m"
+    echo -e "Initcwnd: \033[1;33m${CWND_VAL}${CWND_STATUS}\033[0m"
+    echo -e "拥塞控制: \033[1;33m$bbr_display\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
     echo -e "伪装SNI:  \033[1;33m${RAW_SNI:-未检测}\033[0m"
+    echo -e "IPv4地址: \033[1;33m${RAW_IP4:-无}\033[0m"
+    echo -e "IPv6地址: \033[1;33m${RAW_IP6:-无}\033[0m"
 }
 
 # ==========================================
