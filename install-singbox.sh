@@ -4,21 +4,12 @@ set -euo pipefail
 # ==========================================
 # 基础变量声明与环境准备
 # ==========================================
-SBOX_ARCH=""
-OS_DISPLAY=""
-SBOX_CORE="/etc/sing-box/core_script.sh"
-SBOX_GOLIMIT="52MiB"
-SBOX_GOGC="80"
-SBOX_MEM_MAX="55M"
-SBOX_MEM_HIGH=""
-SBOX_GOMAXPROCS=""
-SBOX_OPTIMIZE_LEVEL="未检测"
-VAR_UDP_RMEM=""
-VAR_UDP_WMEM=""
-VAR_SYSTEMD_NICE=""
-VAR_SYSTEMD_IOSCHED=""
-VAR_HY2_BW="200"
-RAW_SALA=""
+# === 系统与环境参数初始化 ===
+SBOX_ARCH="";          OS_DISPLAY="";         SBOX_CORE="/etc/sing-box/core_script.sh"
+SBOX_GOLIMIT="52MiB";  SBOX_GOGC="80";        SBOX_MEM_MAX="55M"
+SBOX_MEM_HIGH="";      SBOX_GOMAXPROCS="";    SBOX_OPTIMIZE_LEVEL="未检测"
+VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE=""
+VAR_SYSTEMD_IOSCHED="";VAR_HY2_BW="200";      RAW_SALA=""
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
@@ -31,7 +22,6 @@ TLS_DOMAIN_POOL=(
 )
 pick_tls_domain() { echo "${TLS_DOMAIN_POOL[$RANDOM % ${#TLS_DOMAIN_POOL[@]}]}"; }
 TLS_DOMAIN="$(pick_tls_domain)"
-
 
 # ==========================================
 # 彩色输出与工具函数
@@ -54,32 +44,20 @@ copy_to_clipboard() {
 
 # 检测系统与架构
 detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS_DISPLAY="${PRETTY_NAME:-$ID}"
-        ID="${ID:-}"
-        ID_LIKE="${ID_LIKE:-}"
-    else
-        OS_DISPLAY="Unknown Linux"
-        ID="unknown"
-    fi
+    # 1. 识别系统 ID 和显示名称 (合并为 2 行)
+    [ -f /etc/os-release ] && { . /etc/os-release; OS_DISPLAY="${PRETTY_NAME:-$ID}"; ID="${ID:-}"; ID_LIKE="${ID_LIKE:-}"; } || { OS_DISPLAY="Unknown Linux"; ID="unknown"; }
 
-    if echo "${ID:-} ${ID_LIKE:-}" | grep -qi "alpine"; then
-        OS="alpine"
-    elif echo "${ID:-} ${ID_LIKE:-}" | grep -Ei "debian|ubuntu" >/dev/null; then
-        OS="debian"
-    elif echo "${ID:-} ${ID_LIKE:-}" | grep -Ei "centos|rhel|fedora|rocky|almalinux" >/dev/null; then
-        OS="redhat"
-    else
-        OS="unknown"
-    fi
+    # 2. 归类发行版 (使用短路逻辑替代 if/elif)
+    local COMBINED="${ID} ${ID_LIKE}"
+    echo "$COMBINED" | grep -qi "alpine" && OS="alpine" || \
+    { echo "$COMBINED" | grep -Ei "debian|ubuntu" >/dev/null && OS="debian"; } || \
+    { echo "$COMBINED" | grep -Ei "centos|rhel|fedora|rocky|almalinux" >/dev/null && OS="redhat" || OS="unknown"; }
 
+    # 3. 架构映射 (压缩单行 case)
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)    SBOX_ARCH="amd64" ;;
-        aarch64)   SBOX_ARCH="arm64" ;;
-        armv7l)    SBOX_ARCH="armv7" ;;
-        i386|i686) SBOX_ARCH="386" ;;
+        x86_64) SBOX_ARCH="amd64" ;; aarch64) SBOX_ARCH="arm64" ;;
+        armv7l) SBOX_ARCH="armv7" ;; i386|i686) SBOX_ARCH="386" ;;
         *) err "不支持的架构: $ARCH"; exit 1 ;;
     esac
 }
@@ -87,39 +65,19 @@ detect_os() {
 # 依赖安装 (容错增强版)
 install_dependencies() {
     info "正在检查并安装必要依赖 (curl, jq, openssl)..."
-    
     case "$OS" in
-        alpine)
-            info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
-            # --no-cache 确保获取最新索引，不保留临时文件
-            apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep
-            ;;
-        debian)
-            # Ubuntu 和 Debian 都走这个逻辑
-            info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
-            export DEBIAN_FRONTEND=noninteractive
-            # 允许 update 失败以便在某些源失效时仍尝试安装
-            apt-get update -y || true
-            # 移除 -q 参数，让你看到实时安装滚动条
-            apt-get install -y curl jq openssl coreutils grep
-            ;;
-        redhat)
-            info "检测到 RHEL/CentOS 系统，正在安装依赖..."
-            # yum/dnf 安装过程通常比较详细
-            yum install -y curl jq openssl coreutils grep
-            ;;
-        *)
-            err "不支持的系统发行版: $OS"
-            exit 1
-            ;;
+        alpine) info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
+                apk add --no-cache bash curl jq openssl openrc iproute2 coreutils grep ;;
+        debian) info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
+                export DEBIAN_FRONTEND=noninteractive; apt-get update -y || true
+                apt-get install -y curl jq openssl coreutils grep ;;
+        redhat) info "检测到 RHEL/CentOS 系统，正在安装依赖..."
+                yum install -y curl jq openssl coreutils grep ;;
+        *)      err "不支持的系统发行版: $OS"; exit 1 ;;
     esac
 
-    if ! command -v jq >/dev/null 2>&1; then
-        err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"
-        exit 1
-    fi
-    
-    succ "所需依赖已就绪！"
+    command -v jq >/dev/null 2>&1 && succ "所需依赖已就绪" || \
+    { err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"; exit 1; }
 }
 
 #获取公网IP
@@ -151,146 +109,88 @@ get_network_info() {
 
 # === 网络延迟探测模块 ===
 probe_network_rtt() {
-    local RTT_VAL
-    set +e 
+    local RTT_VAL; set +e
     echo -e "\033[1;34m[INFO]\033[0m 正在探测网络延迟..." >&2
-
-    # 优先探测阿里 (223.5.5.5)
+    # 1. 尝试探测阿里与 CF (使用短路逻辑合并)
     RTT_VAL=$(ping -c 2 -W 1 223.5.5.5 2>/dev/null | awk -F'/' 'END{print int($5)}')
-    
-    # 备选探测 Cloudflare (1.1.1.1)
-    if [ -z "$RTT_VAL" ] || [ "$RTT_VAL" -eq 0 ]; then
-        RTT_VAL=$(ping -c 2 -W 1 1.1.1.1 2>/dev/null | awk -F'/' 'END{print int($5)}')
-    fi
+    [ -z "$RTT_VAL" ] || [ "$RTT_VAL" -eq 0 ] && RTT_VAL=$(ping -c 2 -W 1 1.1.1.1 2>/dev/null | awk -F'/' 'END{print int($5)}')
     set -e
 
+    # 2. 结果判定逻辑
     if [ -n "${RTT_VAL:-}" ] && [ "$RTT_VAL" -gt 0 ]; then
-        echo -e "\033[1;32m[OK]\033[0m 实测平均 RTT: ${RTT_VAL}ms" >&2
-        echo "$RTT_VAL"
+        echo -e "\033[1;32m[OK]\033[0m 实测平均 RTT: ${RTT_VAL}ms" >&2; echo "$RTT_VAL"
+    elif [ -z "${RAW_IP4:-}" ]; then
+        echo -e "\033[1;33m[WARN]\033[0m 未检测到公网IP，应用全球预估值: 150ms" >&2; echo "150"
     else
-        if [ -z "${RAW_IP4:-}" ]; then
-            echo -e "\033[1;33m[WARN]\033[0m 未检测到公网IP，应用全球预估值: 150ms" >&2
-            echo "150"
-        else
-            echo -e "\033[1;34m[INFO]\033[0m Ping 受阻，正在通过 IP-API 预估 RTT..." >&2
-            local LOC=$(curl -s --max-time 3 "http://ip-api.com/line/${RAW_IP4}?fields=country" || echo "Unknown")
-            
-            case "$LOC" in
-                "China"|"Hong Kong"|"Japan"|"Korea"|"Singapore"|"Taiwan")
-                    echo -e "\033[1;32m[OK]\033[0m 判定为亚洲节点 ($LOC)，预估 RTT: 50ms" >&2
-                    echo "50"
-                    ;;
-                "Germany"|"France"|"United Kingdom"|"Netherlands"|"Spain"|"Poland"|"Italy")
-                    echo -e "\033[1;32m[OK]\033[0m 判定为欧洲节点 ($LOC)，预估 RTT: 180ms" >&2
-                    echo "180"
-                    ;;
-                *)
-                    echo -e "\033[1;33m[WARN]\033[0m 节点位置未知 ($LOC)，应用全球预估值: 150ms" >&2
-                    echo "150"
-                    ;;
-            esac
-        fi
+        echo -e "\033[1;34m[INFO]\033[0m Ping 受阻，正在通过 IP-API 预估 RTT..." >&2
+        local LOC=$(curl -s --max-time 3 "http://ip-api.com/line/${RAW_IP4}?fields=country" || echo "Unknown")
+        case "$LOC" in
+            "China"|"Hong Kong"|"Japan"|"Korea"|"Singapore"|"Taiwan") echo -e "\033[1;32m[OK]\033[0m 判定为亚洲节点 ($LOC)，预估 RTT: 50ms" >&2; echo "50" ;;
+            "Germany"|"France"|"United Kingdom"|"Netherlands"|"Spain"|"Italy") echo -e "\033[1;32m[OK]\033[0m 判定为欧洲节点 ($LOC)，预估 RTT: 180ms" >&2; echo "180" ;;
+            *) echo -e "\033[1;33m[WARN]\033[0m 节点位置未知 ($LOC)，应用全球预估值: 150ms" >&2; echo "150" ;;
+        esac
     fi
 }
 
 # === 内存资源探测模块 ===
 probe_memory_total() {
-    local mem_total=64
-    local mem_cgroup=0
-    
+    local mem_total=64 mem_cgroup=0
     local mem_host_total=$(free -m | awk '/Mem:/ {print $2}' | tr -cd '0-9')
 
-    # 路径 A: Cgroup v1 (容器常用，如旧版 Docker/LXC)
+    # 1. 优先级探测: Cgroup v1 -> Cgroup v2 -> /proc/meminfo
     if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
         local m_limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes | tr -cd '0-9')
-        # 很多环境默认限制是一个巨大的数字(即无限制)，需进行长度校验
-        if [ "${#m_limit}" -lt 15 ]; then
-            mem_cgroup=$((m_limit / 1024 / 1024))
-        fi
-    # 路径 B: Cgroup v2 (新版系统，如 Debian 11+, Ubuntu 22.04+)
+        [ "${#m_limit}" -lt 15 ] && mem_cgroup=$((m_limit / 1024 / 1024))
     elif [ -f /sys/fs/cgroup/memory.max ]; then
         local m_max=$(cat /sys/fs/cgroup/memory.max | tr -cd '0-9')
-        # 如果获取到的是纯数字则计算
         [ -n "$m_max" ] && mem_cgroup=$((m_max / 1024 / 1024))
-    # 路径 C: /proc/meminfo (传统 Linux 获取方式)
     elif grep -q "MemTotal" /proc/meminfo; then
-        local m_proc=$(grep MemTotal /proc/meminfo | awk '{print $2}' | tr -cd '0-9')
-        mem_cgroup=$((m_proc / 1024))
+        mem_cgroup=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
     fi
 
-    if [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_host_total" ]; then
-        mem_total=$mem_cgroup
-    else
-        mem_total=$mem_host_total
-    fi
+    # 2. 内存边界判定与特殊虚拟化 (OpenVZ) 修正
+    [ "$mem_cgroup" -gt 0 ] && [ "$mem_cgroup" -le "$mem_host_total" ] && mem_total=$mem_cgroup || mem_total=$mem_host_total
+    [ -f /proc/user_beancounters ] && mem_total=$mem_host_total
 
-    if [ -f /proc/user_beancounters ]; then
-        mem_total=$mem_host_total
-    fi
-
-    if [ -z "$mem_total" ] || [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]; then 
-        mem_total=64 
-    fi
-
+    # 3. 最终异常值校验 (兜底 64MB)
+    ([ -z "$mem_total" ] || [ "$mem_total" -le 0 ] || [ "$mem_total" -gt 64000 ]) && mem_total=64
     echo "$mem_total"
 }
 
 # InitCWND 专项优化模块 (取黄金分割点 15 ，比默认 10 强 50%，比 20 更隐蔽)
 apply_initcwnd_optimization() {
-    local is_silent="${1:-false}"
+    local silent="${1:-false}" advmss opts info gw dev mtu
     command -v ip >/dev/null || return 0
 
-    local route_info
-    route_info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
-    [ -z "$route_info" ] && { [[ "$is_silent" == "false" ]] && warn "未发现可用路由"; return 0; }
+    # 1. 提取路由元数据 (使用正则一次性捕获)
+    info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
+    [ -z "$info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
 
-    local gw=$(echo "$route_info" | grep -oP 'via \K[^ ]+')
-    local dev=$(echo "$route_info" | grep -oP 'dev \K[^ ]+')
-    local mtu=$(echo "$route_info" | grep -oP 'mtu \K[0-9]+' || echo "1500")
-    
-    local advmss=$((mtu - 40))
-    local opts="initcwnd 15 initrwnd 15 advmss $advmss"
+    gw=$(echo "$info" | grep -oP 'via \K[^ ]+')
+    dev=$(echo "$info" | grep -oP 'dev \K[^ ]+')
+    mtu=$(echo "$info" | grep -oP 'mtu \K[0-9]+' || echo "1500")
+    advmss=$((mtu - 40)) && opts="initcwnd 15 initrwnd 15 advmss $advmss"
 
-    {
-        # 方案 A: 带网关的标准替换 (KVM/物理机)
-        [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null
-    } || {
-        # 方案 B: 仅网卡的替换 (OpenVZ/LXC/点对点)
-        [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null
-    } || {
-        # 方案 C: 兜底变更 (针对特定虚拟化环境)
-        ip route change default $opts 2>/dev/null
-    } && {
-        [[ "$is_silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"
-        return 0
-    }
+    # 2. 链式尝试三种方案 (方案 A -> B -> C)
+    { { [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
+      { [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; } || \
+      { ip route change default $opts 2>/dev/null; } 
+    } && { [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"; return 0; }
 
-    [[ "$is_silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定)"
-    return 0
+    [[ "$silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定)"
 }
 
 # 获取并校验端口 (范围：1025-65535)
 prompt_for_port() {
-    local input_port
-    while true; do
-        read -p "请输入端口 [1025-65535] (回车随机生成): " input_port
+    local p
+    while :; do
+        read -p "请输入端口 [1025-65535] (回车随机生成): " p
+        # 1. 自动随机生成逻辑
+        [ -z "$p" ] && p=$(shuf -i 1025-65535 -n 1) && { echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $p" >&2; echo "$p"; return 0; }
         
-        # 情况 1: 用户直接回车，生成随机端口 (范围已更新)
-        if [[ -z "$input_port" ]]; then
-            input_port=$(shuf -i 1025-65535 -n 1)
-            echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $input_port" >&2
-            echo "$input_port"
-            return 0
-        fi
-        
-        # 情况 2: 手动输入校验 (逻辑合并)
-        if [[ "$input_port" =~ ^[0-9]+$ ]] && [ "$input_port" -ge 1025 ] && [ "$input_port" -le 65535 ]; then
-            echo "$input_port"
-            return 0
-        else
-            # 情况 3: 输入无效报错
-            echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
-        fi
+        # 2. 合并正则与范围校验
+        [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1025 ] && [ "$p" -le 65535 ] && { echo "$p"; return 0; } || \
+        echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
     done
 }
 
@@ -300,14 +200,12 @@ generate_cert() {
     info "生成 ECC P-256 伪装证书 ($TLS_DOMAIN)..."
     mkdir -p /etc/sing-box/certs && chmod 700 /etc/sing-box/certs
 
-    # 1. 一键生成：合并私钥生成与证书签发
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
         -keyout /etc/sing-box/certs/privkey.pem \
         -out /etc/sing-box/certs/fullchain.pem \
         -days 3650 -sha256 -subj "/CN=$TLS_DOMAIN/O=CloudData Inc." \
         -addext "subjectAltName=DNS:$TLS_DOMAIN,DNS:*.$TLS_DOMAIN" &>/dev/null || {
         
-        # 2. 备选方案：如果旧版 OpenSSL 不支持 -addext，则使用最简模式
         warn "加固模式失败，切换基础模式..."
         openssl req -x509 -newkey ec:<(openssl ecparam -name prime256v1) -nodes \
             -keyout /etc/sing-box/certs/privkey.pem \
@@ -318,7 +216,6 @@ generate_cert() {
     chmod 600 /etc/sing-box/certs/*.pem
     [ -f /etc/sing-box/certs/fullchain.pem ] && succ "ECC 证书就绪" || err "证书生成失败"
 }
-
 
 # ==========================================
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
@@ -454,7 +351,6 @@ SYSCTL
     apply_initcwnd_optimization "false"
 }
 
-
 # ==========================================
 # 安装/更新 Sing-box 内核
 # ==========================================
@@ -526,7 +422,6 @@ install_singbox() {
     fi
 }
 
-
 # ==========================================
 # 配置文件生成
 # ==========================================
@@ -597,7 +492,6 @@ create_config() {
 EOF
     chmod 600 "/etc/sing-box/config.json"
 }
-
 
 # ==========================================
 # 服务配置 (核心优化：应用 Nice/IOSched/Env)
@@ -678,7 +572,6 @@ EOF
     fi
 }
 
-
 # ==========================================
 # 信息展示模块
 # ==========================================
@@ -750,7 +643,6 @@ display_system_status() {
     echo -e "IPv6地址: \033[1;33m${RAW_IP6:-无}\033[0m"
 }
 
-
 # ==========================================
 # 管理脚本生成 (固化优化变量)
 # ==========================================
@@ -815,8 +707,7 @@ EOF
     chmod 700 "$SBOX_CORE"
     local SB_PATH="/usr/local/bin/sb"
     
-    # 写入 sb 管理菜单入口 (无需变动，保持原样即可，这里省略重复代码)
-    # ... (如果你需要我也把这部分贴出来，请告诉我，通常这部分没变) ...
+    # 写入 sb 管理菜单入口
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -849,43 +740,21 @@ while true; do
     fi
     
     case "$opt" in
-        1) 
-           source "$CORE" --show-only
-           read -r -p $'\n按回车键返回菜单...' ;;
-        2) 
-           OLD_MD5=$(md5sum /etc/sing-box/config.json 2>/dev/null | awk '{print $1}')  
-           vi /etc/sing-box/config.json
-           NEW_MD5=$(md5sum /etc/sing-box/config.json 2>/dev/null | awk '{print $1}')
-           if [[ "$OLD_MD5" != "$NEW_MD5" ]]; then
-               service_ctrl restart
-               echo -e "\n\033[1;32m[OK]\033[0m 配置变更，已重启服务"
-           else
-               echo -e "\n\033[1;33m[INFO]\033[0m 配置未作变更"
-           fi
-           read -r -p $'\n按回车键返回菜单...' ;;
-        3) 
-           NEW_PORT=$(prompt_for_port)
-           source "$CORE" --reset-port "$NEW_PORT"
-           read -r -p $'\n按回车键返回菜单...' ;;
-        4) 
-           source "$CORE" --update-kernel
-           read -r -p $'\n按回车键返回菜单...' ;;
-        5) 
-           service_ctrl restart && info "服务已重启"
-           read -r -p $'\n按回车键返回菜单...' ;;
-        6) 
-           read -r -p "是否确定卸载？(默认N) [Y/N]: " confirm
-            confirm="${confirm,,}" 
-            if [[ "$confirm" == "y" ]]; then
-                service_ctrl stop
-               [ -f /etc/init.d/sing-box ] && rc-update del sing-box
+        1) source "$CORE" --show-only; read -r -p $'\n按回车键返回菜单...' ;;
+        2) f="/etc/sing-box/config.json"; old=$(md5sum $f 2>/dev/null)
+           vi $f; [ "$old" != "$(md5sum $f 2>/dev/null)" ] && \
+           { service_ctrl restart; echo -e "\n\033[1;32m[OK]\033[0m 配置变更，已重启服务"; } || \
+           echo -e "\n\033[1;33m[INFO]\033[0m 配置未作变更"; read -r -p $'\n按回车键返回菜单...' ;;
+        3) source "$CORE" --reset-port "$(prompt_for_port)"; read -r -p $'\n按回车键返回菜单...' ;;
+        4) source "$CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
+        5) service_ctrl restart && info "服务已重启"; read -r -p $'\n按回车键返回菜单...' ;;
+        6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
+           if [[ "${cf,,}" == "y" ]]; then
+               service_ctrl stop; [ -f /etc/init.d/sing-box ] && rc-update del sing-box
                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-               info "卸载完成"
-               exit 0
-            else
-                info "卸载操作已取消"
-            fi
-            ;;
+               info "卸载完成"; exit 0
+           fi
+           info "卸载操作已取消" ;;
         0) exit 0 ;;
     esac
 done
@@ -902,9 +771,7 @@ EOF
 # ==========================================
 detect_os
 [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
-# 调用安装依赖函数
 install_dependencies
-# 获取并显示网络 IP
 get_network_info
 echo -e "-----------------------------------------------"
 USER_PORT=$(prompt_for_port)
@@ -914,8 +781,6 @@ generate_cert
 create_config "$USER_PORT"
 setup_service      # 应用 Systemd 优化参数
 create_sb_tool     # 生成管理脚本
-
-# 初始显示
 get_env_data
 echo -e "\n\033[1;34m==========================================\033[0m"
 display_system_status
