@@ -197,25 +197,29 @@ prompt_for_port() {
 
 #生成 ECC P-256 高性能证书
 generate_cert() {
-    [ -f /etc/sing-box/certs/fullchain.pem ] && return 0
-    info "生成 ECC P-256 伪装证书 ($TLS_DOMAIN)..."
-    mkdir -p /etc/sing-box/certs && chmod 700 /etc/sing-box/certs
+    local CERT_DIR="/etc/sing-box/certs"
+    [ -f "$CERT_DIR/fullchain.pem" ] && return 0
 
+    info "生成 ECC P-256 高性能证书..."
+    mkdir -p "$CERT_DIR" && chmod 700 "$CERT_DIR"
+
+    # 核心逻辑：使用一条命令尝试生成，失败则使用最简兼容模式
+    # -subj 中的 O (Organization) 设为变量以减少静态指纹
+    local ORG="CloudData-$(date +%s | cut -c7-10)"
+    
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-        -keyout /etc/sing-box/certs/privkey.pem \
-        -out /etc/sing-box/certs/fullchain.pem \
-        -days 3650 -sha256 -subj "/CN=$TLS_DOMAIN/O=CloudData Inc." \
+        -keyout "$CERT_DIR/privkey.pem" -out "$CERT_DIR/fullchain.pem" \
+        -days 3650 -sha256 -subj "/CN=$TLS_DOMAIN/O=$ORG" \
         -addext "subjectAltName=DNS:$TLS_DOMAIN,DNS:*.$TLS_DOMAIN" &>/dev/null || {
         
-        warn "加固模式失败，切换基础模式..."
+        # 针对极旧版 OpenSSL 的保底方案
         openssl req -x509 -newkey ec:<(openssl ecparam -name prime256v1) -nodes \
-            -keyout /etc/sing-box/certs/privkey.pem \
-            -out /etc/sing-box/certs/fullchain.pem \
+            -keyout "$CERT_DIR/privkey.pem" -out "$CERT_DIR/fullchain.pem" \
             -days 3650 -subj "/CN=$TLS_DOMAIN" &>/dev/null
     }
 
-    chmod 600 /etc/sing-box/certs/*.pem
-    [ -f /etc/sing-box/certs/fullchain.pem ] && succ "ECC 证书就绪" || err "证书生成失败"
+    chmod 600 "$CERT_DIR"/*.pem
+    [ -s "$CERT_DIR/fullchain.pem" ] && succ "ECC 证书就绪" || { err "证书生成失败"; exit 1; }
 }
 
 # ==========================================
