@@ -314,38 +314,50 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_fastopen = 3
 
-# === FQ 调度锐化 (BBR 核心参数优化) ===
-net.core.netdev_max_backlog = 20000
+# === 网络设备层优化 (关键) ===
+net.core.netdev_max_backlog = 65536
+net.core.dev_weight = 64
 net.core.netdev_budget = 600
 net.core.netdev_budget_usecs = 8000
 
-# === QUIC 专用调度 ===
+# === Socket 读写优化 ===
 net.core.busy_read = $busy_poll_val
 net.core.busy_poll = $busy_poll_val
-net.ipv4.tcp_limit_output_bytes = 262144
-net.ipv4.ip_no_pmtu_disc = 0
-
-# === UDP & 内存极限优化 ===
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
 net.core.rmem_max = $VAR_UDP_RMEM
 net.core.wmem_max = $VAR_UDP_WMEM
-net.core.optmem_max = 1048576
+net.core.optmem_max = 65536
+
+# === TCP/UDP 协议栈 ===
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
 net.ipv4.tcp_wmem = 4096 65536 $VAR_UDP_WMEM
 net.ipv4.udp_mem = $udp_mem_scale
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 
+# === 路由转发 ===
 vm.swappiness = $swappiness_val
 net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
 SYSCTL
 
     sysctl -p >/dev/null 2>&1 || true
 
-    # 6. NIC 卸载与 InitCWND
-    if command -v ethtool >/dev/null 2>&1; then
-        local IFACE=$(ip route show default | awk '{print $5; exit}')
-        [ -n "$IFACE" ] && ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
+    # === [新增] 网卡队列长度优化 (txqueuelen) ===
+    local DEFAULT_IFACE=$(ip route show default | awk '{print $5; exit}')
+    if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
+        # 尝试动态调整队列长度，提升 UDP 突发性能
+        ip link set dev "$DEFAULT_IFACE" txqueuelen 10000 2>/dev/null || true
+        # 开启网卡多队列哈希 (如果支持)
+        if command -v ethtool >/dev/null 2>&1; then
+             ethtool -K "$DEFAULT_IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
+             # 尝试增加环形缓冲区 (Ring Buffer) 到最大
+             local RING_MAX=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | grep -A1 "Pre-set maximums" | grep "RX:" | awk '{print $2}')
+             [ -n "$RING_MAX" ] && ethtool -G "$DEFAULT_IFACE" rx "$RING_MAX" tx "$RING_MAX" 2>/dev/null || true
+        fi
     fi
+    
     apply_initcwnd_optimization "false"
 }
 
@@ -406,11 +418,19 @@ install_singbox() {
 
     if [ -f "$TMP_D/sb.tar.gz" ] && [ $(stat -c%s "$TMP_D/sb.tar.gz") -gt 1000000 ]; then
         tar -xf "$TMP_D/sb.tar.gz" -C "$TMP_D"
-        pgrep sing-box >/dev/null && (systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true)
-        install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box
-        rm -rf "$TMP_D"
-        succ "内核安装成功: v$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')"
-        return 0
+        pkill -f sing-box >/dev/null || true
+        
+        local BIN_FOUND=$(find "$TMP_D" -type f -name "sing-box" | head -n1)
+        
+        if [ -n "$BIN_FOUND" ]; then
+            install -m 755 "$BIN_FOUND" /usr/bin/sing-box
+            rm -rf "$TMP_D"
+            succ "内核安装成功: v$(/usr/bin/sing-box version | head -n1 | awk '{print $3}')"
+            return 0
+        else
+            err "解压后未找到二进制文件，可能架构不匹配"
+            exit 1
+        fi
     else
         rm -rf "$TMP_D"
         if [ "$LOCAL_VER" != "未安装" ]; then
@@ -467,7 +487,7 @@ create_config() {
     "ignore_client_bandwidth": false,
     "up_mbps": ${VAR_HY2_BW:-200},
     "down_mbps": ${VAR_HY2_BW:-200},
-    "udp_timeout": "10s",
+    "udp_timeout": "20s",
     "udp_fragment": true,
     "tls": {
       "enabled": true,
@@ -737,8 +757,8 @@ optimize_system
 install_singbox "install"
 generate_cert
 create_config "$USER_PORT"
-setup_service
 create_sb_tool
+setup_service
 get_env_data
 echo -e "\n\033[1;34m==========================================\033[0m"
 display_system_status
