@@ -329,37 +329,47 @@ optimize_system() {
     local mem_total=$(probe_memory_total)
     local max_udp_mb=$((mem_total * 40 / 100)) 
     local max_udp_pages=$((max_udp_mb * 256))
-
-    info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
-
     local busy_poll_val=0
     local quic_extra_msg=""
 
+    if [ "$OS" != "alpine" ] && [ "$mem_total" -le 512 ]; then
+        local swap_total=$(free -m | awk '/Swap:/ {print $2}')
+        if [ "$swap_total" -eq 0 ]; then
+            info "检测到低内存环境且无 Swap，正在尝试创建 512M 交换文件..."
+            # 优先使用 fallocate，失败则用 dd
+            fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null
+            chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile >/dev/null 2>&1
+            [ $? -eq 0 ] && (grep -q "/swapfile" /etc/fstab || echo "/swapfile swap swap defaults 0 0" >> /etc/fstab)
+        fi
+    fi
+
+    info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
+
     # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOLIMIT="420MiB"; SBOX_GOGC="120"
+        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="120"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
         local swappiness_val=10; busy_poll_val=50
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOLIMIT="210MiB"; SBOX_GOGC="100"
+        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; SBOX_OPTIMIZE_LEVEL="256M 增强版"
         local swappiness_val=10; busy_poll_val=20
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="90MiB"; SBOX_GOGC="800"
+        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="75"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="200"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版(LazyGC)"
+        VAR_HY2_BW="200"; SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
         local swappiness_val=60; busy_poll_val=0
     else
-        SBOX_GOLIMIT="48MiB"; SBOX_GOGC="800"
+        SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="50"
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="90"; SBOX_GOMAXPROCS="1"
-        SBOX_OPTIMIZE_LEVEL="64M 生存版(LazyGC)"
+        SBOX_OPTIMIZE_LEVEL="64M 生存版"
         local swappiness_val=100; busy_poll_val=0
     fi
 
@@ -380,7 +390,7 @@ optimize_system() {
         SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [内存锁限制]"
     fi
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
+    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
