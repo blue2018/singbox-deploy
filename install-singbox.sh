@@ -327,7 +327,9 @@ net.core.rmem_default = 262144
 net.core.wmem_default = 262144
 net.core.rmem_max = $VAR_UDP_RMEM
 net.core.wmem_max = $VAR_UDP_WMEM
-net.core.optmem_max = 65536
+net.core.optmem_max = 1048576
+net.ipv4.tcp_limit_output_bytes = 262144
+net.ipv4.ip_no_pmtu_disc = 0
 
 # === TCP/UDP 协议栈 ===
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
@@ -344,15 +346,12 @@ SYSCTL
 
     sysctl -p >/dev/null 2>&1 || true
 
-    # === [新增] 网卡队列长度优化 (txqueuelen) ===
+    # 网卡队列长度优化 (txqueuelen) 
     local DEFAULT_IFACE=$(ip route show default | awk '{print $5; exit}')
     if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
-        # 尝试动态调整队列长度，提升 UDP 突发性能
         ip link set dev "$DEFAULT_IFACE" txqueuelen 10000 2>/dev/null || true
-        # 开启网卡多队列哈希 (如果支持)
         if command -v ethtool >/dev/null 2>&1; then
              ethtool -K "$DEFAULT_IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
-             # 尝试增加环形缓冲区 (Ring Buffer) 到最大
              local RING_MAX=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | grep -A1 "Pre-set maximums" | grep "RX:" | awk '{print $2}')
              [ -n "$RING_MAX" ] && ethtool -G "$DEFAULT_IFACE" rx "$RING_MAX" tx "$RING_MAX" 2>/dev/null || true
         fi
