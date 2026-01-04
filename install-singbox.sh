@@ -509,52 +509,35 @@ EOF
 # ==========================================
 # 服务配置
 # ==========================================
-setup_service() {  
+setup_service() {  
     info "配置系统服务 (MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
     
-    # 统一处理环境变量列表，去掉 Environment= 前缀以兼容 OpenRC
-    local go_debug="GODEBUG=memprofilerate=0,madvdontneed=1"
+    local go_debug_val="GODEBUG=memprofilerate=0,madvdontneed=1"
+
     local env_list=(
-        "GOGC=${SBOX_GOGC:-100}"
-        "GOMEMLIMIT=${SBOX_GOLIMIT:-100MiB}"
-        "GOTRACEBACK=none"
-        "$go_debug"
+        "Environment=GOGC=${SBOX_GOGC:-100}"
+        "Environment=GOMEMLIMIT=${SBOX_GOLIMIT:-100MiB}"
+        "Environment=GOTRACEBACK=none"
+        "Environment=$go_debug_val"
     )
-    [ -n "${SBOX_GOMAXPROCS:-}" ] && env_list+=("GOMAXPROCS=$SBOX_GOMAXPROCS")
+    
+    [ -n "${SBOX_GOMAXPROCS:-}" ] && env_list+=("Environment=GOMAXPROCS=$SBOX_GOMAXPROCS")
 
     if [ "$OS" = "alpine" ]; then
-        # 构造 OpenRC 所需的 export 语句
-        local exports=$(printf "    export %s\n" "${env_list[@]}")
+        local openrc_exports=$(printf "export %s\n" "${env_list[@]}" | sed 's/Environment=//g')
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
-description="Sing-box Optimized Service"
-
-# 关键：仅依赖网络，避开 machine-id/dev 等可能缺失的服务
-depend() {
-    after net
-    use dns
-}
-
+name="sing-box"
+$openrc_exports
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
-pidfile="/run/sing-box.pid"
-start_stop_daemon_args="--nicelevel ${VAR_SYSTEMD_NICE:-0}"
-
-start_pre() {
-$exports
-    # 执行优化逻辑 (使用 bash 调用核心脚本)
-    if [ -f "$SBOX_CORE" ]; then
-        /bin/bash "$SBOX_CORE" --apply-cwnd >/dev/null 2>&1 || true
-    fi
-}
+pidfile="/run/\${RC_SVCNAME}.pid"
 EOF
         chmod +x /etc/init.d/sing-box
-        rc-update add sing-box default >/dev/null 2>&1
-        rc-service sing-box restart
+        rc-update add sing-box default && rc-service sing-box restart
     else
-        # 构造 Systemd 所需的 Environment= 语句
-        local systemd_envs=$(printf "Environment=%s\n" "${env_list[@]}")
+        local systemd_envs=$(printf "%s\n" "${env_list[@]}")
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service (Optimized)
@@ -566,8 +549,7 @@ Type=simple
 User=root
 WorkingDirectory=/etc/sing-box
 $systemd_envs
-# 关键修复：直接调用核心脚本执行优化，避免进入 sb 菜单死循环
-ExecStartPre=/bin/bash -c "source $SBOX_CORE --apply-cwnd"
+ExecStartPre=/usr/local/bin/sb --apply-cwnd
 Nice=${VAR_SYSTEMD_NICE:-0}
 IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
 IOSchedulingPriority=0
