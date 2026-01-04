@@ -693,6 +693,9 @@ EOF
 set -euo pipefail
 CORE="/etc/sing-box/core_script.sh"
 if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
+
+[[ $# -gt 0 ]] && { /bin/bash "$CORE" "$@"; exit 0; }
+
 source "$CORE" --detect-only
 
 service_ctrl() {
