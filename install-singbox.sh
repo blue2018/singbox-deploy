@@ -300,19 +300,19 @@ optimize_system() {
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
-    # 4. 内核 BBR 锐化逻辑 (FQ Pacing 调整)
-    local tcp_cca="bbr"
-    modprobe tcp_bbr >/dev/null 2>&1 || true
-    if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr2"; then
-        tcp_cca="bbr2"
-        succ "内核支持 BBRv3 (bbr2)，已自动激活"
-    elif sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr"; then
-        tcp_cca="bbr"
-        info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
+    # 4. BBR 探测与 FQ 准备
+    local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 >/dev/null 2>&1 || true
+    local avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
+
+    if [[ "$avail" =~ "bbr2" ]]; then
+        tcp_cca="bbr2"; succ "内核支持 BBRv3/v2 (bbr2)，已激活极致响应模式"
+    elif [[ "$avail" =~ "bbr" ]]; then
+        tcp_cca="bbr"; info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
     else
-        tcp_cca="cubic"
-        warn "内核不支持 BBR，已尝试优化 Cubic 吞吐"
+        warn "内核不支持 BBR，已切换至高兼容 Cubic 模式"
     fi
+
+    sysctl net.core.default_qdisc 2>/dev/null | grep -q "fq" && info "FQ 调度器已就绪" || info "准备激活 FQ 调度器..."
 
     # 5. 写入 Sysctl
     cat > /etc/sysctl.conf <<SYSCTL
