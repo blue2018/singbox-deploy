@@ -253,29 +253,29 @@ optimize_system() {
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; VAR_DEF_MEM="327680"
+        swappiness_val=10; busy_poll_val=50
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
-        local swappiness_val=10; busy_poll_val=50
     elif [ "$mem_total" -ge 200 ]; then
         SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; VAR_DEF_MEM="229376"
+        swappiness_val=10; busy_poll_val=20
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
-        local swappiness_val=10; busy_poll_val=20
     elif [ "$mem_total" -ge 100 ]; then
         SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"
+        swappiness_val=60; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
-        local swappiness_val=60; busy_poll_val=0
     else
         SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="90"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="98304"
+        swappiness_val=100; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
-        local swappiness_val=100; busy_poll_val=0
     fi
 
     # 3. RTT 驱动与安全钳位 (保留原有逻辑)
