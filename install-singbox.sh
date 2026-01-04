@@ -163,20 +163,23 @@ apply_initcwnd_optimization() {
     local silent="${1:-false}" advmss opts info gw dev mtu
     command -v ip >/dev/null || return 0
 
-    # 1. 提取路由元数据 (使用正则一次性捕获)
     info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
     [ -z "$info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
 
     gw=$(echo "$info" | grep -oP 'via \K[^ ]+')
     dev=$(echo "$info" | grep -oP 'dev \K[^ ]+')
     mtu=$(echo "$info" | grep -oP 'mtu \K[0-9]+' || echo "1500")
-    advmss=$((mtu - 40)) && opts="initcwnd 15 initrwnd 15 advmss $advmss"
+    advmss=$((mtu - 40))
+    opts="initcwnd 15 initrwnd 15 advmss $advmss"
 
-    # 2. 链式尝试三种方案 (方案 A -> B -> C)
     { { [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
       { [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; } || \
       { ip route change default $opts 2>/dev/null; }  
-    } && { [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"; return 0; }
+    } && {
+        sysctl -w net.ipv4.udp_rmem_min=8192 >/dev/null 2>&1
+        [[ "$silent" == "false" ]] && succ "InitCWND + UDP 首包缓冲解锁成功"
+        return 0
+    }
 
     [[ "$silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定)"
 }
@@ -226,10 +229,10 @@ generate_cert() {
 # 系统内核优化 (核心逻辑：差异化 + 进程调度 + UDP极限)
 # ==========================================
 optimize_system() {
-    # 1. 执行独立探测模块获取环境画像
     local RTT_AVG=$(probe_network_rtt)
     local mem_total=$(probe_memory_total)
-    local max_udp_mb=$((mem_total * 40 / 100)) 
+    local CPU_CORES=$(nproc 2>/dev/null || echo 1)
+    local max_udp_mb=$((mem_total * 40 / 100))
     local max_udp_pages=$((max_udp_mb * 256))
     local swappiness_val=10 busy_poll_val=0 quic_extra_msg=""
 
@@ -237,7 +240,6 @@ optimize_system() {
         local swap_total=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}' || echo "0")
         if [ "${swap_total:-0}" -eq 0 ] && [ ! -d /proc/vz ]; then
             info "检测到低内存环境，正在尝试创建 512M 交换文件..."
-            # 简洁高效：创建、权限设置、格式化、挂载 一气呵成，失败则自动清理
             (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 status=none) && \
             chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile >/dev/null 2>&1 && \
             { grep -q "/swapfile" /etc/fstab || echo "/swapfile swap swap defaults 0 0" >> /etc/fstab; succ "Swap 已激活"; } || \
@@ -245,42 +247,40 @@ optimize_system() {
         fi
     fi
 
-    info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
+    info "系统画像: 可用内存=${mem_total}MB | CPU核数=${CPU_CORES} | RTT=${RTT_AVG}ms"
 
-    # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
         SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="120"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; VAR_DEF_MEM="327680"
-        swappiness_val=10; busy_poll_val=50
-        SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
+        swappiness_val=10; SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
+        [ "$CPU_CORES" -ge 2 ] && busy_poll_val=50 || busy_poll_val=0
     elif [ "$mem_total" -ge 200 ]; then
         SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; VAR_DEF_MEM="229376"
-        swappiness_val=10; busy_poll_val=20
-        SBOX_OPTIMIZE_LEVEL="256M 增强版"
+        swappiness_val=10; SBOX_OPTIMIZE_LEVEL="256M 增强版"
+        [ "$CPU_CORES" -ge 2 ] && busy_poll_val=20 || busy_poll_val=0
     elif [ "$mem_total" -ge 100 ]; then
         SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"
-        swappiness_val=60; busy_poll_val=0
-        SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
+        swappiness_val=60; busy_poll_val=0; SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
         SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="90"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="98304"
-        swappiness_val=100; busy_poll_val=0
-        SBOX_OPTIMIZE_LEVEL="64M 生存版"
+        swappiness_val=100; busy_poll_val=0; SBOX_OPTIMIZE_LEVEL="64M 生存版"
     fi
 
-    # 3. RTT 驱动与安全钳位 (保留原有逻辑)
-    local rtt_scale_min=$((RTT_AVG * 128)); local rtt_scale_pressure=$((RTT_AVG * 256)); local rtt_scale_max=$((RTT_AVG * 512))
-    local quic_min; local quic_press; local quic_max
+    local rtt_scale_min=$((RTT_AVG * 128))
+    local rtt_scale_pressure=$((RTT_AVG * 256))
+    local rtt_scale_max=$((RTT_AVG * 512))
+    local quic_min quic_press quic_max
     if [ "$RTT_AVG" -ge 150 ]; then
         quic_min=262144; quic_press=524288; quic_max=1048576; quic_extra_msg=" (QUIC长距模式)"
     else
@@ -291,80 +291,41 @@ optimize_system() {
     [ "$quic_press" -gt "$rtt_scale_pressure" ] && rtt_scale_pressure=$quic_press
     [ "$quic_max" -gt "$rtt_scale_max" ] && rtt_scale_max=$quic_max
     if [ "$rtt_scale_max" -gt "$max_udp_pages" ]; then
-        rtt_scale_max=$max_udp_pages; rtt_scale_pressure=$((max_udp_pages * 3 / 4)); rtt_scale_min=$((max_udp_pages / 2))
+        rtt_scale_max=$max_udp_pages
+        rtt_scale_pressure=$((max_udp_pages * 3 / 4))
+        rtt_scale_min=$((max_udp_pages / 2))
         SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [内存锁限制]"
     fi
+
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
+    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"
+    SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
 
-    info "优化策略: $SBOX_OPTIMIZE_LEVEL"
+    # === BBR 真实识别修正 ===
+    modprobe tcp_bbr tcp_bbr2 >/dev/null 2>&1 || true
+    local cca_now=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "cubic")
+    [[ "$cca_now" =~ ^bbr ]] && tcp_cca="$cca_now" || tcp_cca="cubic"
 
-    # 4. BBR 探测与 FQ 准备
-    local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 >/dev/null 2>&1 || true
-    local avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
-
-    if [[ "$avail" =~ "bbr2" ]]; then
-        tcp_cca="bbr2"; succ "内核支持 BBRv3/v2 (bbr2)，已激活极致响应模式"
-    elif [[ "$avail" =~ "bbr" ]]; then
-        tcp_cca="bbr"; info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
-    else
-        warn "内核不支持 BBR，已切换至高兼容 Cubic 模式"
-    fi
-
-    sysctl net.core.default_qdisc 2>/dev/null | grep -q "fq" && info "FQ 调度器已就绪" || info "准备激活 FQ 调度器..."
-
-    # 5. 写入 Sysctl
     cat > /etc/sysctl.conf <<SYSCTL
-# === 1. 基础转发与内存管理 ===
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
-vm.swappiness = $swappiness_val          # 交换分区权重 (当前档位: $swappiness_val)
-
-# === 2. 网络设备层优化 (网卡与 CPU 交互层) ===
-net.core.netdev_max_backlog = 65536      # 接收队列包缓冲区上限
-net.core.dev_weight = 64                 # CPU 单次处理收包权重
-net.core.netdev_budget = 600             # 软中断收包总预算
-net.core.netdev_budget_usecs = 8000      # 收包处理耗时上限 (微秒)
-net.core.busy_read = $busy_poll_val      # 繁忙轮询 (降低数据包在内核态的等待时间)
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = $tcp_cca
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_slow_start_after_idle = 0
+net.core.busy_read = $busy_poll_val
 net.core.busy_poll = $busy_poll_val
-
-# === 3. 核心 Socket 缓冲区 (全局缓冲区限制) ===
-net.core.rmem_default = $VAR_DEF_MEM     # 默认读缓存 (字节: 约 $((VAR_DEF_MEM / 1024)) KB)
-net.core.wmem_default = $VAR_DEF_MEM     # 默认写缓存 (字节: 约 $((VAR_DEF_MEM / 1024)) KB)
-net.core.rmem_max = $VAR_UDP_RMEM        # 最大读缓存 (档位上限值)
-net.core.wmem_max = $VAR_UDP_WMEM        # 最大写缓存 (档位上限值)
-net.core.optmem_max = 1048576            # 每个 Socket 辅助内存上限 (1MB)
-
-# === 4. TCP 协议栈深度调优 (BBR 锐化相关) ===
-net.core.default_qdisc = fq              # BBR 必须配合 FQ 队列调度
-net.ipv4.tcp_congestion_control = $tcp_cca # 拥塞控制算法 (当前识别: $tcp_cca)
-net.ipv4.tcp_fastopen = 3                # 开启 TCP Fast Open (减少三次握手消耗)
-net.ipv4.tcp_slow_start_after_idle = 0   # 闲置后不进入慢启动 (保持高吞吐)
-net.ipv4.tcp_notsent_lowat = 16384       # 限制待发送数据长度，降低缓冲膨胀延迟
-net.ipv4.tcp_limit_output_bytes = 262144 # 限制单个 TCP 连接占用发送队列的大小
+net.core.rmem_max = $VAR_UDP_RMEM
+net.core.wmem_max = $VAR_UDP_WMEM
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
 net.ipv4.tcp_wmem = 4096 65536 $VAR_UDP_WMEM
-net.ipv4.ip_no_pmtu_disc = 0             # 启用 MTU 探测 (自动寻找最优包大小，防止 Hy2 丢包)
-
-# === 5. UDP 协议栈优化 (Hysteria2 传输核心) ===
-net.ipv4.udp_mem = $udp_mem_scale        # 全局 UDP 内存页配额 (根据 RTT 动态计算)
-net.ipv4.udp_rmem_min = 16384            # UDP Socket 最小读缓存保护
-net.ipv4.udp_wmem_min = 16384            # UDP Socket 最小写缓存保护
+net.ipv4.udp_mem = $udp_mem_scale
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+vm.swappiness = $swappiness_val
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
 SYSCTL
 
     sysctl -p >/dev/null 2>&1 || true
-
-    # 网卡队列长度优化 (txqueuelen) 
-    local DEFAULT_IFACE=$(ip route show default | awk '{print $5; exit}')
-    if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
-        ip link set dev "$DEFAULT_IFACE" txqueuelen 10000 2>/dev/null || true
-        if command -v ethtool >/dev/null 2>&1; then
-             ethtool -K "$DEFAULT_IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
-             local RING_MAX=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | grep -A1 "Pre-set maximums" | grep "RX:" | awk '{print $2}')
-             [ -n "$RING_MAX" ] && ethtool -G "$DEFAULT_IFACE" rx "$RING_MAX" tx "$RING_MAX" 2>/dev/null || true
-        fi
-    fi
-    
     apply_initcwnd_optimization "false"
 }
 
@@ -509,9 +470,10 @@ EOF
 # ==========================================
 # 服务配置
 # ==========================================
-setup_service() {  
-    info "配置系统服务 (MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
-    
+setup_service() {
+    local CPU_CORES=$(nproc 2>/dev/null || echo 1)
+    info "配置系统服务 (CPU=$CPU_CORES | MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
+
     local go_debug_val="GODEBUG=memprofilerate=0,madvdontneed=1"
     local env_list=(
         "Environment=GOGC=${SBOX_GOGC:-100}"
@@ -520,6 +482,11 @@ setup_service() {
         "Environment=$go_debug_val"
     )
     [ -n "${SBOX_GOMAXPROCS:-}" ] && env_list+=("Environment=GOMAXPROCS=$SBOX_GOMAXPROCS")
+
+    # 单核自动禁用 netpoll2 / RPS 类参数
+    if [ "$CPU_CORES" -ge 2 ]; then
+        env_list+=("Environment=GODEBUG=netpoll=2")
+    fi
 
     if [ "$OS" = "alpine" ]; then
         local openrc_exports=$(printf "export %s\n" "${env_list[@]}" | sed 's/Environment=//g')
