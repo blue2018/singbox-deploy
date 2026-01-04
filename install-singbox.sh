@@ -601,25 +601,20 @@ display_links() {
 
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | sed 's/version /v/')
-    local CURRENT_CWND=$(ip route show default | awk -F 'initcwnd ' '{if($2) {split($2,a," "); print a[1]}}')
-    
-    local CWND_VAL="${CURRENT_CWND:-10}"
-    local CWND_STATUS=""
-    [ "$CWND_VAL" -ge 15 ] && CWND_STATUS=" (已优化)" || CWND_STATUS=" (默认)"
-
+    local CWND_VAL=$(ip route show default | awk -F 'initcwnd ' '{if($2) {split($2,a," "); print a[1]}}' | xargs)
     local current_cca=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    local CWND_LBL=$([[ "${CWND_VAL:-10}" -ge 15 ]] && echo "(已优化)" || echo "(默认)")
     local bbr_display=""
     case "$current_cca" in
-        "bbr3") bbr_display="\033[1;32mBBRv3 (最新·极致响应)\033[0m" ;;
-        "bbr2") bbr_display="\033[1;32mBBRv2 (自适应·低丢包)\033[0m" ;;
-        "bbr")  bbr_display="\033[1;32mBBRv1 (标准·高吞吐)\033[0m" ;;
-        "cubic") bbr_display="\033[1;33mCubic (系统默认·无加速)\033[0m" ;;
-        *)      bbr_display="\033[1;31m$current_cca (未知·非标准)\033[0m" ;;
+        bbr3|bbr2) bbr_display="BBRv3/v2 (极致响应)" ;;
+        bbr)       bbr_display="BBRv1 (标准加速)" ;;
+        cubic)     bbr_display="Cubic (普通模式)" ;;
+        *)         bbr_display="$current_cca (非标准)" ;;
     esac
 
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
-    echo -e "Initcwnd: \033[1;33m${CWND_VAL}${CWND_STATUS}\033[0m"
+    echo -e "Initcwnd: \033[1;33m${CWND_VAL:-10} $CWND_LBL\033[0m"
     echo -e "拥塞控制: \033[1;33m$bbr_display\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
     echo -e "伪装SNI:  \033[1;33m${RAW_SNI:-未检测}\033[0m"
