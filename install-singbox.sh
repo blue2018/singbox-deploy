@@ -231,8 +231,7 @@ optimize_system() {
     local mem_total=$(probe_memory_total)
     local max_udp_mb=$((mem_total * 40 / 100)) 
     local max_udp_pages=$((max_udp_mb * 256))
-    local busy_poll_val=0
-    local quic_extra_msg=""
+    local swappiness_val=10 busy_poll_val=0 quic_extra_msg=""
 
     if [[ "$OS" != "alpine" && "$mem_total" -le 600 ]]; then
         local swap_total=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}' || echo "0")
