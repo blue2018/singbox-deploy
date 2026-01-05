@@ -213,58 +213,47 @@ apply_initcwnd_optimization() {
 
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
 apply_userspace_adaptive_profile(){
-    local mem_total=$(probe_memory_total)
-    local lvl="$SBOX_OPTIMIZE_LEVEL" mem="$mem_total" quic_wnd quic_buf; 
-    case "$lvl" in
-        *旗舰*) GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; GOGC=120; GOMEMLIMIT="$SBOX_GOLIMIT"; quic_wnd=16; quic_buf=4194304;;
-        *增强*) GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; GOGC=100; GOMEMLIMIT="$SBOX_GOLIMIT"; quic_wnd=12; quic_buf=2097152;;
-        *紧凑*) GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; GOGC=80;  GOMEMLIMIT="$SBOX_GOLIMIT"; quic_wnd=8;  quic_buf=1048576;;
-        *生存*) GOMAXPROCS=1;                       GOGC=80;  GOMEMLIMIT="$SBOX_GOLIMIT"; quic_wnd=4;  quic_buf=524288;;
-    esac
-    export GOMAXPROCS GOGC GOMEMLIMIT
-    export SINGBOX_QUIC_MAX_CONN_WINDOW="$quic_wnd" SINGBOX_UDP_RECVBUF="$quic_buf" SINGBOX_UDP_SENDBUF="$quic_buf"
-    ([[ "$(nproc)" -le 1 || "$lvl" == *生存* ]] || (command -v taskset >/dev/null && taskset -pc 0-$(($(nproc)-1)) $$ >/dev/null 2>&1)) || true
-    info "Userspace Profile → $lvl | GOMAXPROCS=$GOMAXPROCS | QUIC_WND=$quic_wnd"
+    local lvl="${SBOX_OPTIMIZE_LEVEL:-紧凑版}"
+    local real_c=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+    local g_procs=1 GOGC=80 wnd=4 buf=524288
+
+    # 档位映射: 旗舰(16/4M/120GC), 增强(12/2M/100GC), 紧凑(8/1M/80GC), 生存(4/0.5M/80GC)
+    [[ "$lvl" == *旗舰* ]] && { g_procs=$real_c; GOGC=120; wnd=16; buf=4194304; }
+    [[ "$lvl" == *增强* ]] && { g_procs=$real_c; GOGC=100; wnd=12; buf=2097152; }
+    [[ "$lvl" == *紧凑* ]] && { g_procs=$real_c; GOGC=80;  wnd=8;  buf=1048576; }
+    [ "$real_c" -le 1 ] && g_procs=1 # 强制单核收敛
+
+    export GOMAXPROCS="$g_procs" GOGC="$GOGC" GOMEMLIMIT="${SBOX_GOLIMIT:-64MiB}"
+    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"
+
+    # CPU 亲和力设置
+    [ "$real_c" -gt 1 ] && [[ "$lvl" != *生存* ]] && command -v taskset >/dev/null && \
+        taskset -pc 0-$((real_c - 1)) $$ >/dev/null 2>&1 || true
+        
+    info "Profile → $lvl | GOMAXPROCS=$GOMAXPROCS | QUIC_WND=$wnd"
 }
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
 apply_nic_core_boost() {
-    local mem_total=$(probe_memory_total)
-    [ "$mem_total" -lt 80 ] && return 0 
-
-    local IFACE CPU_NUM CPU_MASK
-    IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}') || return 0
+    local mem=$(probe_memory_total)
+    [ "$mem" -lt 80 ] && return 0
+    local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}') || return 0
+    local CPU_N=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || nproc)
+    local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
     
-    # 修正：通过物理读取核心信息，防止 nproc 被容器虚拟化欺骗
-    CPU_NUM=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || nproc)
-    CPU_MASK=$(printf '%x' $(( (1<<CPU_NUM)-1 )))
-    
-    info "NIC Cache Boost → $IFACE (mem=${mem_total}MB, cpu=${CPU_NUM})"
+    info "NIC Boost → $IFACE (mem:${mem}M, cpu:${CPU_N})"
+    # 动态调整网卡预算：512M->1500, 256M->1100, 128M->820, else->420
+    local bgt=420; local usc=3800
+    [ "$mem" -ge 512 ] && bgt=1500 && usc=11000 || { [ "$mem" -ge 256 ] && bgt=1100 && usc=9000; } || { [ "$mem" -ge 128 ] && bgt=820 && usc=7000; }
+    sysctl -w net.core.netdev_budget=$bgt net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
 
-    # 1. softirq 批处理密度 (sysctl 修改通常比文件写入更安全)
-    case 1 in
-        $(($mem_total>=512))) sysctl -w net.core.netdev_budget=1500 net.core.netdev_budget_usecs=11000 >/dev/null 2>&1 || true ;; 
-        $(($mem_total>=256))) sysctl -w net.core.netdev_budget=1100 net.core.netdev_budget_usecs=9000 >/dev/null 2>&1 || true ;; 
-        $(($mem_total>=128))) sysctl -w net.core.netdev_budget=820 net.core.netdev_budget_usecs=7000 >/dev/null 2>&1 || true ;; 
-        *) sysctl -w net.core.netdev_budget=420 net.core.netdev_budget_usecs=3800 >/dev/null 2>&1 || true ;;
-    esac
-
-    # 2. RX/TX CPU 亲和优化 (针对单核或 OpenVZ 重点优化防崩逻辑)
-    # 只有当内存够且核心确实多于 1 个时才尝试
-    if [ "$mem_total" -ge 128 ] && [ "$CPU_NUM" -ge 2 ]; then
-        # 修正：使用循环前先判断目录是否存在，避免通配符展开失败导致脚本中断
-        if [ -d "/sys/class/net/$IFACE/queues" ]; then
-            # 这里的路径展开需要非常小心，使用 nullglob 模式的思想
-            local q_path
-            for q_path in /sys/class/net/"$IFACE"/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
-                if [ -e "$q_path" ]; then
-                    # 使用 timeout 防止某些虚拟化环境写文件时挂起
-                    timeout 0.5s bash -c "echo '$CPU_MASK' > '$q_path'" 2>/dev/null || true
-                fi
-            done
-        fi
+    # 多核亲和性绑定：仅在真实多核且内存充足时执行
+    if [ "$mem" -ge 128 ] && [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
+        for q in /sys/class/net/"$IFACE"/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
+            [ -e "$q" ] && timeout 0.5s bash -c "echo '$MASK' > '$q'" 2>/dev/null || true
+        done
     else
-        info "检测到单核或资源受限环境，跳过队列亲和性绑定"
+        info "环境受限，跳过队列绑定"
     fi
 }
 
