@@ -109,27 +109,31 @@ install_dependencies() {
 
 #获取公网IP
 get_network_info() {
-    info "获取网络信息..."
-    local v4="" v6="" v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m"
-    
-    v4=$(ip -4 -br addr show 2>/dev/null | awk '{print $3}' | grep -oE '^[0-9.]+' | \
-        grep -vE '^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' | head -n1)
-    [ -z "$v4" ] && v4=$(curl -4s --max-time 3 api.ipify.org 2>/dev/null)
-    v6=$(ip -6 -br addr show 2>/dev/null | awk '{print $3}' | grep -oE '^[0-9a-fA-F:]+' | \
-        grep -viE '^(::1|fe80:|f[cd]00:)' | head -n1)
-    [ -z "$v6" ] && v6=$(curl -6s --max-time 3 api6.ipify.org 2>/dev/null)
-    
-    [ -n "$v4" ] && ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
-    [ -n "$v6" ] && ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
-    
-    RAW_IP4="$v4"; RAW_IP6="$v6"; export RAW_IP4 RAW_IP6
-    [ -n "$v4" ] && echo -e "IPv4: \033[32m$v4\033[0m [$v4_ok]" || echo -e "IPv4: \033[33m未检测\033[0m"
-    [ -n "$v6" ] && echo -e "IPv6: \033[32m$v6\033[0m [$v6_ok]" || echo -e "IPv6: \033[33m未检测\033[0m"
-    [ -z "$v4" ] && [ -z "$v6" ] && { err "无可用公网 IP"; return 1; }
-}
+    info "获取公网地址..."
+    local raw_v4="" raw_v6=""
+    local ip_tool=""; command -v ip >/dev/null && ip_tool="ip" || { command -v ifconfig >/dev/null && ip_tool="ifconfig"; }
 
-info() { echo -e "\033[1;34m[INFO]\033[0m $*"; }
-err()  { echo -e "\033[1;31m[ERR]\033[0m $*" >&2; }
+    if [ "$ip_tool" = "ip" ]; then
+        raw_v4=$(ip -4 addr show | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1 || echo "")
+        raw_v6=$(ip -6 addr show | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1 || echo "")
+    elif [ "$ip_tool" = "ifconfig" ]; then
+        raw_v4=$(ifconfig | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1 || echo "")
+        raw_v6=$(ifconfig | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1 || echo "")
+    fi
+
+    if [ -z "$raw_v4" ]; then
+        raw_v4=$(curl -s4m3 api.ipify.org || curl -s4m3 ifconfig.me || curl -s4m3 --header "Host: api.ipify.org" 1.1.1.1/cdn-cgi/trace | grep -oE "ip=[0-9.]+" | cut -d= -f2 || echo "")
+    fi
+
+    if [ -z "$raw_v6" ]; then
+        raw_v6=$(curl -s6m3 api6.ipify.org || curl -s6m3 ifconfig.co || echo "")
+    fi
+
+    RAW_IP4=$(echo "$raw_v4" | tr -d '[:space:]')
+    RAW_IP6=$(echo "$raw_v6" | tr -d '[:space:]')
+    [ -n "${RAW_IP4:-}" ] && echo -e "IPv4 地址: \033[32m$RAW_IP4\033[0m" || echo -e "IPv4 地址: \033[33m未检测到\033[0m"
+    [ -n "${RAW_IP6:-}" ] && echo -e "IPv6 地址: \033[32m$RAW_IP6\033[0m" || echo -e "IPv6 地址: \033[33m未检测到\033[0m"
+}
 
 # === 网络延迟探测模块 ===
 probe_network_rtt() {
