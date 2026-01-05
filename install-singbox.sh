@@ -213,18 +213,19 @@ apply_initcwnd_optimization() {
 
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
 apply_userspace_adaptive_profile() {
-    local lvl="$SBOX_OPTIMIZE_LEVEL" mem="$mem_total"
+    local lvl="$SBOX_OPTIMIZE_LEVEL" mem="$mem_total" quic_wnd quic_buf
 
-    # === 1. goroutine / scheduler / GOMAXPROCS ===
+    # === 1. GOMAXPROCS / GOGC / GOMEMLIMIT ===
     case "$lvl" in
-        *旗舰*)   export GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; export GOGC=120;  export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
-        *增强*)   export GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; export GOGC=100;  export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
-        *紧凑*)   export GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; export GOGC=80;   export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
-        *生存*)   export GOMAXPROCS=1;                             export GOGC=80;   export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
+        *旗舰*) GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; GOGC=120 ;;
+        *增强*) GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; GOGC=100 ;;
+        *紧凑*) GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; GOGC=80  ;;
+        *生存*) GOMAXPROCS=1;                             GOGC=80  ;;
     esac
+    export GOMAXPROCS GOGC GOMEMLIMIT="$SBOX_GOLIMIT"
 
-    # === 2. QUIC / UDP 窗口（与内核 udp_mem 钳位对齐） ===
-    local quic_wnd quic_buf; case "$lvl" in
+    # === 2. QUIC / UDP 缓冲 ===
+    case "$lvl" in
         *旗舰*) quic_wnd=16; quic_buf=4194304 ;;
         *增强*) quic_wnd=12; quic_buf=2097152 ;;
         *紧凑*) quic_wnd=8;  quic_buf=1048576 ;;
@@ -234,8 +235,8 @@ apply_userspace_adaptive_profile() {
     export SINGBOX_UDP_RECVBUF="$quic_buf"
     export SINGBOX_UDP_SENDBUF="$quic_buf"
 
-    # === 3. I/O 亲和性（NUMA / CPU cache 亲和） ===
-    command -v taskset >/dev/null && [[ "$lvl" != *生存* ]] && taskset -pc 0-$(($(nproc)-1)) $$ >/dev/null 2>&1 || true
+    # === 3. I/O / CPU 亲和性（非生存档启用） ===
+    command -v taskset >/dev/null && [[ "$lvl" != *生存* ]] && taskset -pc 0-$(( $(nproc) - 1 )) $$ >/dev/null 2>&1 || true
 
     info "Userspace Profile → $lvl | GOMAXPROCS=$GOMAXPROCS | QUIC_WND=$quic_wnd"
 }
