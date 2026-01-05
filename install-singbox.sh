@@ -428,8 +428,6 @@ vm.swappiness = $swappiness_val          # 交换分区权重 (当前档位: $sw
 # === 2. 网络设备层优化 (网卡与 CPU 交互层) ===
 net.core.netdev_max_backlog = 65536      # 接收队列包缓冲区上限
 net.core.dev_weight = 64                 # CPU 单次处理收包权重
-net.core.netdev_budget = 600             # 软中断收包总预算
-net.core.netdev_budget_usecs = 8000      # 收包处理耗时上限 (微秒)
 net.core.busy_read = $busy_poll_val      # 繁忙轮询 (降低数据包在内核态的等待时间)
 net.core.busy_poll = $busy_poll_val
 
