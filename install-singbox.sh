@@ -466,8 +466,8 @@ SYSCTL
     fi
 
     apply_initcwnd_optimization "false"
-    apply_userspace_adaptive_profile()
-    apply_nic_core_boost()
+    apply_userspace_adaptive_profile
+    apply_nic_core_boost
 }
 
 # ==========================================
