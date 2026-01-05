@@ -230,27 +230,42 @@ apply_userspace_adaptive_profile(){
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
 apply_nic_core_boost() {
     local mem_total=$(probe_memory_total)
-    [ "$mem_total" -lt 80 ] && return 0  # <80MB完全关闭
+    [ "$mem_total" -lt 80 ] && return 0 
 
     local IFACE CPU_NUM CPU_MASK
     IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}') || return 0
-    CPU_NUM=$(nproc)
+    
+    # 修正：通过物理读取核心信息，防止 nproc 被容器虚拟化欺骗
+    CPU_NUM=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || nproc)
     CPU_MASK=$(printf '%x' $(( (1<<CPU_NUM)-1 )))
+    
     info "NIC Cache Boost → $IFACE (mem=${mem_total}MB, cpu=${CPU_NUM})"
 
-    # softirq 批处理密度
+    # 1. softirq 批处理密度 (sysctl 修改通常比文件写入更安全)
     case 1 in
-        $(($mem_total>=512))) sysctl -w net.core.netdev_budget=1500 net.core.netdev_budget_usecs=11000 >/dev/null 2>&1 ;; 
-        $(($mem_total>=256))) sysctl -w net.core.netdev_budget=1100 net.core.netdev_budget_usecs=9000 >/dev/null 2>&1 ;; 
-        $(($mem_total>=128))) sysctl -w net.core.netdev_budget=820 net.core.netdev_budget_usecs=7000 >/dev/null 2>&1 ;; 
-        *) sysctl -w net.core.netdev_budget=420 net.core.netdev_budget_usecs=3800 >/dev/null 2>&1 ;;
+        $(($mem_total>=512))) sysctl -w net.core.netdev_budget=1500 net.core.netdev_budget_usecs=11000 >/dev/null 2>&1 || true ;; 
+        $(($mem_total>=256))) sysctl -w net.core.netdev_budget=1100 net.core.netdev_budget_usecs=9000 >/dev/null 2>&1 || true ;; 
+        $(($mem_total>=128))) sysctl -w net.core.netdev_budget=820 net.core.netdev_budget_usecs=7000 >/dev/null 2>&1 || true ;; 
+        *) sysctl -w net.core.netdev_budget=420 net.core.netdev_budget_usecs=3800 >/dev/null 2>&1 || true ;;
     esac
 
-    # RX/TX CPU 亲和（内存≥128且CPU≥2）
-    [ "$mem_total" -ge 128 ] && [ "$CPU_NUM" -ge 2 ] && \
-        for f in /sys/class/net/$IFACE/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
-            echo "$CPU_MASK" > "$f" 2>/dev/null || true
-        done
+    # 2. RX/TX CPU 亲和优化 (针对单核或 OpenVZ 重点优化防崩逻辑)
+    # 只有当内存够且核心确实多于 1 个时才尝试
+    if [ "$mem_total" -ge 128 ] && [ "$CPU_NUM" -ge 2 ]; then
+        # 修正：使用循环前先判断目录是否存在，避免通配符展开失败导致脚本中断
+        if [ -d "/sys/class/net/$IFACE/queues" ]; then
+            # 这里的路径展开需要非常小心，使用 nullglob 模式的思想
+            local q_path
+            for q_path in /sys/class/net/"$IFACE"/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
+                if [ -e "$q_path" ]; then
+                    # 使用 timeout 防止某些虚拟化环境写文件时挂起
+                    timeout 0.5s bash -c "echo '$CPU_MASK' > '$q_path'" 2>/dev/null || true
+                fi
+            done
+        fi
+    else
+        info "检测到单核或资源受限环境，跳过队列亲和性绑定"
+    fi
 }
 
 # 获取并校验端口 (范围：1025-65535)
