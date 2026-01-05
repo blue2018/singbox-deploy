@@ -211,6 +211,61 @@ apply_initcwnd_optimization() {
     [[ "$silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定或命令不支持 $opts)"
 }
 
+# sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
+apply_userspace_adaptive_profile() {
+    local lvl="$SBOX_OPTIMIZE_LEVEL" mem="$mem_total"
+
+    # === 1. goroutine / scheduler / GOMAXPROCS ===
+    case "$lvl" in
+        *旗舰*)   export GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; export GOGC=120;  export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
+        *增强*)   export GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; export GOGC=100;  export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
+        *紧凑*)   export GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; export GOGC=80;   export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
+        *生存*)   export GOMAXPROCS=1;                             export GOGC=80;   export GOMEMLIMIT="$SBOX_GOLIMIT" ;;
+    esac
+
+    # === 2. QUIC / UDP 窗口（与内核 udp_mem 钳位对齐） ===
+    local quic_wnd quic_buf; case "$lvl" in
+        *旗舰*) quic_wnd=16; quic_buf=4194304 ;;
+        *增强*) quic_wnd=12; quic_buf=2097152 ;;
+        *紧凑*) quic_wnd=8;  quic_buf=1048576 ;;
+        *生存*) quic_wnd=4;  quic_buf=524288 ;;
+    esac
+    export SINGBOX_QUIC_MAX_CONN_WINDOW="$quic_wnd"
+    export SINGBOX_UDP_RECVBUF="$quic_buf"
+    export SINGBOX_UDP_SENDBUF="$quic_buf"
+
+    # === 3. I/O 亲和性（NUMA / CPU cache 亲和） ===
+    command -v taskset >/dev/null && [[ "$lvl" != *生存* ]] && taskset -pc 0-$(($(nproc)-1)) $$ >/dev/null 2>&1 || true
+
+    info "Userspace Profile → $lvl | GOMAXPROCS=$GOMAXPROCS | QUIC_WND=$quic_wnd"
+}
+
+# NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
+apply_nic_core_boost() {
+    [ "$mem_total" -lt 64 ] && return 0
+
+    local IFACE CPU_MASK
+    IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+    [ -z "$IFACE" ] && return 0
+
+    CPU_MASK=$(printf '%x' $(( (1 << $(nproc)) - 1 )))
+
+    info "NIC Cache Boost → $IFACE (mem=${mem_total}MB)"
+
+    # === RX / TX 队列 CPU 亲和 ===
+    for f in /sys/class/net/$IFACE/queues/rx-*/rps_cpus; do echo "$CPU_MASK" > "$f" 2>/dev/null || true; done
+    for f in /sys/class/net/$IFACE/queues/tx-*/xps_cpus; do echo "$CPU_MASK" > "$f" 2>/dev/null || true; done
+
+    # === 软中断预算密度（安全钳位分档） ===
+    if [ "$mem_total" -lt 100 ]; then
+        sysctl -w net.core.netdev_budget=520       >/dev/null 2>&1 || true
+        sysctl -w net.core.netdev_budget_usecs=4500 >/dev/null 2>&1 || true
+    else
+        sysctl -w net.core.netdev_budget=1200       >/dev/null 2>&1 || true
+        sysctl -w net.core.netdev_budget_usecs=12000 >/dev/null 2>&1 || true
+    fi
+}
+
 # 获取并校验端口 (范围：1025-65535)
 prompt_for_port() {
     local p rand
@@ -428,6 +483,8 @@ SYSCTL
     fi
 
     apply_initcwnd_optimization "false"
+    apply_userspace_adaptive_profile()
+    apply_nic_core_boost() 
 }
 
 # ==========================================
