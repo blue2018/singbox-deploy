@@ -212,7 +212,8 @@ apply_initcwnd_optimization() {
 }
 
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
-apply_userspace_adaptive_profile(){ 
+apply_userspace_adaptive_profile(){
+    local mem_total=$(probe_memory_total)
     local lvl="$SBOX_OPTIMIZE_LEVEL" mem="$mem_total" quic_wnd quic_buf; 
     case "$lvl" in
         *旗舰*) GOMAXPROCS=${SBOX_GOMAXPROCS:-$(nproc)}; GOGC=120; GOMEMLIMIT="$SBOX_GOLIMIT"; quic_wnd=16; quic_buf=4194304;;
@@ -228,6 +229,7 @@ apply_userspace_adaptive_profile(){
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
 apply_nic_core_boost() {
+    local mem_total=$(probe_memory_total)
     [ "$mem_total" -lt 80 ] && return 0  # <80MB完全关闭
 
     local IFACE CPU_NUM CPU_MASK
@@ -308,10 +310,8 @@ generate_cert() {
 # ==========================================
 optimize_system() {
     # 1. 执行独立探测模块获取环境画像
-    local RTT_AVG
-    RTT_AVG=$(probe_network_rtt)
-    local mem_total
-    mem_total=$(probe_memory_total)
+    local RTT_AVG=$(probe_network_rtt)
+    local mem_total=$(probe_memory_total)
     local max_udp_mb=$((mem_total * 40 / 100))
     local max_udp_pages=$((max_udp_mb * 256))
     local swappiness_val=10 busy_poll_val=0 quic_extra_msg=""
@@ -466,8 +466,8 @@ SYSCTL
     fi
 
     apply_initcwnd_optimization "false"
-    apply_userspace_adaptive_profile "$mem_total"
-    apply_nic_core_boost "$mem_total"
+    apply_userspace_adaptive_profile
+    apply_nic_core_boost
 }
 
 # ==========================================
