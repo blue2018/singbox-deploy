@@ -41,40 +41,30 @@ copy_to_clipboard() {
     fi
 }
 
+#侦测系统类型
 detect_os() {
     if [ -f /etc/os-release ]; then
         # shellcheck disable=SC1091
         . /etc/os-release
-        OS_DISPLAY="${PRETTY_NAME:-$ID}"
-        ID="${ID:-}"
-        ID_LIKE="${ID_LIKE:-}"
+        OS_DISPLAY="${PRETTY_NAME:-$ID}"; ID="${ID:-}"; ID_LIKE="${ID_LIKE:-}"
     else
-        OS_DISPLAY="Unknown Linux"
-        ID="unknown"
-        ID_LIKE=""
+        OS_DISPLAY="Unknown Linux"; ID="unknown"; ID_LIKE=""
     fi
 
     local COMBINED="${ID} ${ID_LIKE}"
-    if echo "$COMBINED" | grep -qi "alpine"; then
-        OS="alpine"
-    elif echo "$COMBINED" | grep -Ei "debian|ubuntu" >/dev/null 2>&1; then
-        OS="debian"
-    elif echo "$COMBINED" | grep -Ei "centos|rhel|fedora|rocky|almalinux" >/dev/null 2>&1; then
-        OS="redhat"
-    else
-        OS="unknown"
-    fi
+    case "$COMBINED" in
+        *[Aa][Ll][Pp][Ii][Nn][Ee]*) OS="alpine" ;;
+        *[Dd][Ee][Bb][Ii][Aa][Nn]*|*[Uu][Bb][Uu][Nn][Tt][Uu]*) OS="debian" ;;
+        *[Cc][Ee][Nn][Tt][Oo][Ss]*|*[Rr][Hh][Ee][Ll]*|*[Ff][Ee][Dd][Oo][Rr][Aa]*|*[Rr][Oo][Cc][Kk][Yy]*|*[Aa][Ll][Mm][Aa][Ll][Ii][Nn][Uu][Xx]*) OS="redhat" ;;
+        *) OS="unknown" ;;
+    esac
 
-    ARCH=$(uname -m)
-    case "$ARCH" in
+    case "$(uname -m)" in
         x86_64) SBOX_ARCH="amd64" ;;
         aarch64) SBOX_ARCH="arm64" ;;
         armv7l) SBOX_ARCH="armv7" ;;
         i386|i686) SBOX_ARCH="386" ;;
-        *)
-            err "不支持的架构: $ARCH"
-            exit 1
-            ;;
+        *) err "不支持的架构: $(uname -m)"; exit 1 ;;
     esac
 }
 
@@ -82,53 +72,39 @@ detect_os() {
 install_dependencies() {
     info "正在检查并安装必要依赖 (curl, jq, openssl)..."
 
-    if command -v apk >/dev/null 2>&1; then
-        PM="apk"
-    elif command -v apt-get >/dev/null 2>&1; then
-        PM="apt"
-    elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
-        PM="yum"
-    else
-        err "未检测到支持的包管理器 (apk/apt-get/yum)，请手动安装 curl jq openssl 等依赖"
-        exit 1
-    fi
+    if   command -v apk >/dev/null 2>&1; then PM="apk"
+    elif command -v apt-get >/dev/null 2>&1; then PM="apt"
+    elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then PM="yum"
+    else err "未检测到支持的包管理器 (apk/apt-get/yum)，请手动安装 curl jq openssl 等依赖"; exit 1; fi
 
     case "$PM" in
         apk)
             info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
             apk update >/dev/null 2>&1 || true
-            apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates busybox-openrc iputils || {
-                err "apk 安装依赖失败，请检查网络与仓库设置"
-                exit 1
-            }
+            apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates busybox-openrc iputils \
+                || { err "apk 安装依赖失败，请检查网络与仓库设置"; exit 1; }
             ;;
         apt)
             info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -y >/dev/null 2>&1 || true
-            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping || {
-                err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2"
-                exit 1
-            }
+            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping \
+                || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2"; exit 1; }
             ;;
         yum)
             info "检测到 RHEL/CentOS 系统，正在安装依赖..."
-            # 支持 yum 与 dnf
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y curl jq openssl ca-certificates procps-ng iproute || {
-                    err "dnf 安装依赖失败，请手动运行"
-                    exit 1
-                }
+                dnf install -y curl jq openssl ca-certificates procps-ng iproute \
+                    || { err "dnf 安装依赖失败，请手动运行"; exit 1; }
             else
-                yum install -y curl jq openssl ca-certificates procps-ng iproute || {
-                    err "yum 安装依赖失败，请手动运行"
-                    exit 1
-                }
+                yum install -y curl jq openssl ca-certificates procps-ng iproute \
+                    || { err "yum 安装依赖失败，请手动运行"; exit 1; }
             fi
             ;;
     esac
 
-    command -v jq >/dev/null 2>&1 || err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错" && succ "所需依赖已就绪"
+    command -v jq >/dev/null 2>&1 || { err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"; exit 1; }
+    succ "所需依赖已就绪"
 }
 
 #获取公网IP
@@ -211,7 +187,7 @@ probe_memory_total() {
 
 # InitCWND 专项优化模块 (取黄金分割点 15 ，比默认 10 强 50%，比 20 更隐蔽)
 apply_initcwnd_optimization() {
-    local silent="${1:-false}" advmss opts route_info gw dev mtu
+    local silent="${1:-false}" route_info gw dev mtu advmss opts
     command -v ip >/dev/null || return 0
 
     route_info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
@@ -219,26 +195,17 @@ apply_initcwnd_optimization() {
 
     gw=$(echo "$route_info" | grep -oP 'via \K[^ ]+' || true)
     dev=$(echo "$route_info" | grep -oP 'dev \K[^ ]+' || true)
-    mtu=$(echo "$route_info" | grep -oP 'mtu \K[0-9]+' || echo "1500")
-    advmss=$((mtu - 40)) && opts="initcwnd 15 initrwnd 15 advmss $advmss"
+    mtu=$(echo "$route_info" | grep -oP 'mtu \K[0-9]+' || echo 1500)
+    advmss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $advmss"
 
-    if [ -n "$gw" ] && [ -n "$dev" ]; then
-        if ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
-            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"
-            return 0
-        fi
+    if [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"; return 0
     fi
-
-    if [ -n "$dev" ]; then
-        if ip route replace default dev "$dev" $opts 2>/dev/null; then
-            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (dev 模式 15/Advmss $advmss)"
-            return 0
-        fi
+    if [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; then
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (dev 模式 15/Advmss $advmss)"; return 0
     fi
-
     if ip route change default $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (change 模式 15/Advmss $advmss)"
-        return 0
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (change 模式 15/Advmss $advmss)"; return 0
     fi
 
     [[ "$silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定或命令不支持 $opts)"
@@ -246,27 +213,23 @@ apply_initcwnd_optimization() {
 
 # 获取并校验端口 (范围：1025-65535)
 prompt_for_port() {
-    local p
+    local p rand
     while :; do
         read -r -p "请输入端口 [1025-65535] (回车随机生成): " p
         if [ -z "$p" ]; then
             if command -v shuf >/dev/null 2>&1; then
                 p=$(shuf -i 1025-65535 -n 1)
             elif [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
-                # 64511 = 65535-1025+1
-                local rand=$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')
-                p=$((1025 + rand % 64511))
+                rand=$(od -An -N2 -tu2 /dev/urandom | tr -d ' '); p=$((1025 + rand % 64511))
             else
                 p=$((1025 + RANDOM % 64511))
             fi
             echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $p" >&2
-            echo "$p"
-            return 0
+            echo "$p"; return 0
         fi
 
         if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1025 ] && [ "$p" -le 65535 ]; then
-            echo "$p"
-            return 0
+            echo "$p"; return 0
         else
             echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
         fi
@@ -466,106 +429,73 @@ SYSCTL
 # 安装/更新 Sing-box 内核
 # ==========================================
 install_singbox() {
-    local MODE="${1:-install}"
-    local LOCAL_VER="未安装"
+    local MODE="${1:-install}" LOCAL_VER="未安装"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "未安装")
 
     info "正在连接 GitHub API 获取版本信息 (限时 23s)..."
+    local RELEASE_JSON="" LATEST_TAG="" DOWNLOAD_SOURCE="GitHub"
 
-    # 尝试通过 GitHub API 获取最新 release tag（优先）
-    local RELEASE_JSON=""
-    local LATEST_TAG=""
-    local DOWNLOAD_SOURCE="GitHub"
-
-    # 首先尝试使用 curl 获取
     RELEASE_JSON=$(curl -sL --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null || echo "")
     if [ -n "$RELEASE_JSON" ]; then
         if command -v jq >/dev/null 2>&1; then
             LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "")
         else
-            # jq 缺失：用宽松的 grep/sed 回退解析（可能不够严格，但作为回退）
-            LATEST_TAG=$(echo "$RELEASE_JSON" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"v([0-9]+\.[0-9]+\.[0-9]+)".*/v\1/' || echo "")
+            LATEST_TAG=$(echo "$RELEASE_JSON" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 \
+                | sed -E 's/.*"v([0-9]+\.[0-9]+\.[0-9]+)".*/v\1/' || echo "")
         fi
     fi
 
-    # 备用站点兜底
     if [ -z "$LATEST_TAG" ]; then
         warn "GitHub API 响应超时或解析失败，尝试备用官方镜像源..."
         DOWNLOAD_SOURCE="官方镜像"
         LATEST_TAG=$(curl -sL --max-time 15 https://sing-box.org/ 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo "")
     fi
 
-    # 本地兜底
     if [ -z "$LATEST_TAG" ]; then
         if [ "$LOCAL_VER" != "未安装" ]; then
-            warn "所有远程查询均失败，自动采用本地版本 (v$LOCAL_VER) 继续。"
-            return 0
+            warn "所有远程查询均失败，自动采用本地版本 (v$LOCAL_VER) 继续。"; return 0
         else
-            err "获取版本失败且本地无备份，请检查网络"
-            exit 1
+            err "获取版本失败且本地无备份，请检查网络"; exit 1
         fi
     fi
 
     local REMOTE_VER="${LATEST_TAG#v}"
-
     if [[ "$MODE" == "update" ]]; then
         echo -e "---------------------------------"
         echo -e "当前已装版本: \033[1;33m${LOCAL_VER}\033[0m"
         echo -e "官方最新版本: \033[1;32m${REMOTE_VER}\033[0m (源: $DOWNLOAD_SOURCE)"
         echo -e "---------------------------------"
-        if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then
-            succ "内核已是最新版本，无需更新"
-            return 1
-        fi
+        [[ "$LOCAL_VER" == "$REMOTE_VER" ]] && { succ "内核已是最新版本，无需更新"; return 1; }
         info "发现新版本，开始下载更新..."
     fi
 
-    # 构造下载 URL（确保 LATEST_TAG 非空）
-    if [ -z "$LATEST_TAG" ]; then
-        err "无法确定最新版本标识，终止安装"
-        exit 1
-    fi
-
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
-    local TMP_D
-    TMP_D=$(mktemp -d) || TMP_D="/tmp/sb-tmp-$$"
-    # 保证临时目录被清理
+    local TMP_D; TMP_D=$(mktemp -d) || TMP_D="/tmp/sb-tmp-$$"
     trap 'rm -rf "$TMP_D" >/dev/null 2>&1 || true' EXIT
 
     info "开始下载内核 (源: $DOWNLOAD_SOURCE)..."
     if ! curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz"; then
         warn "首选链接下载失败，尝试官方直链镜像或 ghproxy 兜底..."
         URL="https://mirror.ghproxy.com/${URL}"
-        if ! curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz"; then
-            warn "备用镜像下载也失败，将在后续使用本地版本（若存在）或退出"
-        fi
+        curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz" || warn "备用镜像下载也失败，将在后续使用本地版本（若存在）或退出"
     fi
 
     if [ -f "$TMP_D/sb.tar.gz" ] && [ "$(stat -c%s "$TMP_D/sb.tar.gz" 2>/dev/null || echo 0)" -gt 1000000 ]; then
         tar -xf "$TMP_D/sb.tar.gz" -C "$TMP_D"
         pgrep sing-box >/dev/null 2>&1 && (systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true)
         if [ -d "$TMP_D"/sing-box-* ]; then
-            install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box || {
-                err "安装二进制文件失败"
-                rm -rf "$TMP_D"
-                trap - EXIT
-                return 1
-            }
+            install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box || { err "安装二进制文件失败"; trap - EXIT; rm -rf "$TMP_D"; return 1; }
         fi
-        rm -rf "$TMP_D"
-        trap - EXIT
+        trap - EXIT; rm -rf "$TMP_D"
         succ "内核安装成功: v$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "$REMOTE_VER")"
         return 0
-    else
-        rm -rf "$TMP_D"
-        trap - EXIT
-        if [ "$LOCAL_VER" != "未安装" ]; then
-            warn "下载彻底失败，保留现有本地版本继续安装"
-            return 0
-        fi
-        err "下载失败且本地无可用内核，无法继续"
-        exit 1
     fi
+
+    trap - EXIT; rm -rf "$TMP_D"
+    if [ "$LOCAL_VER" != "未安装" ]; then
+        warn "下载彻底失败，保留现有本地版本继续安装"; return 0
+    fi
+    err "下载失败且本地无可用内核，无法继续"; exit 1
 }
 
 # ==========================================
