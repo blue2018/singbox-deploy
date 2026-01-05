@@ -242,35 +242,27 @@ apply_userspace_adaptive_profile() {
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
 apply_nic_core_boost() {
-    # < 80MB：完全关闭，防止 ksoftirqd + swap + OOM 风暴
-    [ "$mem_total" -lt 80 ] && return 0
+    [ "$mem_total" -lt 80 ] && return 0  # <80MB完全关闭此功能
 
-    local IFACE CPU_MASK
-    IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
-    [ -z "$IFACE" ] && return 0
-    CPU_MASK=$(printf '%x' $(( (1 << $(nproc)) - 1 )))
-    info "NIC Cache Boost → $IFACE (mem=${mem_total}MB)"
+    local IFACE CPU_NUM CPU_MASK
+    IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}') || return 0
+    CPU_NUM=$(nproc)
+    CPU_MASK=$(printf '%x' $(( (1<<CPU_NUM)-1 )))
+    info "NIC Cache Boost → $IFACE (mem=${mem_total}MB, cpu=${CPU_NUM})"
 
-    # softirq 批处理密度（线性稳健坡道）
-    if   [ "$mem_total" -ge 512 ]; then
-        sysctl -w net.core.netdev_budget=1500        >/dev/null 2>&1 || true
-        sysctl -w net.core.netdev_budget_usecs=11000 >/dev/null 2>&1 || true
-    elif [ "$mem_total" -ge 256 ]; then
-        sysctl -w net.core.netdev_budget=1100        >/dev/null 2>&1 || true
-        sysctl -w net.core.netdev_budget_usecs=9000  >/dev/null 2>&1 || true
-    elif [ "$mem_total" -ge 128 ]; then
-        sysctl -w net.core.netdev_budget=820         >/dev/null 2>&1 || true
-        sysctl -w net.core.netdev_budget_usecs=7000  >/dev/null 2>&1 || true
-    else
-        # 80–127MB 生存增强线（你的新基线）
-        sysctl -w net.core.netdev_budget=420         >/dev/null 2>&1 || true
-        sysctl -w net.core.netdev_budget_usecs=3800  >/dev/null 2>&1 || true
-    fi
+    # softirq 批处理密度
+    case 1 in
+        $(($mem_total>=512))) sysctl -w net.core.netdev_budget=1500 net.core.netdev_budget_usecs=12000 >/dev/null 2>&1 ;; 
+        $(($mem_total>=256))) sysctl -w net.core.netdev_budget=1100 net.core.netdev_budget_usecs=9000 >/dev/null 2>&1 ;; 
+        $(($mem_total>=128))) sysctl -w net.core.netdev_budget=820 net.core.netdev_budget_usecs=7000 >/dev/null 2>&1 ;; 
+        *) sysctl -w net.core.netdev_budget=420 net.core.netdev_budget_usecs=3800 >/dev/null 2>&1 ;;
+    esac
 
-    # RX / TX 队列 CPU 亲和
-    [ "$mem" -lt 128 ] && return 0
-    for f in /sys/class/net/$IFACE/queues/rx-*/rps_cpus; do echo "$CPU_MASK" > "$f" 2>/dev/null || true; done
-    for f in /sys/class/net/$IFACE/queues/tx-*/xps_cpus; do echo "$CPU_MASK" > "$f" 2>/dev/null || true; done
+    # RX/TX CPU 亲和（内存≥128且CPU≥2）
+    [ "$mem_total" -ge 128 ] && [ "$CPU_NUM" -ge 2 ] && \
+        for f in /sys/class/net/$IFACE/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
+            echo "$CPU_MASK" > "$f" 2>/dev/null || true
+        done
 }
 
 # 获取并校验端口 (范围：1025-65535)
