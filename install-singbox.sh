@@ -227,7 +227,6 @@ apply_userspace_adaptive_profile(){
 }
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
-# NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
 apply_nic_core_boost() {
     [ "$mem_total" -lt 80 ] && return 0  # <80MB完全关闭
 
