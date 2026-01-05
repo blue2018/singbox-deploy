@@ -284,20 +284,20 @@ generate_cert() {
     info "生成 ECC P-256 高性能证书..."
     mkdir -p "$CERT_DIR" && chmod 700 "$CERT_DIR"
 
-    # 核心逻辑：使用一条命令尝试生成，失败则使用最简兼容模式
-    # -subj 中的 O (Organization) 设为变量以减少静态指纹
     local ORG="CloudData-$(date +%s | cut -c7-10)"
     
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    # 兼容新版 OpenSSL (>=1.1.1)
+    if openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
         -keyout "$CERT_DIR/privkey.pem" -out "$CERT_DIR/fullchain.pem" \
         -days 3650 -sha256 -subj "/CN=$TLS_DOMAIN/O=$ORG" \
-        -addext "subjectAltName=DNS:$TLS_DOMAIN,DNS:*.$TLS_DOMAIN" &>/dev/null || {
-        
-        # 针对极旧版 OpenSSL 的保底方案
-        openssl req -x509 -newkey ec:<(openssl ecparam -name prime256v1) -nodes \
-            -keyout "$CERT_DIR/privkey.pem" -out "$CERT_DIR/fullchain.pem" \
-            -days 3650 -subj "/CN=$TLS_DOMAIN" &>/dev/null
-    }
+        -addext "subjectAltName=DNS:$TLS_DOMAIN,DNS:*.$TLS_DOMAIN" &>/dev/null; then
+        :
+    else
+        # 保底兼容老版本 OpenSSL
+        openssl ecparam -name prime256v1 -genkey -noout -out "$CERT_DIR/privkey.pem"
+        openssl req -x509 -key "$CERT_DIR/privkey.pem" -days 3650 \
+            -subj "/CN=$TLS_DOMAIN/O=$ORG" -out "$CERT_DIR/fullchain.pem" &>/dev/null
+    fi
 
     chmod 600 "$CERT_DIR"/*.pem
     [ -s "$CERT_DIR/fullchain.pem" ] && succ "ECC 证书就绪" || { err "证书生成失败"; exit 1; }
