@@ -112,31 +112,52 @@ get_network_info() {
     info "获取网络信息…"
     local v4="" v6="" v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m"
 
-    # 1. 获取原始 IPv4（本地优先，API 兜底）
-    v4=$(ip -4 -br addr show 2>/dev/null | awk '{print $3}' | grep -oE '^[0-9.]+' | \
+    # 1. 获取原始 IPv4（本地提取网卡地址，排除私有网段）
+    v4=$(ip -4 addr show 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 | \
         grep -vE '^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)' | head -n1)
-    [ -z "$v4" ] && v4=$(curl -4s --max-time 3 api.ipify.org 2>/dev/null)
+    
+    # 如果本地没拿到公网 IP（比如在 NAT 后），调用 API 获取
+    if [ -z "$v4" ]; then
+        v4=$(curl -4s --max-time 3 api.ipify.org 2>/dev/null || curl -4s --max-time 3 ifconfig.me 2>/dev/null)
+    fi
 
-    # 2. 获取原始 IPv6（本地优先，API 兜底）
-    v6=$(ip -6 -br addr show 2>/dev/null | awk '{print $3}' | grep -oE '^[0-9a-fA-F:]+' | \
+    # 2. 获取原始 IPv6（本地提取网卡地址，排除内网及链路地址）
+    v6=$(ip -6 addr show 2>/dev/null | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1 | \
         grep -viE '^(::1|fe80:|f[cd]00:)' | head -n1)
-    [ -z "$v6" ] && v6=$(curl -6s --max-time 3 api6.ipify.org 2>/dev/null)
+    
+    # 如果本地没拿到公网 IPv6，调用 API 获取
+    if [ -z "$v6" ]; then
+        v6=$(curl -6s --max-time 3 api6.ipify.org 2>/dev/null || curl -6s --max-time 3 ifconfig.co 2>/dev/null)
+    fi
 
-    # 3. 核心清洗：物理剔除所有非 IP 字符及空格
-    RAW_IP4=$(echo "$v4" | tr -cd '0-9.' | xargs)
-    RAW_IP6=$(echo "$v6" | tr -cd 'a-fA-F0-9:' | xargs)
-    export RAW_IP4 RAW_IP6  
+    # 3. 核心清洗：物理剔除所有非 IP 字符及空格（你要求的两行逻辑）
+    # tr -cd '0-9.' 会删掉除数字和点以外的所有字符，xargs 确保彻底无空格
+    RAW_IP4=$(echo "$v4" | tr -cd '0-9.' | xargs 2>/dev/null || echo "$v4" | tr -cd '0-9.')
+    RAW_IP6=$(echo "$v6" | tr -cd 'a-fA-F0-9:' | xargs 2>/dev/null || echo "$v6" | tr -cd 'a-fA-F0-9:')
+    
+    # 导出变量，确保脚本后续逻辑可以使用 $RAW_IP4 和 $RAW_IP6
+    export RAW_IP4 RAW_IP6
 
-    # 4. 测试可用性 (使用清洗后的变量)
+    # 4. 测试可用性 (兼容 Alpine 的 ping)
     [ -n "$RAW_IP4" ] && ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
     [ -n "$RAW_IP6" ] && ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
 
-    # 5. 输出结果
-    [ -n "$RAW_IP4" ] && echo -e "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]" || echo -e "IPv4 地址: \033[33m未检测到\033[0m"
-    [ -n "$RAW_IP6" ] && echo -e "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]" || echo -e "IPv6 地址: \033[33m未检测到\033[0m"
+    # 5. 输出结果展示
+    if [ -n "$RAW_IP4" ]; then
+        echo -e "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]"
+    else
+        echo -e "IPv4 地址: \033[33m未检测到\033[0m"
+    fi
 
-    # 错误处理
-    [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "无可用公网 IP"; return 1; }
+    if [ -n "$RAW_IP6" ]; then
+        echo -e "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]"
+    else
+        echo -e "IPv6 地址: \033[33m未检测到\033[0m"
+    fi
+
+    # 结果兜底提示
+    [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && info "\033[31m未发现可用的公网 IP 地址\033[0m"
+
     return 0
 }
 
