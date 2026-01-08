@@ -132,7 +132,7 @@ get_network_info() {
 
     [ -n "$RAW_IP4" ] && info "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]" || info "IPv4 地址: \033[33m未检测到\033[0m"
     [ -n "$RAW_IP6" ] && info "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]" || info "IPv6 地址: \033[33m未检测到\033[0m"
-    [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "未检测到公网 IP，退出脚本安装"; exit 1; }
+    [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "未检测到任何公网 IP，退出脚本安装。"; exit 1; }
     return 0
 }
 
