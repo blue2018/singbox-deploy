@@ -628,7 +628,7 @@ EOF
         local systemd_envs=$(printf "%s\n" "${env_list[@]}")
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
-Description=Sing-box Service
+Description=Sing-box Service (Optimized)
 After=network-online.target
 Wants=network-online.target
 
@@ -636,25 +636,24 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/etc/sing-box
-
 PrivateTmp=no
 ProtectSystem=off
 ProtectHome=no
 NoNewPrivileges=no
 ProtectKernelTunables=no
 ProtectControlGroups=no
-
-Environment=GOGC=${SBOX_GOGC:-100}
-Environment=GOMEMLIMIT=${SBOX_GOLIMIT:-128MiB}
-Environment=GOTRACEBACK=none
-Environment=GODEBUG=memprofilerate=0,madvdontneed=1
-${SBOX_GOMAXPROCS:+Environment=GOMAXPROCS=$SBOX_GOMAXPROCS}
-
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=always
 RestartSec=3
 TimeoutStopSec=10
 LimitNOFILE=1048576
+$systemd_envs
+ExecStartPre=/usr/local/bin/sb --apply-cwnd
+Nice=${VAR_SYSTEMD_NICE:-0}
+IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
+IOSchedulingPriority=0
+MemoryHigh=${SBOX_MEM_HIGH:-}
+MemoryMax=${SBOX_MEM_MAX:-}
 
 [Install]
 WantedBy=multi-user.target
@@ -754,6 +753,8 @@ SBOX_MEM_MAX='$SBOX_MEM_MAX'
 SBOX_MEM_HIGH='${SBOX_MEM_HIGH:-}'
 SBOX_GOMAXPROCS='${SBOX_GOMAXPROCS:-}'
 SBOX_OPTIMIZE_LEVEL='$SBOX_OPTIMIZE_LEVEL'
+VAR_SYSTEMD_NICE='$VAR_SYSTEMD_NICE'
+VAR_SYSTEMD_IOSCHED='$VAR_SYSTEMD_IOSCHED'
 VAR_DEF_MEM='${VAR_DEF_MEM:-212992}'
 VAR_UDP_RMEM='${VAR_UDP_RMEM:-4194304}'
 VAR_UDP_WMEM='${VAR_UDP_WMEM:-4194304}'
