@@ -41,30 +41,40 @@ copy_to_clipboard() {
     fi
 }
 
-#侦测系统类型
 detect_os() {
     if [ -f /etc/os-release ]; then
         # shellcheck disable=SC1091
         . /etc/os-release
-        OS_DISPLAY="${PRETTY_NAME:-$ID}"; ID="${ID:-}"; ID_LIKE="${ID_LIKE:-}"
+        OS_DISPLAY="${PRETTY_NAME:-$ID}"
+        ID="${ID:-}"
+        ID_LIKE="${ID_LIKE:-}"
     else
-        OS_DISPLAY="Unknown Linux"; ID="unknown"; ID_LIKE=""
+        OS_DISPLAY="Unknown Linux"
+        ID="unknown"
+        ID_LIKE=""
     fi
 
     local COMBINED="${ID} ${ID_LIKE}"
-    case "$COMBINED" in
-        *[Aa][Ll][Pp][Ii][Nn][Ee]*) OS="alpine" ;;
-        *[Dd][Ee][Bb][Ii][Aa][Nn]*|*[Uu][Bb][Uu][Nn][Tt][Uu]*) OS="debian" ;;
-        *[Cc][Ee][Nn][Tt][Oo][Ss]*|*[Rr][Hh][Ee][Ll]*|*[Ff][Ee][Dd][Oo][Rr][Aa]*|*[Rr][Oo][Cc][Kk][Yy]*|*[Aa][Ll][Mm][Aa][Ll][Ii][Nn][Uu][Xx]*) OS="redhat" ;;
-        *) OS="unknown" ;;
-    esac
+    if echo "$COMBINED" | grep -qi "alpine"; then
+        OS="alpine"
+    elif echo "$COMBINED" | grep -Ei "debian|ubuntu" >/dev/null 2>&1; then
+        OS="debian"
+    elif echo "$COMBINED" | grep -Ei "centos|rhel|fedora|rocky|almalinux" >/dev/null 2>&1; then
+        OS="redhat"
+    else
+        OS="unknown"
+    fi
 
-    case "$(uname -m)" in
+    ARCH=$(uname -m)
+    case "$ARCH" in
         x86_64) SBOX_ARCH="amd64" ;;
         aarch64) SBOX_ARCH="arm64" ;;
         armv7l) SBOX_ARCH="armv7" ;;
         i386|i686) SBOX_ARCH="386" ;;
-        *) err "不支持的架构: $(uname -m)"; exit 1 ;;
+        *)
+            err "不支持的架构: $ARCH"
+            exit 1
+            ;;
     esac
 }
 
@@ -72,72 +82,81 @@ detect_os() {
 install_dependencies() {
     info "正在检查并安装必要依赖 (curl, jq, openssl)..."
 
-    if   command -v apk >/dev/null 2>&1; then PM="apk"
-    elif command -v apt-get >/dev/null 2>&1; then PM="apt"
-    elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then PM="yum"
-    else err "未检测到支持的包管理器 (apk/apt-get/yum)，请手动安装 curl jq openssl 等依赖"; exit 1; fi
+    if command -v apk >/dev/null 2>&1; then
+        PM="apk"
+    elif command -v apt-get >/dev/null 2>&1; then
+        PM="apt"
+    elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
+        PM="yum"
+    else
+        err "未检测到支持的包管理器 (apk/apt-get/yum)，请手动安装 curl jq openssl 等依赖"
+        exit 1
+    fi
 
     case "$PM" in
         apk)
             info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
             apk update >/dev/null 2>&1 || true
-            apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates busybox-openrc iputils \
-                || { err "apk 安装依赖失败，请检查网络与仓库设置"; exit 1; }
+            apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates busybox-openrc iputils || {
+                err "apk 安装依赖失败，请检查网络与仓库设置"
+                exit 1
+            }
             ;;
         apt)
             info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -y >/dev/null 2>&1 || true
-            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping \
-                || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2"; exit 1; }
+            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping || {
+                err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2"
+                exit 1
+            }
             ;;
         yum)
             info "检测到 RHEL/CentOS 系统，正在安装依赖..."
+            # 支持 yum 与 dnf
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y curl jq openssl ca-certificates procps-ng iproute \
-                    || { err "dnf 安装依赖失败，请手动运行"; exit 1; }
+                dnf install -y curl jq openssl ca-certificates procps-ng iproute || {
+                    err "dnf 安装依赖失败，请手动运行"
+                    exit 1
+                }
             else
-                yum install -y curl jq openssl ca-certificates procps-ng iproute \
-                    || { err "yum 安装依赖失败，请手动运行"; exit 1; }
+                yum install -y curl jq openssl ca-certificates procps-ng iproute || {
+                    err "yum 安装依赖失败，请手动运行"
+                    exit 1
+                }
             fi
             ;;
     esac
 
-    command -v jq >/dev/null 2>&1 || { err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"; exit 1; }
-    succ "所需依赖已就绪"
+    command -v jq >/dev/null 2>&1 || err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错" && succ "所需依赖已就绪"
 }
 
 #获取公网IP
 get_network_info() {
-    info "获取网络信息…"
-    local v4_raw="" v6_raw="" v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m"
+    info "获取公网地址..."
+    local raw_v4="" raw_v6=""
+    local ip_tool=""; command -v ip >/dev/null && ip_tool="ip" || { command -v ifconfig >/dev/null && ip_tool="ifconfig"; }
 
-    # IPv4 获取：本地提取 -> API 1 -> API 2
-    local all_v4=$(ip -4 addr show 2>/dev/null | awk '$1 == "inet" {print $2}')
-    for addr_mask in $all_v4; do
-        local addr="${addr_mask%/*}"
-        case "$addr" in 127.*|10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|"") ;; *) v4_raw="$addr"; break ;; esac
-    done
-    [ -z "$v4_raw" ] && v4_raw=$(curl -4s --max-time 3 api.ipify.org 2>/dev/null || curl -4s --max-time 3 ifconfig.me 2>/dev/null)
+    if [ "$ip_tool" = "ip" ]; then
+        raw_v4=$(ip -4 addr show | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1 || echo "")
+        raw_v6=$(ip -6 addr show | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1 || echo "")
+    elif [ "$ip_tool" = "ifconfig" ]; then
+        raw_v4=$(ifconfig | grep 'inet ' | grep -vE '127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.' | sed 's/.*inet \([0-9.]*\).*/\1/' | head -n1 || echo "")
+        raw_v6=$(ifconfig | grep 'inet6 ' | grep -vE '::1|fe80|fd' | sed 's/.*inet6 \([0-9a-fA-F:]*\).*/\1/' | head -n1 || echo "")
+    fi
 
-    # IPv6 获取：本地提取 -> API 1 -> API 2
-    local all_v6=$(ip -6 addr show 2>/dev/null | awk '$1 == "inet6" {print $2}')
-    for addr_mask in $all_v6; do
-        local addr="${addr_mask%/*}"
-        case "$addr" in ::1|fe80:*|f[cd]00:*|"") ;; *) v6_raw="$addr"; break ;; esac
-    done
-    [ -z "$v6_raw" ] && v6_raw=$(curl -6s --max-time 3 api6.ipify.org 2>/dev/null || curl -6s --max-time 3 ifconfig.co 2>/dev/null)
+    if [ -z "$raw_v4" ]; then
+        raw_v4=$(curl -s4m3 api.ipify.org || curl -s4m3 ifconfig.me || curl -s4m3 --header "Host: api.ipify.org" 1.1.1.1/cdn-cgi/trace | grep -oE "ip=[0-9.]+" | cut -d= -f2 || echo "")
+    fi
 
-    # 物理清洗、导出与连通性测试
-    RAW_IP4=$(echo "$v4_raw" | tr -cd '0-9.' | xargs 2>/dev/null); RAW_IP6=$(echo "$v6_raw" | tr -cd 'a-fA-F0-9:' | xargs 2>/dev/null); export RAW_IP4 RAW_IP6
-    [ -n "$RAW_IP4" ] && ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
-    [ -n "$RAW_IP6" ] && ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
+    if [ -z "$raw_v6" ]; then
+        raw_v6=$(curl -s6m3 api6.ipify.org || curl -s6m3 ifconfig.co || echo "")
+    fi
 
-    # 结果输出与报错退出
-    [ -n "$RAW_IP4" ] && info "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]" || info "IPv4 地址: \033[33m未检测到\033[0m"
-    [ -n "$RAW_IP6" ] && info "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]" || info "IPv6 地址: \033[33m未检测到\033[0m"
-    [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "未检测到任何公网 IP，脚本退出。"; exit 1; }
-    return 0
+    RAW_IP4=$(echo "$raw_v4" | tr -d '[:space:]')
+    RAW_IP6=$(echo "$raw_v6" | tr -d '[:space:]')
+    [ -n "${RAW_IP4:-}" ] && echo -e "IPv4 地址: \033[32m$RAW_IP4\033[0m" || echo -e "IPv4 地址: \033[33m未检测到\033[0m"
+    [ -n "${RAW_IP6:-}" ] && echo -e "IPv6 地址: \033[32m$RAW_IP6\033[0m" || echo -e "IPv6 地址: \033[33m未检测到\033[0m"
 }
 
 # === 网络延迟探测模块 ===
@@ -192,7 +211,7 @@ probe_memory_total() {
 
 # InitCWND 专项优化模块 (取黄金分割点 15 ，比默认 10 强 50%，比 20 更隐蔽)
 apply_initcwnd_optimization() {
-    local silent="${1:-false}" route_info gw dev mtu advmss opts
+    local silent="${1:-false}" advmss opts route_info gw dev mtu
     command -v ip >/dev/null || return 0
 
     route_info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
@@ -200,88 +219,54 @@ apply_initcwnd_optimization() {
 
     gw=$(echo "$route_info" | grep -oP 'via \K[^ ]+' || true)
     dev=$(echo "$route_info" | grep -oP 'dev \K[^ ]+' || true)
-    mtu=$(echo "$route_info" | grep -oP 'mtu \K[0-9]+' || echo 1500)
-    advmss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $advmss"
+    mtu=$(echo "$route_info" | grep -oP 'mtu \K[0-9]+' || echo "1500")
+    advmss=$((mtu - 40)) && opts="initcwnd 15 initrwnd 15 advmss $advmss"
 
-    if [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"; return 0
+    if [ -n "$gw" ] && [ -n "$dev" ]; then
+        if ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
+            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"
+            return 0
+        fi
     fi
-    if [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (dev 模式 15/Advmss $advmss)"; return 0
+
+    if [ -n "$dev" ]; then
+        if ip route replace default dev "$dev" $opts 2>/dev/null; then
+            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (dev 模式 15/Advmss $advmss)"
+            return 0
+        fi
     fi
+
     if ip route change default $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (change 模式 15/Advmss $advmss)"; return 0
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (change 模式 15/Advmss $advmss)"
+        return 0
     fi
 
     [[ "$silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定或命令不支持 $opts)"
 }
 
-# sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
-apply_userspace_adaptive_profile(){
-    local lvl="${SBOX_OPTIMIZE_LEVEL:-紧凑版}"
-    local real_c=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
-    local g_procs=1 GOGC=80 wnd=4 buf=524288
-
-    # 档位映射: 旗舰(16/4M/120GC), 增强(12/2M/100GC), 紧凑(8/1M/80GC), 生存(4/0.5M/80GC)
-    [[ "$lvl" == *旗舰* ]] && { g_procs=$real_c; GOGC=120; wnd=16; buf=4194304; }
-    [[ "$lvl" == *增强* ]] && { g_procs=$real_c; GOGC=100; wnd=12; buf=2097152; }
-    [[ "$lvl" == *紧凑* ]] && { g_procs=$real_c; GOGC=80;  wnd=8;  buf=1048576; }
-    [ "$real_c" -le 1 ] && g_procs=1 # 强制单核收敛
-
-    export GOMAXPROCS="$g_procs" GOGC="$GOGC" GOMEMLIMIT="${SBOX_GOLIMIT:-64MiB}"
-    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"
-
-    # CPU 亲和力设置
-    [ "$real_c" -gt 1 ] && [[ "$lvl" != *生存* ]] && command -v taskset >/dev/null && \
-        taskset -pc 0-$((real_c - 1)) $$ >/dev/null 2>&1 || true
-        
-    info "Profile → $lvl | GOMAXPROCS=$GOMAXPROCS | QUIC_WND=$wnd"
-}
-
-# NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
-apply_nic_core_boost() {
-    local mem=$(probe_memory_total)
-    local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}') || return 0
-    local CPU_N=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || nproc)
-
-    # --- 1. 协议栈补偿优化 (无论什么虚拟化架构都生效) ---
-    local bgt=600 usc=4000
-    [ "$mem" -ge 256 ] && bgt=1000 && usc=8000
-    sysctl -w net.core.netdev_budget=$bgt net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
-
-    # --- 2. 硬件亲和性 (仅在真正具备多核加速条件时尝试) ---
-    if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
-        local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
-        for q in /sys/class/net/"$IFACE"/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
-            [ -e "$q" ] && timeout 0.5s bash -c "echo '$MASK' > '$q'" 2>/dev/null || true
-        done
-        info "NIC Boost → 已应用多核队列关联"
-    else
-        # 针对单核小鸡，我们通过增大接收队列长度来“变相优化”
-        sysctl -w net.core.netdev_max_backlog=2000 >/dev/null 2>&1 || true
-        info "NIC Boost → 单核环境，已应用 Backlog 缓冲优化"
-    fi
-}
-
 # 获取并校验端口 (范围：1025-65535)
 prompt_for_port() {
-    local p rand
+    local p
     while :; do
         read -r -p "请输入端口 [1025-65535] (回车随机生成): " p
         if [ -z "$p" ]; then
             if command -v shuf >/dev/null 2>&1; then
                 p=$(shuf -i 1025-65535 -n 1)
             elif [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
-                rand=$(od -An -N2 -tu2 /dev/urandom | tr -d ' '); p=$((1025 + rand % 64511))
+                # 64511 = 65535-1025+1
+                local rand=$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')
+                p=$((1025 + rand % 64511))
             else
                 p=$((1025 + RANDOM % 64511))
             fi
             echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $p" >&2
-            echo "$p"; return 0
+            echo "$p"
+            return 0
         fi
 
         if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1025 ] && [ "$p" -le 65535 ]; then
-            echo "$p"; return 0
+            echo "$p"
+            return 0
         else
             echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
         fi
@@ -320,12 +305,13 @@ generate_cert() {
 # ==========================================
 optimize_system() {
     # 1. 执行独立探测模块获取环境画像
-    local RTT_AVG=$(probe_network_rtt)
-    local mem_total=$(probe_memory_total)
+    local RTT_AVG
+    RTT_AVG=$(probe_network_rtt)
+    local mem_total
+    mem_total=$(probe_memory_total)
     local max_udp_mb=$((mem_total * 40 / 100))
     local max_udp_pages=$((max_udp_mb * 256))
     local swappiness_val=10 busy_poll_val=0 quic_extra_msg=""
-    local VAR_BACKLOG=2000
 
     if [[ "$OS" != "alpine" && "$mem_total" -le 600 ]]; then
         local swap_total
@@ -344,32 +330,32 @@ optimize_system() {
 
     # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="500"
+        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="120"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; VAR_DEF_MEM="327680"
-        VAR_BACKLOG=32768; swappiness_val=10; busy_poll_val=50
+        swappiness_val=10; busy_poll_val=50
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="400"
+        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; VAR_DEF_MEM="229376"
-        VAR_BACKLOG=16384; swappiness_val=10; busy_poll_val=20
+        swappiness_val=10; busy_poll_val=20
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
+        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"
-        VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
+        swappiness_val=60; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
-        SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="300"
+        SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="800"
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="100"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="65536"
-        VAR_BACKLOG=5000; swappiness_val=100; busy_poll_val=0
+        VAR_HY2_BW="90"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="98304"
+        swappiness_val=100; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
     fi
 
@@ -394,61 +380,60 @@ optimize_system() {
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
-    # 4. BBR 探测与内核锐化 (递进式锁定最强算法)
-    local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 tcp_bbr3 >/dev/null 2>&1 || true
-    local avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
+    # 4. BBR 探测与 FQ 准备
+    local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 >/dev/null 2>&1 || true
+    local avail
+    avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
 
-    # [标注] 优先采用 BBR3/BBR2 算法
-    if [[ "$avail" =~ "bbr3" ]]; then tcp_cca="bbr3"; succ "检测到 BBRv3，激活极致响应模式"
-    elif [[ "$avail" =~ "bbr2" ]]; then tcp_cca="bbr2"; succ "检测到 BBRv2，激活平衡加速模式"
-    elif [[ "$avail" =~ "bbr" ]]; then tcp_cca="bbr"; info "检测到 BBRv1，激活标准加速模式"
-    else warn "内核不支持 BBR，切换至高兼容 Cubic 模式"; fi
+    if [[ "$avail" =~ "bbr2" ]]; then
+        tcp_cca="bbr2"; succ "内核支持 BBRv3/v2 (bbr2)，已激活极致响应模式"
+    elif [[ "$avail" =~ "bbr" ]]; then
+        tcp_cca="bbr"; info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
+    else
+        warn "内核不支持 BBR，已切换至高兼容 Cubic 模式"
+    fi
 
-    if sysctl net.core.default_qdisc 2>/dev/null | grep -q "fq"; then info "FQ 调度器已就绪"; else info "准备激活 FQ 调度器..."; fi
+    if sysctl net.core.default_qdisc 2>/dev/null | grep -q "fq"; then
+        info "FQ 调度器已就绪"
+    else
+        info "准备激活 FQ 调度器..."
+    fi
 
-    # 5. 写入 Sysctl 配置到 /etc/sysctl.d/99-sing-box.conf（避免覆盖 /etc/sysctl.conf）
+    # 5. 写入 Sysctl 到 /etc/sysctl.d/99-sing-box.conf（避免覆盖 /etc/sysctl.conf）
     local SYSCTL_FILE="/etc/sysctl.d/99-sing-box.conf"
     cat > "$SYSCTL_FILE" <<SYSCTL
 # === 1. 基础转发与内存管理 ===
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
-vm.swappiness = $swappiness_val          # 交换分区权重
+vm.swappiness = $swappiness_val          # 交换分区权重 (当前档位: $swappiness_val)
 
 # === 2. 网络设备层优化 (网卡与 CPU 交互层) ===
-net.core.netdev_max_backlog = $VAR_BACKLOG # 动态队列深度防止爆发丢包
+net.core.netdev_max_backlog = 65536      # 接收队列包缓冲区上限
 net.core.dev_weight = 64                 # CPU 单次处理收包权重
+net.core.netdev_budget = 600             # 软中断收包总预算
+net.core.netdev_budget_usecs = 8000      # 收包处理耗时上限 (微秒)
 net.core.busy_read = $busy_poll_val      # 繁忙轮询 (降低数据包在内核态的等待时间)
 net.core.busy_poll = $busy_poll_val
 
 # === 3. 核心 Socket 缓冲区 (全局缓冲区限制) ===
 net.core.rmem_default = $VAR_DEF_MEM     # 默认读缓存 (字节: 约 $((VAR_DEF_MEM / 1024)) KB)
 net.core.wmem_default = $VAR_DEF_MEM     # 默认写缓存 (字节: 约 $((VAR_DEF_MEM / 1024)) KB)
-net.core.rmem_max = $VAR_UDP_RMEM        # 最大读缓存
-net.core.wmem_max = $VAR_UDP_WMEM        # 最大写缓存
+net.core.rmem_max = $VAR_UDP_RMEM        # 最大读缓存 (档位上限值)
+net.core.wmem_max = $VAR_UDP_WMEM        # 最大写缓存 (档位上限值)
 net.core.optmem_max = 1048576            # 每个 Socket 辅助内存上限 (1MB)
 
 # === 4. TCP 协议栈深度调优 (BBR 锐化相关) ===
 net.core.default_qdisc = fq              # BBR 必须配合 FQ 队列调度
-net.ipv4.tcp_congestion_control = $tcp_cca # 拥塞控制算法
-net.ipv4.tcp_no_metrics_save = 1         # 实时探测，不记忆旧 RTT 指标
+net.ipv4.tcp_congestion_control = $tcp_cca # 拥塞控制算法 (当前识别: $tcp_cca)
 net.ipv4.tcp_fastopen = 3                # 开启 TCP Fast Open (减少三次握手消耗)
 net.ipv4.tcp_slow_start_after_idle = 0   # 闲置后不进入慢启动 (保持高吞吐)
 net.ipv4.tcp_notsent_lowat = 16384       # 限制待发送数据长度，降低缓冲膨胀延迟
 net.ipv4.tcp_limit_output_bytes = 262144 # 限制单个 TCP 连接占用发送队列的大小
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
 net.ipv4.tcp_wmem = 4096 65536 $VAR_UDP_WMEM
-net.ipv4.tcp_frto = 2                    # 针对丢包环境的重传判断优化
-net.ipv4.tcp_mtu_probing = 1             # 自动探测 MTU 解决 UDP 黑洞
-net.ipv4.tcp_ecn = 1
-net.ipv4.tcp_ecn_fallback = 1
-
-# === 5. 连接复用与超时管理 (原始逻辑回归) ===
 net.ipv4.ip_no_pmtu_disc = 0             # 启用 MTU 探测 (自动寻找最优包大小，防止 Hy2 丢包)
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_max_orphans = $((mem_total * 1024))
 
-# === 6. UDP 协议栈优化 (Hysteria2 传输核心) ===
+# === 5. UDP 协议栈优化 (Hysteria2 传输核心) ===
 net.ipv4.udp_mem = $udp_mem_scale        # 全局 UDP 内存页配额 (根据 RTT 动态计算)
 net.ipv4.udp_rmem_min = 16384            # UDP Socket 最小读缓存保护
 net.ipv4.udp_wmem_min = 16384            # UDP Socket 最小写缓存保护
@@ -475,81 +460,112 @@ SYSCTL
     fi
 
     apply_initcwnd_optimization "false"
-    apply_userspace_adaptive_profile
-    apply_nic_core_boost
 }
 
 # ==========================================
 # 安装/更新 Sing-box 内核
 # ==========================================
 install_singbox() {
-    local MODE="${1:-install}" LOCAL_VER="未安装"
+    local MODE="${1:-install}"
+    local LOCAL_VER="未安装"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "未安装")
 
     info "正在连接 GitHub API 获取版本信息 (限时 23s)..."
-    local RELEASE_JSON="" LATEST_TAG="" DOWNLOAD_SOURCE="GitHub"
 
+    # 尝试通过 GitHub API 获取最新 release tag（优先）
+    local RELEASE_JSON=""
+    local LATEST_TAG=""
+    local DOWNLOAD_SOURCE="GitHub"
+
+    # 首先尝试使用 curl 获取
     RELEASE_JSON=$(curl -sL --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null || echo "")
     if [ -n "$RELEASE_JSON" ]; then
         if command -v jq >/dev/null 2>&1; then
             LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "")
         else
-            LATEST_TAG=$(echo "$RELEASE_JSON" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 \
-                | sed -E 's/.*"v([0-9]+\.[0-9]+\.[0-9]+)".*/v\1/' || echo "")
+            # jq 缺失：用宽松的 grep/sed 回退解析（可能不够严格，但作为回退）
+            LATEST_TAG=$(echo "$RELEASE_JSON" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"v([0-9]+\.[0-9]+\.[0-9]+)".*/v\1/' || echo "")
         fi
     fi
 
+    # 备用站点兜底
     if [ -z "$LATEST_TAG" ]; then
         warn "GitHub API 响应超时或解析失败，尝试备用官方镜像源..."
         DOWNLOAD_SOURCE="官方镜像"
         LATEST_TAG=$(curl -sL --max-time 15 https://sing-box.org/ 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo "")
     fi
 
+    # 本地兜底
     if [ -z "$LATEST_TAG" ]; then
         if [ "$LOCAL_VER" != "未安装" ]; then
-            warn "所有远程查询均失败，自动采用本地版本 (v$LOCAL_VER) 继续。"; return 0
+            warn "所有远程查询均失败，自动采用本地版本 (v$LOCAL_VER) 继续。"
+            return 0
         else
-            err "获取版本失败且本地无备份，请检查网络"; exit 1
+            err "获取版本失败且本地无备份，请检查网络"
+            exit 1
         fi
     fi
 
     local REMOTE_VER="${LATEST_TAG#v}"
+
     if [[ "$MODE" == "update" ]]; then
         echo -e "---------------------------------"
         echo -e "当前已装版本: \033[1;33m${LOCAL_VER}\033[0m"
         echo -e "官方最新版本: \033[1;32m${REMOTE_VER}\033[0m (源: $DOWNLOAD_SOURCE)"
         echo -e "---------------------------------"
-        [[ "$LOCAL_VER" == "$REMOTE_VER" ]] && { succ "内核已是最新版本，无需更新"; return 1; }
+        if [[ "$LOCAL_VER" == "$REMOTE_VER" ]]; then
+            succ "内核已是最新版本，无需更新"
+            return 1
+        fi
         info "发现新版本，开始下载更新..."
     fi
 
+    # 构造下载 URL（确保 LATEST_TAG 非空）
+    if [ -z "$LATEST_TAG" ]; then
+        err "无法确定最新版本标识，终止安装"
+        exit 1
+    fi
+
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
-    local TMP_D; TMP_D=$(mktemp -d) || TMP_D="/tmp/sb-tmp-$$"
+    local TMP_D
+    TMP_D=$(mktemp -d) || TMP_D="/tmp/sb-tmp-$$"
+    # 保证临时目录被清理
     trap 'rm -rf "$TMP_D" >/dev/null 2>&1 || true' EXIT
 
     info "开始下载内核 (源: $DOWNLOAD_SOURCE)..."
     if ! curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz"; then
         warn "首选链接下载失败，尝试官方直链镜像或 ghproxy 兜底..."
         URL="https://mirror.ghproxy.com/${URL}"
-        curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz" || warn "备用镜像下载也失败，将在后续使用本地版本（若存在）或退出"
+        if ! curl -fL --max-time 23 "$URL" -o "$TMP_D/sb.tar.gz"; then
+            warn "备用镜像下载也失败，将在后续使用本地版本（若存在）或退出"
+        fi
     fi
 
     if [ -f "$TMP_D/sb.tar.gz" ] && [ "$(stat -c%s "$TMP_D/sb.tar.gz" 2>/dev/null || echo 0)" -gt 1000000 ]; then
         tar -xf "$TMP_D/sb.tar.gz" -C "$TMP_D"
         pgrep sing-box >/dev/null 2>&1 && (systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true)
         if [ -d "$TMP_D"/sing-box-* ]; then
-            install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box || { err "安装二进制文件失败"; trap - EXIT; rm -rf "$TMP_D"; return 1; }
+            install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box || {
+                err "安装二进制文件失败"
+                rm -rf "$TMP_D"
+                trap - EXIT
+                return 1
+            }
         fi
-        trap - EXIT; rm -rf "$TMP_D"
+        rm -rf "$TMP_D"
+        trap - EXIT
         succ "内核安装成功: v$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "$REMOTE_VER")"
         return 0
+    else
+        rm -rf "$TMP_D"
+        trap - EXIT
+        if [ "$LOCAL_VER" != "未安装" ]; then
+            warn "下载彻底失败，保留现有本地版本继续安装"
+            return 0
+        fi
+        err "下载失败且本地无可用内核，无法继续"
+        exit 1
     fi
-
-    trap - EXIT; rm -rf "$TMP_D"
-    if [ "$LOCAL_VER" != "未安装" ]; then
-        warn "下载彻底失败，保留现有本地版本继续安装"; return 0
-    fi
-    err "下载失败且本地无可用内核，无法继续"; exit 1
 }
 
 # ==========================================
@@ -719,11 +735,10 @@ display_system_status() {
     local CWND_LBL=$([[ "${CWND_VAL:-10}" -ge 15 ]] && echo "(已优化)" || echo "(默认)")
     local bbr_display=""
     case "$current_cca" in
-        bbr3)  bbr_display="BBRv3 (极致响应)" ;;
-        bbr2)  bbr_display="BBRv2 (平衡加速)" ;;
-        bbr)   bbr_display="BBRv1 (标准加速)" ;;
-        cubic) bbr_display="Cubic (普通模式)" ;;
-        *)     bbr_display="$current_cca (非标准)" ;;
+        bbr3|bbr2) bbr_display="BBRv3/v2 (极致响应)" ;;
+        bbr)       bbr_display="BBRv1 (标准加速)" ;;
+        cubic)     bbr_display="Cubic (普通模式)" ;;
+        *)         bbr_display="$current_cca (非标准)" ;;
     esac
 
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
@@ -772,15 +787,10 @@ RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 EOF
 
-    # 需要导出的函数追加到核心脚本
+    # 将需要导出的函数以 declare -f 追加到核心脚本（只追加存在的函数）
     local funcs=(probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
-get_env_data display_links display_system_status detect_os copy_to_clipboard \
-create_config setup_service install_singbox info err warn succ optimize_system \
-# 新增必加函数，影响性能优化
-apply_userspace_adaptive_profile apply_nic_core_boost \
-# 可选新增函数（证书/备份/环境管理）
-check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
-
+               get_env_data display_links display_system_status detect_os copy_to_clipboard \
+               create_config setup_service install_singbox info err warn succ optimize_system)
     for f in "${funcs[@]}"; do
         if declare -f "$f" >/dev/null 2>&1; then
             declare -f "$f" >> "$CORE_TMP"
@@ -788,7 +798,7 @@ check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_co
         fi
     done
 
-    # 追加 main dispatch（保留原逻辑）
+    # 追加 main dispatch（保留原来逻辑）
     cat >> "$CORE_TMP" <<'EOF'
 detect_os
 if [[ "${1:-}" == "--detect-only" ]]; then
@@ -819,15 +829,18 @@ EOF
     mv "$CORE_TMP" "$SBOX_CORE"
     chmod 700 "$SBOX_CORE"
 
-    # 生成交互管理脚本 /usr/local/bin/sb
+    # 生成交互管理脚本 /usr/local/bin/sb（保持原交互逻辑）
     local SB_PATH="/usr/local/bin/sb"
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 CORE="/etc/sing-box/core_script.sh"
 if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
+
 [[ $# -gt 0 ]] && { /bin/bash "$CORE" "$@"; exit 0; }
+
 source "$CORE" --detect-only
+
 service_ctrl() {
     if [ -f /etc/init.d/sing-box ]; then rc-service sing-box $1
     else systemctl $1 sing-box; fi
