@@ -8,8 +8,8 @@ set -euo pipefail
 SBOX_ARCH="";          OS_DISPLAY="";         SBOX_CORE="/etc/sing-box/core_script.sh"
 SBOX_GOLIMIT="52MiB";  SBOX_GOGC="80";        SBOX_MEM_MAX="55M"
 SBOX_MEM_HIGH="";      SBOX_GOMAXPROCS="";    SBOX_OPTIMIZE_LEVEL="未检测"
-VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE=""
-VAR_SYSTEMD_IOSCHED="";VAR_HY2_BW="200";       RAW_SALA="";       VAR_DEF_MEM=""
+VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE="";     USER_PORT=""
+VAR_SYSTEMD_IOSCHED="";VAR_HY2_BW="200";      RAW_SALA="";             VAR_DEF_MEM=""
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
@@ -759,6 +759,7 @@ create_sb_tool() {
     cat > "$CORE_TMP" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+USER_PORT='${USER_PORT:-}'
 SBOX_CORE='$SBOX_CORE'
 SBOX_GOLIMIT='$SBOX_GOLIMIT'
 SBOX_GOGC='${SBOX_GOGC:-80}'
