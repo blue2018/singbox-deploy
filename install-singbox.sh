@@ -110,29 +110,22 @@ install_dependencies() {
 #获取公网IP
 get_network_info() {
     info "获取网络信息…"
-    local v4_raw="" v6_raw="" v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m" a line addr
+    local v4_raw="" v6_raw="" v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m"
 
-    # IPv4：正则排除内网网段
-    for a in $(ip -4 addr show 2>/dev/null | awk '$1=="inet"{print $2}'); do
-        [[ ! "${a%/*}" =~ ^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.) ]] && v4_raw="${a%/*}" && break
-    done
+    # IPv4：本地过滤内网保留地址 -> 失败则请求 API -> 清洗格式
+    v4_raw=$(ip -4 addr show scope global | awk '$1=="inet"{print $2}' | cut -d/ -f1 | grep -vE '^(10\.|127\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.|100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.)' | head -n1)
     [ -z "$v4_raw" ] && v4_raw=$(curl -4sL --max-time 3 api.ipify.org || curl -4sL --max-time 3 ifconfig.me)
+    export RAW_IP4=$(echo "${v4_raw// /}" | tr -d '[:space:]')
 
-    # IPv6：严格匹配 inet6 关键字并排除隐私/临时地址 (解决 e6 错误)
-    for line in $(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2"|"$0}'); do
-        addr="${line%%/*}"; [[ "$line" =~ "temporary" || "$line" =~ "mngtmpaddr" ]] && continue
-        [[ "$addr" =~ ^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}$ ]] && v6_raw="$addr" && break
-    done
+    # IPv6：过滤临时/链路地址 -> 失败则请求 API -> 清洗格式
+    v6_raw=$(ip -6 addr show scope global | grep -vE "temporary|mngtmpaddr|deprecated" | awk '{print $2}' | cut -d/ -f1 | grep -vE "^(::1|fe80|fc00|fd00)" | head -n1)
     [ -z "$v6_raw" ] && v6_raw=$(curl -6sL --max-time 3 api6.ipify.org || curl -6sL --max-time 3 ifconfig.co)
+    export RAW_IP6=$(echo "${v6_raw// /}" | tr -d '[:space:]')
 
-    # 清洗与连通性测试
-    export RAW_IP4=$(echo "$v4_raw" | tr -d '[:space:]') RAW_IP6=$(echo "$v6_raw" | tr -d '[:space:]')
-    [[ -z "$RAW_IP4" && -z "$RAW_IP6" ]] && { err "未检测到公网IP，退出脚本安装"; exit 1; }
-    [ -n "$RAW_IP4" ] && ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
-    [ -n "$RAW_IP6" ] && ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
-
-    [ -n "$RAW_IP4" ] && info "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]" || info "IPv4 地址: \033[33m未检测到\033[0m"
-    [ -n "$RAW_IP6" ] && info "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]" || info "IPv6 地址: \033[33m未检测到\033[0m"
+    # 连通性与结果输出
+    [[ -z "$RAW_IP4" && -z "$RAW_IP6" ]] && { err "未检测到公网IP，退出"; exit 1; }
+    [ -n "$RAW_IP4" ] && { ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"; info "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]"; } || info "IPv4 地址: \033[33m未检测到\033[0m"
+    [ -n "$RAW_IP6" ] && { ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"; info "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]"; } || info "IPv6 地址: \033[33m未检测到\033[0m"
 }
 
 # === 网络延迟探测模块 ===
