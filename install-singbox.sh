@@ -876,7 +876,6 @@ EOF
 
     chmod +x "$SB_PATH"
     ln -sf "$SB_PATH" "/usr/local/bin/SB" 2>/dev/null || true
-    info "脚本部署完毕，输入 'sb' 或 'SB' 管理"
 }
 
 # ==========================================
