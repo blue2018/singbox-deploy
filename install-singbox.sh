@@ -639,8 +639,6 @@ WorkingDirectory=/etc/sing-box
 $systemd_envs
 ExecStartPre=-$SBOX_CORE --apply-cwnd
 Nice=${VAR_SYSTEMD_NICE:-0}
-IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
-IOSchedulingPriority=0
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
 RestartSec=5s
