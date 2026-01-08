@@ -70,7 +70,7 @@ detect_os() {
 
 # 依赖安装 (容错增强版)
 install_dependencies() {
-    info "正在检查并安装必要依赖 (curl, jq, openssl)..."
+    info "正在检查并安装必要依赖 (curl, jq, openssl, iptables)..."
 
     if   command -v apk >/dev/null 2>&1; then PM="apk"
     elif command -v apt-get >/dev/null 2>&1; then PM="apt"
@@ -88,16 +88,16 @@ install_dependencies() {
             info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -y >/dev/null 2>&1 || true
-            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping \
-                || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2"; exit 1; }
+            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping iptables kmod findutils \
+                || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2 iptables"; exit 1; }
             ;;
         yum)
             info "检测到 RHEL/CentOS 系统，正在安装依赖..."
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y curl jq openssl ca-certificates procps-ng iproute \
+                dnf install -y curl jq openssl ca-certificates procps-ng iproute iptables \
                     || { err "dnf 安装依赖失败，请手动运行"; exit 1; }
             else
-                yum install -y curl jq openssl ca-certificates procps-ng iproute \
+                yum install -y curl jq openssl ca-certificates procps-ng iproute iptables \
                     || { err "yum 安装依赖失败，请手动运行"; exit 1; }
             fi
             ;;
@@ -470,6 +470,8 @@ SYSCTL
     apply_initcwnd_optimization "false"
     apply_userspace_adaptive_profile
     apply_nic_core_boost
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
 }
 
 # ==========================================
@@ -637,13 +639,18 @@ Type=simple
 User=root
 WorkingDirectory=/etc/sing-box
 $systemd_envs
-ExecStartPre=/usr/local/bin/sb --apply-cwnd
+
+ExecStartPre=-/usr/sbin/iptables -t nat -A POSTROUTING -j MASQUERADE
+ExecStartPre=-/usr/sbin/iptables -I INPUT -p udp --dport $PORT_HY2 -j ACCEPT
+ExecStartPre=-$SBOX_CORE --apply-cwnd
+
 Nice=${VAR_SYSTEMD_NICE:-0}
 IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
 IOSchedulingPriority=0
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
+
 Restart=on-failure
-RestartSec=5s
+RestartSec=3s
 MemoryHigh=${SBOX_MEM_HIGH:-}
 MemoryMax=${SBOX_MEM_MAX:-}
 LimitNOFILE=1000000
