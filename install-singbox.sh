@@ -111,21 +111,21 @@ install_dependencies() {
 get_network_info() {
     info "获取网络信息…"
     local v4 v6 v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m"
-    
-    # 兼容性获取 IPv4：过滤私有/保留网段
-    v4=$(ip -4 addr show scope global | awk '$1=="inet"{print $2}' | cut -d/ -f1 | grep -vE '^(10\.|127\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.|100\.)' | head -n1)
+
+    # IPv4: 排除内网及保留地址 (兼容 BusyBox awk)
+    v4=$(ip -4 addr show scope global 2>/dev/null | awk '$1=="inet"{print $2}' | cut -d/ -f1 | grep -vE '^(10\.|127\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|169\.254\.|100\.)' | head -n1)
     [ -z "$v4" ] && v4=$(curl -4sL --max-time 3 api.ipify.org || curl -4sL --max-time 3 ifconfig.me)
     export RAW_IP4=$(echo "$v4" | tr -d '[:space:]')
 
-    # 兼容性获取 IPv6：排除临时、链路及内网地址
-    v6=$(ip -6 addr show scope global 2>/dev/null | grep -vE "temporary|mngtmpaddr|deprecated" | awk '$1=="inet6"{print $2}' | cut -d/ -f1 | grep -ivE '^(::1|fe80|fc00|fd00)' | head -n1)
+    # IPv6: 排除临时地址与本地链路 (兼容 BusyBox/Gnu)
+    v6=$(ip -6 addr show scope global 2>/dev/null | grep -ivE "temporary|mngtmpaddr|deprecated" | awk '$1=="inet6"{print $2}' | cut -d/ -f1 | grep -ivE '^(::1|fe80|fc00|fd00)' | head -n1)
     [ -z "$v6" ] && v6=$(curl -6sL --max-time 3 api6.ipify.org || curl -6sL --max-time 3 ifconfig.co)
     export RAW_IP6=$(echo "$v6" | tr -d '[:space:]' | sed 's/"//g')
 
     # 报错退出机制
-    [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "未检测到公网IP，退出脚本"; exit 1; }
+    [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "未检测到公网IP"; exit 1; }
 
-    # 连通性测试 (使用更加通用的逻辑判断)
+    # 结果输出与连通性测试 (单行压缩)
     [ -n "$RAW_IP4" ] && { ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"; info "IPv4: \033[32m$RAW_IP4\033[0m [$v4_ok]"; } || info "IPv4: \033[33m未检测到\033[0m"
     [ -n "$RAW_IP6" ] && { ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"; info "IPv6: \033[32m$RAW_IP6\033[0m [$v6_ok]"; } || info "IPv6: \033[33m未检测到\033[0m"
 }
