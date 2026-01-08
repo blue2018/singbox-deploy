@@ -445,8 +445,8 @@ net.ipv4.tcp_max_orphans = $((mem_total * 1024))
 net.ipv4.udp_mem = $udp_mem_scale        # 全局 UDP 内存页配额 (根据 RTT 动态计算)
 net.ipv4.udp_rmem_min = 16384            # UDP Socket 最小读缓存保护
 net.ipv4.udp_wmem_min = 16384            # UDP Socket 最小写缓存保护
-SYSCTL
 
+SYSCTL
     # 兼容地加载 sysctl（优先 sysctl --system，其次回退）
     if command -v sysctl >/dev/null 2>&1 && sysctl --system >/dev/null 2>&1; then
         true
