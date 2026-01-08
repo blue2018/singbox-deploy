@@ -112,21 +112,21 @@ get_network_info() {
     info "获取网络信息…"
     local v4_raw="" v6_raw="" v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m" a line addr
 
-    # IPv4 获取：正则匹配排除内网网段
+    # IPv4：正则排除内网网段
     for a in $(ip -4 addr show 2>/dev/null | awk '$1=="inet"{print $2}'); do
         [[ ! "${a%/*}" =~ ^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.) ]] && v4_raw="${a%/*}" && break
     done
     [ -z "$v4_raw" ] && v4_raw=$(curl -4sL --max-time 3 api.ipify.org || curl -4sL --max-time 3 ifconfig.me)
 
-    # IPv6 获取：排除临时地址 (Privacy Extensions)
-    for line in $(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2"|"$0}'); do
+    # IPv6：严格匹配 inet6 关键字并排除隐私/临时地址 (解决 e6 错误)
+    for line in $(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2"|"$0}'); do
         addr="${line%%/*}"; [[ "$line" =~ "temporary" || "$line" =~ "mngtmpaddr" ]] && continue
-        [[ ! "$addr" =~ ^(::1|fe80|fd|fc) ]] && v6_raw="$addr" && break
+        [[ "$addr" =~ ^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}$ ]] && v6_raw="$addr" && break
     done
     [ -z "$v6_raw" ] && v6_raw=$(curl -6sL --max-time 3 api6.ipify.org || curl -6sL --max-time 3 ifconfig.co)
 
-    # 变量清洗、环境导出与连通性测试
-    export RAW_IP4=$(echo "$v4_raw" | tr -cd '0-9.' | xargs 2>/dev/null) RAW_IP6=$(echo "$v6_raw" | tr -cd 'a-fA-F0-9:' | xargs 2>/dev/null)
+    # 清洗与连通性测试
+    export RAW_IP4=$(echo "$v4_raw" | tr -d '[:space:]') RAW_IP6=$(echo "$v6_raw" | tr -d '[:space:]')
     [ -n "$RAW_IP4" ] && ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
     [ -n "$RAW_IP6" ] && ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
 
