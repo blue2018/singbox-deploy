@@ -729,20 +729,20 @@ display_system_status() {
 # 管理脚本生成 (固化优化变量)
 # ==========================================
 # ==========================================
-# 管理脚本生成 (修正版：适配小鸡/Debian防火墙)
+# 管理脚本生成 (最终全能修正版)
 # ==========================================
 create_sb_tool() {
     mkdir -p /etc/sing-box
     local FINAL_SALA
     FINAL_SALA=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
 
-    # 写入固化变量
+    # 1. 生成核心逻辑脚本
     local CORE_TMP
     CORE_TMP=$(mktemp) || CORE_TMP="/tmp/core_script_$$.sh"
 
     cat > "$CORE_TMP" <<EOF
 #!/usr/bin/env bash
-# [关键修改1] 移除 -e，防止小鸡因权限报错导致脚本中断
+# [关键] 移除 set -e，改为 set -u，防止虚拟化小鸡因权限不足报错直接退出
 set -uo pipefail 
 SBOX_CORE='$SBOX_CORE'
 SBOX_GOLIMIT='$SBOX_GOLIMIT'
@@ -765,7 +765,7 @@ RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 EOF
 
-    # 导出函数
+    # 2. 导出依赖函数
     local funcs=(probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
 get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
@@ -779,11 +779,35 @@ check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_co
         fi
     done
 
-    # 追加核心逻辑 (包含针对 Debian 的修复)
+    # 3. 追加主控逻辑 (包含防火墙全家桶)
     cat >> "$CORE_TMP" <<'EOF'
 detect_os
-# [关键修改2] 增加 set +e 确保在虚拟化环境下容错
-set +e 
+set +e # [关键] 再次确保运行时容错
+
+# 防火墙暴力放行函数 (同时尝试 UFW/Firewalld/Iptables)
+open_port_force() {
+    local p="$1"
+    # UFW (Ubuntu/Debian)
+    if command -v ufw >/dev/null 2>&1; then ufw allow "$p"/udp >/dev/null 2>&1 || true; fi
+    # FirewallD (CentOS/RHEL)
+    if command -v firewall-cmd >/dev/null 2>&1; then 
+        firewall-cmd --add-port="$p"/udp --permanent >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
+    # Iptables (通用兜底，插到最前)
+    if command -v iptables >/dev/null 2>&1; then 
+        iptables -I INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
+    fi
+}
+
+service_restart_force() {
+    if [ -f /etc/init.d/sing-box ]; then 
+        rc-service sing-box restart >/dev/null 2>&1 || true
+    else 
+        systemctl restart sing-box >/dev/null 2>&1 || true
+    fi
+    sleep 2 # 给服务一点启动时间
+}
 
 if [[ "${1:-}" == "--detect-only" ]]; then
     :
@@ -793,22 +817,19 @@ elif [[ "${1:-}" == "--show-only" ]]; then
     display_system_status
     display_links
 elif [[ "${1:-}" == "--reset-port" ]]; then
-    optimize_system
-    create_config "$2"
-    
-    # [关键修改3] 强制放行UDP，并加上 '|| true' 确保即使报错也不中断
-    if command -v iptables >/dev/null 2>&1; then
-        iptables -I INPUT -p udp --dport "$2" -j ACCEPT >/dev/null 2>&1 || true
-    fi
-    
-    setup_service
+    optimize_system # 重新应用系统优化
+    create_config "$2" # 生成新配置
+    open_port_force "$2" # [修改点] 调用全能防火墙放行
+    setup_service # 刷新服务文件
+    service_restart_force # [修改点] 强制重启
     get_env_data
     display_links
 elif [[ "${1:-}" == "--update-kernel" ]]; then
     if install_singbox "update"; then
         optimize_system
         setup_service
-        echo -e "\033[1;32m[OK]\033[0m 内核已更新"
+        service_restart_force # [修改点] 更新后强制重启
+        echo -e "\033[1;32m[OK]\033[0m 内核已更新并重启"
     fi
 elif [[ "${1:-}" == "--apply-cwnd" ]]; then
     apply_initcwnd_optimization "true" || true
@@ -818,7 +839,7 @@ EOF
     mv "$CORE_TMP" "$SBOX_CORE"
     chmod 700 "$SBOX_CORE"
 
-    # 生成 sb 命令
+    # 4. 生成 sb 交互菜单
     local SB_PATH="/usr/local/bin/sb"
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
