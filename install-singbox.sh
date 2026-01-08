@@ -676,9 +676,8 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reexec && systemctl daemon-reload && systemctl restart sing-box && systemctl status sing-box --no-pager --lines=0 | sed 's/^/ * /'
+systemctl daemon-reexec && systemctl daemon-reload && systemctl enable sing-box --now
 sleep 1
-
 if systemctl is-active --quiet sing-box; then
     local pid rss
     pid=$(systemctl show -p MainPID --value sing-box)
