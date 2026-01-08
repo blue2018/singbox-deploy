@@ -482,7 +482,7 @@ SYSCTL
     sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
     # 针对某些 Debian 环境，手动放行一次 IPTABLES 规则（非 NAT 伪装，仅端口）
     if command -v iptables >/dev/null 2>&1; then
-        iptables -I INPUT -p udp --dport "${USER_PORT:-$PORT_HY2}" -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p udp --dport "$USER_PORT" -j ACCEPT 2>/dev/null || true
     fi
 }
 
@@ -653,7 +653,7 @@ WorkingDirectory=/etc/sing-box
 $systemd_envs
 
 ExecStartPre=-/usr/sbin/iptables -t nat -A POSTROUTING -j MASQUERADE
-ExecStartPre=-/usr/sbin/iptables -I INPUT -p udp --dport ${PORT_HY2:-$USER_PORT} -j ACCEPT
+ExecStartPre=-/usr/sbin/iptables -I INPUT -p udp --dport $USER_PORT -j ACCEPT
 ExecStartPre=-$SBOX_CORE --apply-cwnd
 
 Nice=${VAR_SYSTEMD_NICE:-0}
