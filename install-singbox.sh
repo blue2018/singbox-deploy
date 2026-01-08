@@ -726,23 +726,19 @@ display_system_status() {
 }
 
 # ==========================================
-# 管理脚本生成 (固化优化变量)
-# ==========================================
-# ==========================================
-# 管理脚本生成 (最终全能修正版)
+# 管理脚本生成 (最终固化放行版)
 # ==========================================
 create_sb_tool() {
     mkdir -p /etc/sing-box
     local FINAL_SALA
     FINAL_SALA=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
 
-    # 1. 生成核心逻辑脚本
+    # 1. 写入固化变量
     local CORE_TMP
     CORE_TMP=$(mktemp) || CORE_TMP="/tmp/core_script_$$.sh"
 
     cat > "$CORE_TMP" <<EOF
 #!/usr/bin/env bash
-# [关键] 移除 set -e，改为 set -u，防止虚拟化小鸡因权限不足报错直接退出
 set -uo pipefail 
 SBOX_CORE='$SBOX_CORE'
 SBOX_GOLIMIT='$SBOX_GOLIMIT'
@@ -765,7 +761,7 @@ RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 EOF
 
-    # 2. 导出依赖函数
+    # 2. 导出函数
     local funcs=(probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
 get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
@@ -779,34 +775,20 @@ check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_co
         fi
     done
 
-    # 3. 追加主控逻辑 (包含防火墙全家桶)
+    # 3. 追加核心逻辑 (含自动防火墙放行)
     cat >> "$CORE_TMP" <<'EOF'
 detect_os
-set +e # [关键] 再次确保运行时容错
+set +e
 
-# 防火墙暴力放行函数 (同时尝试 UFW/Firewalld/Iptables)
-open_port_force() {
-    local p="$1"
-    # UFW (Ubuntu/Debian)
-    if command -v ufw >/dev/null 2>&1; then ufw allow "$p"/udp >/dev/null 2>&1 || true; fi
-    # FirewallD (CentOS/RHEL)
-    if command -v firewall-cmd >/dev/null 2>&1; then 
-        firewall-cmd --add-port="$p"/udp --permanent >/dev/null 2>&1 || true
-        firewall-cmd --reload >/dev/null 2>&1 || true
+# 自动从配置提取端口并放行
+apply_firewall() {
+    local port
+    port=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
+    if [[ -n "$port" ]]; then
+        [[ -x "$(command -v ufw)" ]] && ufw allow "$port"/udp >/dev/null 2>&1 || true
+        [[ -x "$(command -v firewall-cmd)" ]] && { firewall-cmd --add-port="$port"/udp --permanent >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1; } || true
+        [[ -x "$(command -v iptables)" ]] && iptables -I INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
     fi
-    # Iptables (通用兜底，插到最前)
-    if command -v iptables >/dev/null 2>&1; then 
-        iptables -I INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
-    fi
-}
-
-service_restart_force() {
-    if [ -f /etc/init.d/sing-box ]; then 
-        rc-service sing-box restart >/dev/null 2>&1 || true
-    else 
-        systemctl restart sing-box >/dev/null 2>&1 || true
-    fi
-    sleep 2 # 给服务一点启动时间
 }
 
 if [[ "${1:-}" == "--detect-only" ]]; then
@@ -817,29 +799,31 @@ elif [[ "${1:-}" == "--show-only" ]]; then
     display_system_status
     display_links
 elif [[ "${1:-}" == "--reset-port" ]]; then
-    optimize_system # 重新应用系统优化
-    create_config "$2" # 生成新配置
-    open_port_force "$2" # [修改点] 调用全能防火墙放行
-    setup_service # 刷新服务文件
-    service_restart_force # [修改点] 强制重启
+    optimize_system
+    create_config "$2"
+    apply_firewall
+    setup_service
+    systemctl restart sing-box >/dev/null 2>&1 || rc-service sing-box restart >/dev/null 2>&1 || true
     get_env_data
     display_links
 elif [[ "${1:-}" == "--update-kernel" ]]; then
     if install_singbox "update"; then
         optimize_system
         setup_service
-        service_restart_force # [修改点] 更新后强制重启
-        echo -e "\033[1;32m[OK]\033[0m 内核已更新并重启"
+        apply_firewall
+        systemctl restart sing-box >/dev/null 2>&1 || rc-service sing-box restart >/dev/null 2>&1 || true
+        echo -e "\033[1;32m[OK]\033[0m 内核已更新并应用防火墙规则"
     fi
 elif [[ "${1:-}" == "--apply-cwnd" ]]; then
     apply_initcwnd_optimization "true" || true
+    apply_firewall # 确保每次系统启动调用此脚本时都会重新放行端口
 fi
 EOF
 
     mv "$CORE_TMP" "$SBOX_CORE"
     chmod 700 "$SBOX_CORE"
 
-    # 4. 生成 sb 交互菜单
+    # 4. 生成交互管理脚本 /usr/local/bin/sb (修改选项2和5)
     local SB_PATH="/usr/local/bin/sb"
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
@@ -848,7 +832,10 @@ CORE="/etc/sing-box/core_script.sh"
 if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
 [[ $# -gt 0 ]] && { /bin/bash "$CORE" "$@"; exit 0; }
 source "$CORE" --detect-only
+
 service_ctrl() {
+    # 每次启动/重启前调用核心脚本中的防火墙放行逻辑
+    /bin/bash "$CORE" --apply-cwnd >/dev/null 2>&1 || true
     if [ -f /etc/init.d/sing-box ]; then rc-service sing-box $1
     else systemctl $1 sing-box; fi
 }
@@ -872,15 +859,18 @@ while true; do
     case "$opt" in
         1) source "$CORE" --show-only; read -r -p $'\n按回车键返回菜单...' ;;
         2) f="/etc/sing-box/config.json"; old=$(md5sum $f 2>/dev/null)
-           vi $f; [ "$old" != "$(md5sum $f 2>/dev/null)" ] && \
-           { service_ctrl restart; echo -e "\n\033[1;32m[OK]\033[0m 配置变更，已重启服务"; } || \
-           echo -e "\n\033[1;33m[INFO]\033[0m 配置未作变更"; read -r -p $'\n按回车键返回菜单...' ;;
+           vi $f; if [ "$old" != "$(md5sum $f 2>/dev/null)" ]; then
+               service_ctrl restart
+               echo -e "\n\033[1;32m[OK]\033[0m 配置已存且防火墙规则已同步，服务重启完毕"
+           else
+               echo -e "\n\033[1;33m[INFO]\033[0m 配置未作变更"
+           fi
+           read -r -p $'\n按回车键返回菜单...' ;;
         3) source "$CORE" --reset-port "$(prompt_for_port)"; read -r -p $'\n按回车键返回菜单...' ;;
         4) source "$CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
-        5) service_ctrl restart && info "服务已重启"; read -r -p $'\n按回车键返回菜单...' ;;
+        5) service_ctrl restart && info "防火墙规则已刷新，服务已重启"; read -r -p $'\n按回车键返回菜单...' ;;
         6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
            if [[ "${cf,,}" == "y" ]]; then
-               info "正在执行深度卸载..."
                service_ctrl stop >/dev/null 2>&1 || true
                [ -f /etc/init.d/sing-box ] && rc-update del sing-box >/dev/null 2>&1 || true
                printf "net.ipv4.ip_forward=1\nvm.swappiness=60\n" > /etc/sysctl.conf
@@ -888,13 +878,13 @@ while true; do
                [ -f /swapfile ] && { swapoff /swapfile 2>/dev/null || true; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; }
                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
                       /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-               succ "卸载完成"; exit 0
-           fi
-           info "操作取消" ;;
+               echo "卸载完成"; exit 0
+           fi ;;
         0) exit 0 ;;
     esac
 done
 EOF
+
     chmod +x "$SB_PATH"
     ln -sf "$SB_PATH" "/usr/local/bin/SB" 2>/dev/null || true
 }
