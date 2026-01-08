@@ -401,7 +401,7 @@ optimize_system() {
     # [标注] 优先采用 BBR3/BBR2 算法
     if [[ "$avail" =~ "bbr3" ]]; then tcp_cca="bbr3"; succ "检测到 BBRv3，激活极致响应模式"
     elif [[ "$avail" =~ "bbr2" ]]; then tcp_cca="bbr2"; succ "检测到 BBRv2，激活平衡加速模式"
-    elif [[ "$avail" =~ "bbr" ]]; then tcp_cca="bbr"; info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
+    elif [[ "$avail" =~ "bbr" ]]; then tcp_cca="bbr"; info "检测到 BBRv1，激活标准加速模式"
     else warn "内核不支持 BBR，切换至高兼容 Cubic 模式"; fi
 
     if sysctl net.core.default_qdisc 2>/dev/null | grep -q "fq"; then info "FQ 调度器已就绪"; else info "准备激活 FQ 调度器..."; fi
@@ -719,10 +719,11 @@ display_system_status() {
     local CWND_LBL=$([[ "${CWND_VAL:-10}" -ge 15 ]] && echo "(已优化)" || echo "(默认)")
     local bbr_display=""
     case "$current_cca" in
-        bbr3|bbr2) bbr_display="BBRv3/v2 (极致响应)" ;;
-        bbr)       bbr_display="BBRv1 (标准加速)" ;;
-        cubic)     bbr_display="Cubic (普通模式)" ;;
-        *)         bbr_display="$current_cca (非标准)" ;;
+        bbr3)  bbr_display="BBRv3 (极致响应)" ;;
+        bbr2)  bbr_display="BBRv2 (平衡加速)" ;;
+        bbr)   bbr_display="BBRv1 (标准加速)" ;;
+        cubic) bbr_display="Cubic (普通模式)" ;;
+        *)     bbr_display="$current_cca (非标准)" ;;
     esac
 
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
