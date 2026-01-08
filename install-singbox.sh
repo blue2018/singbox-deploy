@@ -728,18 +728,22 @@ display_system_status() {
 # ==========================================
 # 管理脚本生成 (固化优化变量)
 # ==========================================
+# ==========================================
+# 管理脚本生成 (修正版：适配小鸡/Debian防火墙)
+# ==========================================
 create_sb_tool() {
     mkdir -p /etc/sing-box
     local FINAL_SALA
     FINAL_SALA=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
 
-    # 写入固化变量到核心脚本
+    # 写入固化变量
     local CORE_TMP
     CORE_TMP=$(mktemp) || CORE_TMP="/tmp/core_script_$$.sh"
 
     cat > "$CORE_TMP" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
+# [关键修改1] 移除 -e，防止小鸡因权限报错导致脚本中断
+set -uo pipefail 
 SBOX_CORE='$SBOX_CORE'
 SBOX_GOLIMIT='$SBOX_GOLIMIT'
 SBOX_GOGC='${SBOX_GOGC:-80}'
@@ -761,13 +765,11 @@ RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 EOF
 
-    # 需要导出的函数追加到核心脚本
+    # 导出函数
     local funcs=(probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
 get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
-# 新增必加函数，影响性能优化
 apply_userspace_adaptive_profile apply_nic_core_boost \
-# 可选新增函数（证书/备份/环境管理）
 check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
 
     for f in "${funcs[@]}"; do
@@ -777,9 +779,12 @@ check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_co
         fi
     done
 
-    # 追加 main dispatch（保留原逻辑）
+    # 追加核心逻辑 (包含针对 Debian 的修复)
     cat >> "$CORE_TMP" <<'EOF'
 detect_os
+# [关键修改2] 增加 set +e 确保在虚拟化环境下容错
+set +e 
+
 if [[ "${1:-}" == "--detect-only" ]]; then
     :
 elif [[ "${1:-}" == "--show-only" ]]; then
@@ -790,7 +795,12 @@ elif [[ "${1:-}" == "--show-only" ]]; then
 elif [[ "${1:-}" == "--reset-port" ]]; then
     optimize_system
     create_config "$2"
-    iptables -I INPUT -p udp --dport "$2" -j ACCEPT 2>/dev/null
+    
+    # [关键修改3] 强制放行UDP，并加上 '|| true' 确保即使报错也不中断
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -I INPUT -p udp --dport "$2" -j ACCEPT >/dev/null 2>&1 || true
+    fi
+    
     setup_service
     get_env_data
     display_links
@@ -805,15 +815,14 @@ elif [[ "${1:-}" == "--apply-cwnd" ]]; then
 fi
 EOF
 
-    # 移动到目标位置并设置权限
     mv "$CORE_TMP" "$SBOX_CORE"
     chmod 700 "$SBOX_CORE"
 
-    # 生成交互管理脚本 /usr/local/bin/sb
+    # 生成 sb 命令
     local SB_PATH="/usr/local/bin/sb"
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 CORE="/etc/sing-box/core_script.sh"
 if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
 [[ $# -gt 0 ]] && { /bin/bash "$CORE" "$@"; exit 0; }
@@ -850,23 +859,21 @@ while true; do
         5) service_ctrl restart && info "服务已重启"; read -r -p $'\n按回车键返回菜单...' ;;
         6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
            if [[ "${cf,,}" == "y" ]]; then
-               info "正在执行深度卸载与内核恢复..."
+               info "正在执行深度卸载..."
                service_ctrl stop >/dev/null 2>&1 || true
                [ -f /etc/init.d/sing-box ] && rc-update del sing-box >/dev/null 2>&1 || true
-               info "重置系统参数与清理冗余..."
-               printf "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\nvm.swappiness=60\n" > /etc/sysctl.conf
+               printf "net.ipv4.ip_forward=1\nvm.swappiness=60\n" > /etc/sysctl.conf
                sysctl -p >/dev/null 2>&1 || true
                [ -f /swapfile ] && { swapoff /swapfile 2>/dev/null || true; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; }
                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
                       /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-               succ "深度卸载完成，系统环境已净化"; exit 0
+               succ "卸载完成"; exit 0
            fi
-           info "卸载操作已取消" ;;
+           info "操作取消" ;;
         0) exit 0 ;;
     esac
 done
 EOF
-
     chmod +x "$SB_PATH"
     ln -sf "$SB_PATH" "/usr/local/bin/SB" 2>/dev/null || true
 }
