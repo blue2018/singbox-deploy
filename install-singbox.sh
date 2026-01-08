@@ -325,6 +325,7 @@ optimize_system() {
     local max_udp_mb=$((mem_total * 40 / 100))
     local max_udp_pages=$((max_udp_mb * 256))
     local swappiness_val=10 busy_poll_val=0 quic_extra_msg=""
+    local VAR_BACKLOG=2000
 
     if [[ "$OS" != "alpine" && "$mem_total" -le 600 ]]; then
         local swap_total
@@ -343,32 +344,32 @@ optimize_system() {
 
     # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="120"
+        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="500"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; VAR_DEF_MEM="327680"
-        swappiness_val=10; busy_poll_val=50
+        VAR_BACKLOG=32768; swappiness_val=10; busy_poll_val=50
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="100"
+        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="400"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; VAR_DEF_MEM="229376"
-        swappiness_val=10; busy_poll_val=20
+        VAR_BACKLOG=16384; swappiness_val=10; busy_poll_val=20
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="800"
+        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"
-        swappiness_val=60; busy_poll_val=0
+        VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
-        SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="800"
+        SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="300"
         VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
         VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="100"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="98304"
-        swappiness_val=100; busy_poll_val=0
+        VAR_HY2_BW="100"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="65536"
+        VAR_BACKLOG=4000; swappiness_val=100; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
     fi
 
@@ -393,35 +394,28 @@ optimize_system() {
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
-    # 4. BBR 探测与 FQ 准备
-    local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 >/dev/null 2>&1 || true
-    local avail
-    avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
+    # 4. BBR 探测与内核锐化 (递进式锁定最强算法)
+    local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 tcp_bbr3 >/dev/null 2>&1 || true
+    local avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
 
-    if [[ "$avail" =~ "bbr2" ]]; then
-        tcp_cca="bbr2"; succ "内核支持 BBRv3/v2 (bbr2)，已激活极致响应模式"
-    elif [[ "$avail" =~ "bbr" ]]; then
-        tcp_cca="bbr"; info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
-    else
-        warn "内核不支持 BBR，已切换至高兼容 Cubic 模式"
-    fi
+    # [标注] 优先采用 BBR3/BBR2 算法
+    if [[ "$avail" =~ "bbr3" ]]; then tcp_cca="bbr3"; succ "检测到 BBRv3，激活极致响应模式"
+    elif [[ "$avail" =~ "bbr2" ]]; then tcp_cca="bbr2"; succ "检测到 BBRv2，激活平衡加速模式"
+    elif [[ "$avail" =~ "bbr" ]]; then tcp_cca="bbr"; info "内核支持标准 BBR，已执行 BBR 锐化 (FQ Pacing)"
+    else warn "内核不支持 BBR，切换至高兼容 Cubic 模式"; fi
 
-    if sysctl net.core.default_qdisc 2>/dev/null | grep -q "fq"; then
-        info "FQ 调度器已就绪"
-    else
-        info "准备激活 FQ 调度器..."
-    fi
+    if sysctl net.core.default_qdisc 2>/dev/null | grep -q "fq"; then info "FQ 调度器已就绪"; else info "准备激活 FQ 调度器..."; fi
 
-    # 5. 写入 Sysctl 到 /etc/sysctl.d/99-sing-box.conf（避免覆盖 /etc/sysctl.conf）
+    # 5. 写入 Sysctl 配置到 /etc/sysctl.d/99-sing-box.conf（避免覆盖 /etc/sysctl.conf）
     local SYSCTL_FILE="/etc/sysctl.d/99-sing-box.conf"
     cat > "$SYSCTL_FILE" <<SYSCTL
 # === 1. 基础转发与内存管理 ===
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
-vm.swappiness = $swappiness_val          # 交换分区权重 (当前档位: $swappiness_val)
+vm.swappiness = $swappiness_val          # 交换分区权重
 
 # === 2. 网络设备层优化 (网卡与 CPU 交互层) ===
-net.core.netdev_max_backlog = 65536      # 接收队列包缓冲区上限
+net.core.netdev_max_backlog = $VAR_BACKLOG # 动态队列深度防止爆发丢包
 net.core.dev_weight = 64                 # CPU 单次处理收包权重
 net.core.busy_read = $busy_poll_val      # 繁忙轮询 (降低数据包在内核态的等待时间)
 net.core.busy_poll = $busy_poll_val
@@ -429,27 +423,32 @@ net.core.busy_poll = $busy_poll_val
 # === 3. 核心 Socket 缓冲区 (全局缓冲区限制) ===
 net.core.rmem_default = $VAR_DEF_MEM     # 默认读缓存 (字节: 约 $((VAR_DEF_MEM / 1024)) KB)
 net.core.wmem_default = $VAR_DEF_MEM     # 默认写缓存 (字节: 约 $((VAR_DEF_MEM / 1024)) KB)
-net.core.rmem_max = $VAR_UDP_RMEM        # 最大读缓存 (档位上限值)
-net.core.wmem_max = $VAR_UDP_WMEM        # 最大写缓存 (档位上限值)
+net.core.rmem_max = $VAR_UDP_RMEM        # 最大读缓存
+net.core.wmem_max = $VAR_UDP_WMEM        # 最大写缓存
 net.core.optmem_max = 1048576            # 每个 Socket 辅助内存上限 (1MB)
 
 # === 4. TCP 协议栈深度调优 (BBR 锐化相关) ===
 net.core.default_qdisc = fq              # BBR 必须配合 FQ 队列调度
-net.ipv4.tcp_congestion_control = $tcp_cca # 拥塞控制算法 (当前识别: $tcp_cca)
+net.ipv4.tcp_congestion_control = $tcp_cca # 拥塞控制算法
+net.ipv4.tcp_no_metrics_save = 1         # 实时探测，不记忆旧 RTT 指标
 net.ipv4.tcp_fastopen = 3                # 开启 TCP Fast Open (减少三次握手消耗)
 net.ipv4.tcp_slow_start_after_idle = 0   # 闲置后不进入慢启动 (保持高吞吐)
 net.ipv4.tcp_notsent_lowat = 16384       # 限制待发送数据长度，降低缓冲膨胀延迟
 net.ipv4.tcp_limit_output_bytes = 262144 # 限制单个 TCP 连接占用发送队列的大小
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
 net.ipv4.tcp_wmem = 4096 65536 $VAR_UDP_WMEM
-net.ipv4.ip_no_pmtu_disc = 0             # 启用 MTU 探测 (自动寻找最优包大小，防止 Hy2 丢包)
+net.ipv4.tcp_frto = 2                    # 针对丢包环境的重传判断优化
+net.ipv4.tcp_mtu_probing = 1             # 自动探测 MTU 解决 UDP 黑洞
 net.ipv4.tcp_ecn = 1
 net.ipv4.tcp_ecn_fallback = 1
+
+# === 5. 连接复用与超时管理 (原始逻辑回归) ===
+net.ipv4.ip_no_pmtu_disc = 0             # 启用 MTU 探测 (自动寻找最优包大小，防止 Hy2 丢包)
 net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_max_orphans = $((mem_total * 1024))
 
-# === 5. UDP 协议栈优化 (Hysteria2 传输核心) ===
+# === 6. UDP 协议栈优化 (Hysteria2 传输核心) ===
 net.ipv4.udp_mem = $udp_mem_scale        # 全局 UDP 内存页配额 (根据 RTT 动态计算)
 net.ipv4.udp_rmem_min = 16384            # UDP Socket 最小读缓存保护
 net.ipv4.udp_wmem_min = 16384            # UDP Socket 最小写缓存保护
