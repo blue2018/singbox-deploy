@@ -656,15 +656,13 @@ User=root
 WorkingDirectory=/etc/sing-box
 $systemd_envs
 
-# === 核心修复：确保 NAT 转发开启与规则刷新 ===
-ExecStartPre=/usr/bin/env bash -c "sysctl -w net.ipv4.ip_forward=1"
-ExecStartPre=-/usr/sbin/iptables -t nat -D POSTROUTING -j MASQUERADE
-ExecStartPre=-/usr/sbin/iptables -D INPUT -p udp --dport $current_port -j ACCEPT
-ExecStartPre=/usr/sbin/iptables -t nat -A POSTROUTING -j MASQUERADE
-ExecStartPre=/usr/sbin/iptables -I INPUT -p udp --dport $current_port -j ACCEPT
+ExecStartPre=-/usr/bin/env bash -c "sysctl -w net.ipv4.ip_forward=1"
+ExecStartPre=-iptables -t nat -D POSTROUTING -j MASQUERADE
+ExecStartPre=-iptables -D INPUT -p udp --dport $current_port -j ACCEPT
+ExecStartPre=-iptables -t nat -A POSTROUTING -j MASQUERADE
+ExecStartPre=-iptables -I INPUT -p udp --dport $current_port -j ACCEPT
 ExecStartPre=-$SBOX_CORE --apply-cwnd
 
-# === 性能优化参数 ===
 Nice=${VAR_SYSTEMD_NICE:-0}
 IOSchedulingClass=${VAR_SYSTEMD_IOSCHED:-best-effort}
 IOSchedulingPriority=0
