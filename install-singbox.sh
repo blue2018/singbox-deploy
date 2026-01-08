@@ -126,7 +126,7 @@ get_network_info() {
     [ -z "$v6_raw" ] && v6_raw=$(curl -6sL --max-time 3 api6.ipify.org || curl -6sL --max-time 3 ifconfig.co)
 
     # 清洗与连通性测试
-    export RAW_IP4=$(echo "$v4_raw" | tr -d '[:space:]') RAW_IP6=$(echo "$v6_raw" | tr -d '[:space:]')
+    export RAW_IP4=$(echo "$v4_raw" | tr -cd '0-9.' | xargs 2>/dev/null) RAW_IP6=$(echo "$v6_raw" | tr -cd 'a-fA-F0-9:' | xargs 2>/dev/null)
     [ -n "$RAW_IP4" ] && ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
     [ -n "$RAW_IP6" ] && ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
 
