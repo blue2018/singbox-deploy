@@ -676,8 +676,18 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
-SYSTEMD_LOG_LEVEL=info systemctl daemon-reexec && SYSTEMD_LOG_LEVEL=info systemctl daemon-reload && SYSTEMD_LOG_LEVEL=info systemctl enable sing-box --now
+systemctl daemon-reexec && systemctl daemon-reload && systemctl restart sing-box && systemctl status sing-box --no-pager --lines=0 | sed 's/^/ * /'
+sleep 1
 
+if systemctl is-active --quiet sing-box; then
+    local pid rss
+    pid=$(systemctl show -p MainPID --value sing-box)
+    rss=$(awk '/VmRSS/{print $2$3}' /proc/$pid/status 2>/dev/null)
+    succ "sing-box 服务启动成功 (PID=$pid | RSS=$rss)"
+else
+    error "sing-box 服务启动失败，请执行: systemctl status sing-box 查看原因"
+    exit 1
+fi
 fi
 }
 
