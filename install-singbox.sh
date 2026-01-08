@@ -109,40 +109,28 @@ install_dependencies() {
 
 #获取公网IP
 get_network_info() {
-    set +e   # ← 彻底解除 set -e 自杀模式
-
-    info "获取网络信息…"
+    set +e; info "获取网络信息…"
     local v4_raw="" v6_raw="" v4_ok="\033[31m✗\033[0m" v6_ok="\033[31m✗\033[0m" a line addr
 
-    # ---------- IPv4 ----------
     ip -4 addr show 2>/dev/null | awk '$1=="inet"{print $2}' | while read -r a; do
-        [[ ! "${a%/*}" =~ ^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.) ]] && v4_raw="${a%/*}" && break
-    done
-
+        [[ ! "${a%/*}" =~ ^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.) ]] && v4_raw="${a%/*}" && break; done
     [ -z "$v4_raw" ] && v4_raw=$(curl -4sL --max-time 3 api.ipify.org 2>/dev/null || curl -4sL --max-time 3 ifconfig.me 2>/dev/null)
 
-    # ---------- IPv6 ----------
     ip -6 addr show 2>/dev/null | awk '/inet6 /{print $2"|"$0}' | while read -r line; do
-        addr="${line%%/*}"
-        [[ "$line" =~ temporary|mngtmpaddr ]] && continue
-        [[ "$addr" =~ ^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}$ ]] && v6_raw="$addr" && break
-    done
-
+        addr="${line%%/*}"; [[ "$line" =~ temporary|mngtmpaddr ]] && continue
+        [[ "$addr" =~ ^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}$ ]] && v6_raw="$addr" && break; done
     [ -z "$v6_raw" ] && v6_raw=$(curl -6sL --max-time 3 api6.ipify.org 2>/dev/null || curl -6sL --max-time 3 ifconfig.co 2>/dev/null)
 
-    # ---------- 清洗 ----------
-    export RAW_IP4=$(tr -d '[:space:]' <<<"$v4_raw") RAW_IP6=$(tr -d '[:space:]' <<<"$v6_raw")
-
+    export RAW_IP4=$(printf '%s\n' "$v4_raw" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
+    export RAW_IP6=$(printf '%s\n' "$v6_raw" | grep -Eo '([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}' | head -n1)
     [[ -z "$RAW_IP4" && -z "$RAW_IP6" ]] && { err "未检测到公网IP，退出脚本安装"; exit 1; }
 
-    # ---------- 连通性 ----------
     ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
     ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
 
     [ -n "$RAW_IP4" ] && info "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]" || info "IPv4 地址: \033[33m未检测到\033[0m"
     [ -n "$RAW_IP6" ] && info "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]" || info "IPv6 地址: \033[33m未检测到\033[0m"
-
-    set -e   # ← 恢复
+    set -e
 }
 
 # === 网络延迟探测模块 ===
