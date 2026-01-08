@@ -643,7 +643,6 @@ EOF
     else
         local systemd_envs=$(printf "%s\n" "${env_list[@]}")
         cat > /etc/systemd/system/sing-box.service <<EOF
-cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service
 After=network-online.target
