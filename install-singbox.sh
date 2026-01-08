@@ -788,16 +788,21 @@ elif [[ "${1:-}" == "--show-only" ]]; then
     display_system_status
     display_links
 elif [[ "${1:-}" == "--reset-port" ]]; then
+    OLD_P=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json 2>/dev/null || echo "")
+    [[ -n "$OLD_P" ]] && iptables -D INPUT -p udp --dport "$OLD_P" -j ACCEPT 2>/dev/null || true
     optimize_system
-    create_config "$2"
-    setup_service
-    get_env_data
-    display_links
+    create_config "$2" && setup_service
+    (iptables -I INPUT -p udp --dport "$2" -j ACCEPT) 2>/dev/null || true
+    (command -v conntrack >/dev/null && conntrack -D -p udp --dport "$2") 2>/dev/null || true
+    get_env_data && display_links
 elif [[ "${1:-}" == "--update-kernel" ]]; then
     if install_singbox "update"; then
         optimize_system
         setup_service
-        echo -e "\033[1;32m[OK]\033[0m 内核已更新"
+        CUR_P=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json 2>/dev/null || echo "0")
+        (iptables -I INPUT -p udp --dport "$CUR_P" -j ACCEPT) 2>/dev/null || true
+        (command -v conntrack >/dev/null && conntrack -D -p udp --dport "$CUR_P") 2>/dev/null || true
+        echo -e "\033[1;32m[OK]\033[0m 内核已更新并刷新网络状态"
     fi
 elif [[ "${1:-}" == "--apply-cwnd" ]]; then
     apply_initcwnd_optimization "true" || true
