@@ -126,13 +126,14 @@ get_network_info() {
     [ -z "$v6_raw" ] && v6_raw=$(curl -6sL --max-time 3 api6.ipify.org || curl -6sL --max-time 3 ifconfig.co)
 
     # 清洗与连通性测试
-    export RAW_IP4=$(echo "$v4_raw" | tr -cd '0-9.' | xargs 2>/dev/null) RAW_IP6=$(echo "$v6_raw" | tr -cd 'a-fA-F0-9:' | xargs 2>/dev/null)
+    export RAW_IP4=$(echo "$v4_raw" | tr -cd '0-9.') RAW_IP6=$(echo "$v6_raw" | tr -cd 'a-fA-F0-9:')
     [ -n "$RAW_IP4" ] && ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
     [ -n "$RAW_IP6" ] && ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
 
     [ -n "$RAW_IP4" ] && info "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]" || info "IPv4 地址: \033[33m未检测到\033[0m"
     [ -n "$RAW_IP6" ] && info "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]" || info "IPv6 地址: \033[33m未检测到\033[0m"
     [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "未检测到公网 IP，退出脚本安装"; exit 1; }
+    return 0
 }
 
 # === 网络延迟探测模块 ===
