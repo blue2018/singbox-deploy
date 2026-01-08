@@ -653,7 +653,7 @@ WorkingDirectory=/etc/sing-box
 $systemd_envs
 
 ExecStartPre=-/usr/sbin/iptables -t nat -A POSTROUTING -j MASQUERADE
-ExecStartPre=-/usr/sbin/iptables -I INPUT -p udp --dport $PORT_HY2 -j ACCEPT
+ExecStartPre=-/usr/sbin/iptables -I INPUT -p udp --dport ${PORT_HY2:-$USER_PORT} -j ACCEPT
 ExecStartPre=-$SBOX_CORE --apply-cwnd
 
 Nice=${VAR_SYSTEMD_NICE:-0}
