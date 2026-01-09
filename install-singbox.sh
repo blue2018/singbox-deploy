@@ -470,14 +470,22 @@ install_singbox() {
     local MODE="${1:-install}" LOCAL_VER="未安装" TMP_D="" TMP_FILE="" success=false DOWNLOAD_SOURCE="GitHub"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "未安装")
 
-    info "正在获取 sing-box 最新版本信息 ..."
-    local RELEASE_JSON=$(curl -sL --connect-timeout 15 --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null || echo "")
+    info "通过 GitHub 获取 Sing-Box 最新版本信息 ..."
+    local RELEASE_JSON=$(curl -sL --http1.1 --connect-timeout 15 --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null || echo "")
     if [[ -n "$RELEASE_JSON" ]]; then
         command -v jq >/dev/null 2>&1 && LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null) || \
         LATEST_TAG=$(echo "$RELEASE_JSON" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9.]+"' | head -n1 | sed -E 's/.*"(v[0-9.]+)".*/\1/')
     fi
-    [[ -z "${LATEST_TAG:-}" ]] && { warn "尝试官方镜像..."; LATEST_TAG=$(curl -sL --max-time 23 https://sing-box.org/ 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo ""); DOWNLOAD_SOURCE="官方镜像"; }
-    [[ -z "$LATEST_TAG" ]] && { [[ "$LOCAL_VER" != "未安装" ]] && { warn "使用本地版本继续"; return 0; } || { err "获取失败，请检查网络"; exit 1; } }
+    
+    [[ -z "${LATEST_TAG:-}" ]] && { 
+        warn "尝试官方镜像获取版本..."; 
+        LATEST_TAG=$(curl -sL --http1.1 --max-time 23 https://sing-box.org/ 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo ""); 
+        DOWNLOAD_SOURCE="官方镜像"; 
+    }
+    
+    [[ -z "$LATEST_TAG" ]] && { 
+        [[ "$LOCAL_VER" != "未安装" ]] && { warn "使用本地版本继续"; return 0; } || { err "获取失败，请检查网络"; exit 1; } 
+    }
 
     local REMOTE_VER="${LATEST_TAG#v}"
     if [[ "$MODE" == "update" ]]; then
@@ -486,7 +494,7 @@ install_singbox() {
         echo -e "官方最新版本: \033[1;32m${REMOTE_VER}\033[0m (源: $DOWNLOAD_SOURCE)"
         echo -e "---------------------------------"
         [[ "$LOCAL_VER" == "$REMOTE_VER" ]] && { succ "内核已是最新版本"; return 1; }
-        info "发现新版本，开始下载更新..."
+        info "发现新版本 v${REMOTE_VER}，开始下载更新..."
     fi
 
     TMP_D=$(mktemp -d 2>/dev/null || echo "/tmp/sb-tmp-$$"); TMP_FILE="$TMP_D/sb.tar.gz"
@@ -495,15 +503,18 @@ install_singbox() {
 
     info "下载 sing-box 内核..."
     for LINK in "https://mirror.ghproxy.com/$URL" "$URL" "https://sing-box.org/releases/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"; do
-        curl -fL -k --connect-timeout 15 --max-time 45 "$LINK" -o "$TMP_FILE" && { success=true; break; } || warn "下载失败: $LINK"
+    curl -fL -k --http1.1 -sS --connect-timeout 20 --max-time 45 "$LINK" -o "$TMP_FILE" && \
+    [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; }
+    warn "下载失败或文件异常: $LINK"
     done
 
-    if [[ "$success" == "false" ]] || [ ! -f "$TMP_FILE" ] || [ "$(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0)" -lt 1000000 ]; then
-        [[ "$LOCAL_VER" != "未安装" ]] && { warn "保留本地版本 v$LOCAL_VER"; trap - EXIT; rm -rf "$TMP_D"; return 0; } || { err "下载失败，无可用内核"; exit 1; }
+    if [[ "$success" == "false" ]]; then
+        [[ "$LOCAL_VER" != "未安装" ]] && { warn "下载失败，保留本地版本 v$LOCAL_VER"; trap - EXIT; rm -rf "$TMP_D"; return 0; } || { err "下载失败，无可用内核文件"; exit 1; }
     fi
 
     tar -xf "$TMP_FILE" -C "$TMP_D"
     pgrep sing-box >/dev/null 2>&1 && { systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true; }
+    
     local BIN_SRC=$(find "$TMP_D" -type f -name "sing-box" | head -n1)
     [[ -n "$BIN_SRC" ]] && install -m 755 "$BIN_SRC" /usr/bin/sing-box || { err "未找到二进制文件"; return 1; }
 
