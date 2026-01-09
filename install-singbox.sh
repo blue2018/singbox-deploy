@@ -322,7 +322,7 @@ optimize_system() {
 
     # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOLIMIT="$((mem_total * 88 / 100))MiB"; SBOX_GOGC="500"
+        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="500"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; VAR_DEF_MEM="327680"
@@ -330,7 +330,7 @@ optimize_system() {
         ct_max=65535 ct_stream_to=60
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="400"
+        SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="400"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; VAR_DEF_MEM="229376"
@@ -338,14 +338,14 @@ optimize_system() {
         ct_max=32768 ct_stream_to=45
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="350"
+        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"
         VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
-        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="300"
+        SBOX_GOLIMIT="$((mem_total * 72 / 100))MiB"; SBOX_GOGC="300"
         VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304"
         VAR_SYSTEMD_NICE="-4"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="100"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="65536"
@@ -370,7 +370,7 @@ optimize_system() {
         SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [内存锁限制]"
     fi
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 82 / 100))M"
+    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 85 / 100))M"
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
