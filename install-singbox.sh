@@ -588,12 +588,12 @@ EOF
 setup_service() {  
     local CPU_N=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || nproc)
     # 差异化 Nice 值：单核小鸡建议 -10 (稳)，多核建议 -15 (强)
-    local nice_val="${VAR_SYSTEMD_NICE:-}"
-    [ -z "$nice_val" ] && { [ "$CPU_N" -le 1 ] && nice_val="-10" || nice_val="-15"; }
+    local current_nice="${VAR_SYSTEMD_NICE:--5}"
+    [ -z "$current_nice" ] && { [ "$CPU_N" -le 1 ] && current_nice="-10" || current_nice="-15"; }
 
     local SCHED_P="rr" SCHED_VAL="CPUSchedulingPriority=50"
     [ "$CPU_N" -le 1 ] && SCHED_P="batch" && SCHED_VAL=""
-    info "配置系统服务 (核心数: $CPU_N | 策略: $SCHED_P | Nice: $nice_val)..."
+    info "配置系统服务 (核心数: $CPU_N | 策略: $SCHED_P | Nice: $current_nice)..."
     
     local go_debug_val="GODEBUG=memprofilerate=0,madvdontneed=1"
     local env_list=(
@@ -634,7 +634,7 @@ User=root
 WorkingDirectory=/etc/sing-box
 $systemd_envs
 $pre_cmd
-Nice=$nice_val
+Nice=$current_nice
 CPUSchedulingPolicy=$SCHED_P
 $SCHED_VAL
 LimitMEMLOCK=infinity
@@ -745,7 +745,7 @@ SBOX_MEM_HIGH='${SBOX_MEM_HIGH:-}'
 SBOX_GOMAXPROCS='${SBOX_GOMAXPROCS:-}'
 SBOX_OPTIMIZE_LEVEL='$SBOX_OPTIMIZE_LEVEL'
 INITCWND_DONE='${INITCWND_DONE:-false}'
-VAR_SYSTEMD_NICE='$nice_val'
+VAR_SYSTEMD_NICE='${VAR_SYSTEMD_NICE:- -5}'
 VAR_SYSTEMD_IOSCHED='$VAR_SYSTEMD_IOSCHED'
 VAR_DEF_MEM='${VAR_DEF_MEM:-212992}'
 VAR_UDP_RMEM='${VAR_UDP_RMEM:-4194304}'
