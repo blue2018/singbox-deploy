@@ -284,7 +284,8 @@ generate_cert() {
 optimize_system() {
     # 1. 执行独立探测模块获取环境画像
     local RTT_AVG=$(probe_network_rtt) mem_total=$(probe_memory_total)
-    local max_udp_mb=$((mem_total * 40 / 100)) max_udp_pages=$((max_udp_mb * 256))
+    local max_udp_mb=$((mem_total * 40 / 100))
+    local max_udp_pages=$((max_udp_mb * 256))
     local swappiness_val=10 busy_poll_val=0 quic_extra_msg="" VAR_BACKLOG=2000
 
     if [[ "$OS" != "alpine" && "$mem_total" -le 600 ]]; then
