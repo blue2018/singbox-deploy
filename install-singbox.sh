@@ -470,7 +470,7 @@ install_singbox() {
     local MODE="${1:-install}" LOCAL_VER="未安装"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "未安装")
 
-    info "正在获取 sing-box 最新版本信息 ..."
+    info "正通过 $DOWNLOAD_SOURCE 获取 Sing-Box 最新版本信息 ..."
     local RELEASE_JSON="" LATEST_TAG="" DOWNLOAD_SOURCE="GitHub"
 
     RELEASE_JSON=$(curl -sL --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null || echo "")
