@@ -169,59 +169,55 @@ probe_memory_total() {
 
 # InitCWND 专项优化模块 (取黄金分割点 15 ，比默认 10 强 50%，比 20 更隐蔽)
 apply_initcwnd_optimization() {
-    local silent="${1:-false}" route_info gw dev mtu advmss opts
+    local silent="${1:-false}" info gw dev mtu mss opts
     command -v ip >/dev/null || return 0
-    route_info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
-    [ -z "$route_info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
+    # 提取核心路由信息
+    info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
+    [ -z "$info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
 
-    gw=$(echo "$route_info" | grep -oE 'via [^ ]+' | awk '{print $2}' || true)
-    dev=$(echo "$route_info" | grep -oE 'dev [^ ]+' | awk '{print $2}' || true)
-    mtu=$(echo "$route_info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
-    advmss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $advmss"
+    gw=$(echo "$info" | grep -oE 'via [^ ]+' | awk '{print $2}')
+    dev=$(echo "$info" | grep -oE 'dev [^ ]+' | awk '{print $2}')
+    mtu=$(echo "$info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
+    mss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $mss"
+    INITCWND_DONE="false"
 
-    # 逻辑序列：优先使用 change (更安全)，失败则尝试带网关替换，最后尝试纯设备替换
-    if [ -n "$gw" ] && [ -n "$dev" ] && ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"; return 0
-    elif [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (replace 模式 15/Advmss $advmss)"; return 0
-    elif [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (dev 模式 15/Advmss $advmss)"; return 0
-    elif ip route change default $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (通用 change 模式 15/Advmss $advmss)"; return 0
+    # 逻辑压缩：尝试 change -> replace -> dev replace -> fallback
+    if { [ -n "$gw" ] && [ -n "$dev" ] && ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
+       { [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
+       { [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; } || \
+       ip route change default $opts 2>/dev/null; then
+        INITCWND_DONE="true"
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/MSS $mss)"
+    else
+        [[ "$silent" == "false" ]] && warn "InitCWND 内核锁定，将切换应用层补偿"
     fi
-    [[ "$silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定或命令不支持 $opts)"
 }
 
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
 apply_userspace_adaptive_profile(){
     local lvl="${SBOX_OPTIMIZE_LEVEL:-紧凑版}"
     local real_c=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
-    # ---> 预设默认值 (生存档位)
-    local g_procs=1 GOGC=200 wnd=4 buf=524288
+    local g_procs=1 GOGC=200 wnd=4 buf=1048576
     
-    # --- 1. 引入差异化 GOGC 以降低弱 CPU 负担(生存档: 大幅调高 GOGC，靠 GOMEMLIMIT 强制收尾，防止 CPU 空转) ---
     [[ "$lvl" == *旗舰* ]] && { g_procs=$real_c; GOGC=150; wnd=16; buf=4194304; }
-    [[ "$lvl" == *增强* ]] && { g_procs=$real_c; GOGC=120; wnd=12; buf=2097152; }    
-    [[ "$lvl" == *紧凑* ]] && { g_procs=$real_c; GOGC=100; wnd=8;  buf=1048576; }
-    [[ "$lvl" == *生存* ]] && { g_procs=1; GOGC=200; wnd=4; buf=524288; }
-    [ "$real_c" -le 1 ] && g_procs=1 # 强制单核收敛
-
-    # --- 2. 导出关键环境变量 ---
+    [[ "$lvl" == *增强* ]] && { g_procs=$real_c; GOGC=120; wnd=12; buf=2097152; }
+    [[ "$lvl" == *紧凑* ]] && { g_procs=$real_c; GOGC=100; wnd=8;  buf=1572864; }
+    [[ "$lvl" == *生存* ]] && { g_procs=1; GOGC=200; wnd=4; buf=1048576; }
+    
+    [ "$real_c" -le 1 ] && g_procs=1
     export GOMAXPROCS="$g_procs"
     export GOGC="$GOGC"
     export GOMEMLIMIT="${SBOX_GOLIMIT:-48MiB}"
-    # --- 3. 性能深度开关 (关键修改：减少 CPU 开销) --->
-    # memprofilerate=0: 彻底关闭内存采样，减少单核 CPU 指令浪费
-    # madvdontneed=1: 强制 Go 立即归还物理内存页，防止小内存机型判定失误
     export GODEBUG="memprofilerate=0,madvdontneed=1"
-    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" 
-    export SINGBOX_UDP_RECVBUF="$buf" 
+    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd"
+    export SINGBOX_UDP_RECVBUF="$buf"
     export SINGBOX_UDP_SENDBUF="$buf"
     
-    # CPU 亲和力设置
+    # CPU 亲和力 (KVM 环境加速)
     [ "$real_c" -gt 1 ] && [[ "$lvl" != *生存* ]] && command -v taskset >/dev/null && \
         taskset -pc 0-$((real_c - 1)) $$ >/dev/null 2>&1 || true
-    info "Profile → $lvl | GOMAXPROCS=$GOMAXPROCS | GOGC=$GOGC | GC_Debug=Optimized"
+    
+    info "Profile → $lvl | GOMAXPROCS=$GOMAXPROCS | GOGC=$GOGC | Buffer=$((buf/1024))KB"
 }
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
@@ -350,14 +346,14 @@ optimize_system() {
     elif [ "$mem_total" -ge 100 ]; then
         SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
-        VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
+        VAR_SYSTEMD_NICE="-8"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"
         VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
         SBOX_GOLIMIT="$((mem_total * 72 / 100))MiB"; SBOX_GOGC="300"
         VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304"
-        VAR_SYSTEMD_NICE="-4"; VAR_SYSTEMD_IOSCHED="best-effort"
+        VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="100"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="65536"
         VAR_BACKLOG=5000; swappiness_val=100; busy_poll_val=0; ct_max=16384
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
@@ -380,15 +376,14 @@ optimize_system() {
         SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [内存锁限制]"
     fi
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 85 / 100))M"
-
+    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"
+    SBOX_MEM_HIGH="$((mem_total * 85 / 100))M"
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
     # 4. BBR 探测与内核锐化 (递进式锁定最强算法)
     local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 tcp_bbr3 >/dev/null 2>&1 || true
     local avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
 
-    # [标注] 优先采用 BBR3/BBR2 算法
     if [[ "$avail" =~ "bbr3" ]]; then tcp_cca="bbr3"; succ "检测到 BBRv3，激活极致响应模式"
     elif [[ "$avail" =~ "bbr2" ]]; then tcp_cca="bbr2"; succ "检测到 BBRv2，激活平衡加速模式"
     elif [[ "$avail" =~ "bbr" ]]; then tcp_cca="bbr"; info "检测到 BBRv1，激活标准加速模式"
@@ -434,9 +429,9 @@ net.ipv4.tcp_ecn_fallback = 1
 # === 5. 连接复用与超时管理 (原始逻辑回归) ===
 net.ipv4.tcp_mtu_probing = 1             # 自动探测 MTU 解决 UDP 黑洞
 net.ipv4.ip_no_pmtu_disc = 0             # 启用 MTU 探测 (自动寻找最优包大小，防止 Hy2 丢包)
-net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_fin_timeout = 20
 net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_max_orphans = $((mem_total * 1024))
+et.ipv4.tcp_max_orphans = $((mem_total * 16)) # 针对小内存机型更合理的上限
 
 # === 6. UDP 协议栈优化 (Hysteria2 传输核心) ===
 net.ipv4.udp_mem = $udp_mem_scale        # 全局 UDP 内存页配额 (根据 RTT 动态计算)
@@ -466,7 +461,9 @@ SYSCTL
         fi
     fi
 
-    apply_initcwnd_optimization "false"; apply_userspace_adaptive_profile; apply_nic_core_boost
+    apply_initcwnd_optimization "false" 
+    apply_userspace_adaptive_profile
+    apply_nic_core_boost
 }
 
 # ==========================================
@@ -593,11 +590,13 @@ EOF
 # ==========================================
 setup_service() {  
     local CPU_N=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || nproc)
-    local SCHED_P="rr" SCHED_VAL="CPUSchedulingPriority=50"
-    # 单核/弱CPU采用 batch 策略：一旦占用 CPU 则尽量不被打断，适合单核处理加密流
-    [ "$CPU_N" -le 1 ] && SCHED_P="batch" && SCHED_VAL=""
+    # 差异化 Nice 值：单核小鸡建议 -10 (稳)，多核建议 -15 (强)
+    local nice_val="${VAR_SYSTEMD_NICE:-}"
+    [ -z "$nice_val" ] && { [ "$CPU_N" -le 1 ] && nice_val="-10" || nice_val="-15"; }
 
-    info "配置系统服务 (核心数: $CPU_N | 策略: $SCHED_P | Nice: $VAR_SYSTEMD_NICE)..."
+    local SCHED_P="rr" SCHED_VAL="CPUSchedulingPriority=50"
+    [ "$CPU_N" -le 1 ] && SCHED_P="batch" && SCHED_VAL=""
+    info "配置系统服务 (核心数: $CPU_N | 策略: $SCHED_P | Nice: $nice_val)..."
     
     local go_debug_val="GODEBUG=memprofilerate=0,madvdontneed=1"
     local env_list=(
@@ -607,6 +606,9 @@ setup_service() {
         "Environment=$go_debug_val"
     )
     [ -n "${SBOX_GOMAXPROCS:-}" ] && env_list+=("Environment=GOMAXPROCS=$SBOX_GOMAXPROCS")
+
+    # 联动判定：如果内核 initcwnd 修改失败，则由 ExecStartPre 执行应用层补偿
+    local pre_cmd="ExecStartPre=-$SBOX_CORE --apply-cwnd"
 
     if [ "$OS" = "alpine" ]; then
         local openrc_exports=$(printf "export %s\n" "${env_list[@]}" | sed 's/Environment=//g')
@@ -634,17 +636,18 @@ Type=simple
 User=root
 WorkingDirectory=/etc/sing-box
 $systemd_envs
-ExecStartPre=-$SBOX_CORE --apply-cwnd
-Nice=${VAR_SYSTEMD_NICE:--5}
+$pre_cmd
+Nice=$nice_val
 CPUSchedulingPolicy=$SCHED_P
 $SCHED_VAL
 LimitMEMLOCK=infinity
 CPUWeight=1000
 IOWeight=1000
-ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
+ExecStart=$SBOX_CORE run -c /etc/sing-box/config.json
+# 联动补刀：针对 KVM 环境，启动后 3 秒重新应用一次 15 窗口设置，防止路由重置
+ExecStartPost=/bin/sh -c 'if [ "$INITCWND_DONE" = "true" ]; then sleep 3; \$(declare -f apply_initcwnd_optimization); apply_initcwnd_optimization true; fi'
 Restart=always
 RestartSec=3s
-# 如果在 60 秒内重启超过 5 次，就暂时停止，防止死循环
 StartLimitIntervalSec=60
 StartLimitBurst=5
 MemoryHigh=${SBOX_MEM_HIGH:-}
@@ -660,7 +663,9 @@ EOF
         if systemctl is-active --quiet sing-box; then
             local info=$(ps -p $(systemctl show -p MainPID --value sing-box) -o pid=,rss= 2>/dev/null)
             local pid=$(echo $info | awk '{print $1}') rss=$(echo $info | awk '{printf "%.2f MB", $2/1024}')
-            succ "sing-box 启动成功 | PID: ${pid:-N/A} | 内存: ${rss:-N/A}"  
+            # [MOD] 输出中加入优化模式标记
+            local mode_tag=$([[ "$INITCWND_DONE" == "true" ]] && echo "内核" || echo "应用层")
+            succ "sing-box 启动成功 | PID: ${pid:-N/A} | 内存: ${rss:-N/A} | 网络模式: $mode_tag"  
         else
             err "sing-box 启动失败，最近 3 行日志："; journalctl -u sing-box -n 3 --no-pager | tail -n 3; exit 1
         fi
