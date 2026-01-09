@@ -483,7 +483,7 @@ install_singbox() {
     if [[ "$MODE" == "update" ]]; then
         echo -e "---------------------------------\n当前: \033[1;33m${LOCAL_VER}\033[0m | 最新: \033[1;32m${REMOTE_VER}\033[0m\n---------------------------------"
         [[ "$LOCAL_VER" == "$REMOTE_VER" ]] && { succ "内核已是最新"; return 1; }
-        info "发现新版本 v${REMOTE_VER}，准备下载..."
+        info "发现新版本 v${REMOTE_VER}，开始下载更新..."
     fi
 
     TMP_D=$(mktemp -d 2>/dev/null || echo "/tmp/sb-tmp-$$"); TMP_FILE="$TMP_D/sb.tar.gz"
@@ -492,19 +492,21 @@ install_singbox() {
 
     info "开始下载 sing-box 内核 (实时进度):"
     for LINK in "https://mirror.ghproxy.com/$URL" "$URL" "https://sing-box.org/releases/$(basename $URL)"; do
-        # 修正：--stderr - 将进度条转到 stdout，然后用 grep 过滤掉报错行，只留进度条
-        if curl -fL -k --http1.1 --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 120 --stderr - "$LINK" -o "$TMP_FILE" | grep -v "error\|SSL\|EOF"; then
+        # 修正逻辑：使用 --silent --show-error --location 配合进程置底
+        # 移除 --progress-bar 这种容易卡死的模式，改用内置默认进度格式（更稳）
+        if curl -fL --http1.1 --tlsv1.2 --connect-timeout 20 --max-time 120 --retry 3 --retry-delay 2 "$LINK" -o "$TMP_FILE" 2>/tmp/curl_err; then
             [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; }
         fi
-        warn "尝试线路失败: $LINK"
+        # 只有在三次 retry 都彻底失败后，才通过 cat 打印被重定向的错误（可选）并报警
+        warn "线路尝试失败: ${LINK#*//}"
     done
 
-    [[ "$success" == "false" ]] && { [[ "$LOCAL_VER" != "未安装" ]] && { warn "下载失败，保留旧版"; return 0; } || { err "无可用内核"; exit 1; } }
+    [[ "$success" == "false" ]] && { [[ "$LOCAL_VER" != "未安装" ]] && { warn "下载失败，保留旧版"; return 0; } || { err "下载彻底失败"; exit 1; } }
 
     tar -xf "$TMP_FILE" -C "$TMP_D"
     pgrep sing-box >/dev/null 2>&1 && { systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true; }  
     
-    # 极简安装逻辑
+    # 极简安装
     install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box 2>/dev/null || \
     install -m 755 "$(find "$TMP_D" -type f -name "sing-box" | head -n1)" /usr/bin/sing-box || { err "安装失败"; return 1; }
 
