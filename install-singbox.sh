@@ -7,9 +7,9 @@ set -euo pipefail
 # === 系统与环境参数初始化 ===
 SBOX_ARCH="";          OS_DISPLAY="";         SBOX_CORE="/etc/sing-box/core_script.sh"
 SBOX_GOLIMIT="52MiB";  SBOX_GOGC="80";        SBOX_MEM_MAX="55M"
-SBOX_MEM_HIGH="";      SBOX_GOMAXPROCS="";    SBOX_OPTIMIZE_LEVEL="未检测"
-VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE="";     INITCWND_DONE="false"
-VAR_SYSTEMD_IOSCHED="";VAR_HY2_BW="200";      RAW_SALA="";             VAR_DEF_MEM=""
+SBOX_MEM_HIGH="";      SBOX_GOMAXPROCS="";    SBOX_OPTIMIZE_LEVEL="未检测";  CPU_CORE=1
+VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE="";          INITCWND_DONE="false"
+VAR_SYSTEMD_IOSCHED="";VAR_HY2_BW="200";      RAW_SALA="";                  VAR_DEF_MEM=""
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
@@ -89,6 +89,21 @@ install_dependencies() {
     esac
     command -v jq >/dev/null 2>&1 || { err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"; exit 1; }
     succ "所需依赖已就绪"
+}
+
+#检测CPU核心数
+get_cpu_core() {
+    local n q p c; n=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo || echo 1)
+    if [ -r /sys/fs/cgroup/cpu.max ]; then
+        read -r q p < /sys/fs/cgroup/cpu.max
+    else
+        q=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null)
+        p=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null)
+    fi
+    if [[ "${q:-}" =~ ^[0-9]+$ ]] && [ "$q" -gt 0 ]; then
+        p=${p:-100000}; c=$(( q / p )); [ "$c" -le 0 ] && c=1
+        echo $(( c < n ? c : n ))
+    else echo "$n"; fi
 }
 
 #获取公网IP
@@ -727,6 +742,7 @@ create_sb_tool() {
     cat > "$CORE_TMP" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail 
+CPU_CORE='$CPU_CORE'
 SBOX_CORE='$SBOX_CORE'
 SBOX_GOLIMIT='$SBOX_GOLIMIT'
 SBOX_GOGC='${SBOX_GOGC:-100}'
@@ -751,7 +767,7 @@ EOF
 
     # 导出函数
     local funcs=(probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
-get_env_data display_links display_system_status detect_os copy_to_clipboard \
+get_cpu_core get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
 apply_userspace_adaptive_profile apply_nic_core_boost \
 check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
@@ -869,6 +885,8 @@ EOF
 detect_os
 [ "$(id -u)" != "0" ] && err "请使用 root 运行" && exit 1
 install_dependencies
+CPU_CORE=$(get_cpu_core)
+export CPU_CORE
 get_network_info
 echo -e "-----------------------------------------------"
 USER_PORT=$(prompt_for_port)
