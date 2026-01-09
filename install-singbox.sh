@@ -833,20 +833,22 @@ while true; do
         4) source "$CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
         5) service_ctrl restart && info "系统服务和优化参数已重载"; read -r -p $'\n按回车键返回菜单...' ;;
         6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
-           if [[ "${cf,,}" == "y" ]]; then
+           [[ "${cf,,}" == "y" ]] && {
                info "正在执行深度卸载与内核恢复..."
-               service_ctrl stop >/dev/null 2>&1 || true
+               systemctl stop sing-box >/dev/null 2>&1 || rc-service sing-box stop >/dev/null 2>&1 || true
                [ -f /etc/init.d/sing-box ] && rc-update del sing-box >/dev/null 2>&1 || true
+               
                info "重置系统参数与清理冗余..."
                rm -f /etc/sysctl.d/99-sing-box.conf
                printf "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\nvm.swappiness=60\n" > /etc/sysctl.conf
                sysctl -p >/dev/null 2>&1 || true
-               [ -f /swapfile ] && { swapoff /swapfile 2>/dev/null || true; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; }
+               
+               [ -f /swapfile ] && { swapoff /swapfile 2>/dev/null; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; }
                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
-                      /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-               succ "深度卸载完成，系统环境已净化"; exit 0
-           fi
-           info "卸载操作已取消"; read -r -p $'\n按回车键返回菜单...' ;;
+                      /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$SBOX_CORE"
+               succ "深度卸载完成"; exit 0
+           } || info "卸载操作已取消"
+           read -r -p "按回车键返回菜单..." ;;
         0) exit 0 ;;
     esac
 done
