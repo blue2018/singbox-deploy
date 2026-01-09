@@ -811,7 +811,7 @@ while true; do
     echo "=========================="
     echo " Sing-box HY2 管理 (sb)"
     echo "=========================="
-    echo " 档位: ${SBOX_OPTIMIZE_LEVEL:-未知} | 模式: $([[ "$INITCWND_DONE" == "true" ]] && echo "Initcwnd 15" || echo "启用补偿")"
+    echo " Level: ${SBOX_OPTIMIZE_LEVEL:-未知} | Plan: $([[ "$INITCWND_DONE" == "true" ]] && echo "Initcwnd 15" || echo "启用补偿")"
     echo "--------------------------"
     echo "1. 查看信息    2. 修改配置    3. 重置端口
     echo "4. 更新内核"   5. 重启服务"   6. 卸载脚本"
