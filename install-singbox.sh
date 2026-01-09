@@ -68,38 +68,25 @@ detect_os() {
 # 依赖安装 (容错增强版)
 install_dependencies() {
     info "正在检查并安装必要依赖 (curl, jq, openssl, iptables)..."
-
-    if   command -v apk >/dev/null 2>&1; then PM="apk"
+    if command -v apk >/dev/null 2>&1; then PM="apk"
     elif command -v apt-get >/dev/null 2>&1; then PM="apt"
     elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then PM="yum"
     else err "未检测到支持的包管理器 (apk/apt-get/yum)，请手动安装 curl jq openssl 等依赖"; exit 1; fi
 
     case "$PM" in
-        apk)
-            info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
-            apk update >/dev/null 2>&1 || true
-            apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates busybox-openrc iputils \
-                || { err "apk 安装依赖失败，请检查网络与仓库设置"; exit 1; }
-            ;;
-        apt)
-            info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y >/dev/null 2>&1 || true
-            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping iptables ufw kmod findutils \
-                || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2 iptables"; exit 1; }
-            ;;
-        yum)
-            info "检测到 RHEL/CentOS 系统，正在安装依赖..."
-            if command -v dnf >/dev/null 2>&1; then
-                dnf install -y curl jq openssl ca-certificates procps-ng iproute iptables ufw \
-                    || { err "dnf 安装依赖失败，请手动运行"; exit 1; }
-            else
-                yum install -y curl jq openssl ca-certificates procps-ng iproute iptables ufw \
-                    || { err "yum 安装依赖失败，请手动运行"; exit 1; }
-            fi
-            ;;
+        apk) info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
+             apk update >/dev/null 2>&1 || true
+             apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates busybox-openrc iputils \
+                || { err "apk 安装依赖失败，请检查网络与仓库设置"; exit 1; } ;;
+        apt) info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
+             export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null 2>&1 || true
+             apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping iptables ufw kmod findutils \
+                || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2 iptables"; exit 1; } ;;
+        yum) info "检测到 RHEL/CentOS 系统，正在安装依赖..."
+             M=$(command -v dnf || echo "yum")
+             $M install -y curl jq openssl ca-certificates procps-ng iproute iptables firewalld \
+                || { err "$M 安装依赖失败，请手动运行"; exit 1; } ;;
     esac
-
     command -v jq >/dev/null 2>&1 || { err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"; exit 1; }
     succ "所需依赖已就绪"
 }
@@ -184,25 +171,24 @@ probe_memory_total() {
 apply_initcwnd_optimization() {
     local silent="${1:-false}" route_info gw dev mtu advmss opts
     command -v ip >/dev/null || return 0
-
     route_info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
     [ -z "$route_info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
 
-    gw=$(echo "$route_info" | grep -oP 'via \K[^ ]+' || true)
-    dev=$(echo "$route_info" | grep -oP 'dev \K[^ ]+' || true)
-    mtu=$(echo "$route_info" | grep -oP 'mtu \K[0-9]+' || echo 1500)
+    gw=$(echo "$route_info" | grep -oE 'via [^ ]+' | awk '{print $2}' || true)
+    dev=$(echo "$route_info" | grep -oE 'dev [^ ]+' | awk '{print $2}' || true)
+    mtu=$(echo "$route_info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
     advmss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $advmss"
 
-    if [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
+    # 逻辑序列：优先使用 change (更安全)，失败则尝试带网关替换，最后尝试纯设备替换
+    if [ -n "$gw" ] && [ -n "$dev" ] && ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; then
         [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/Advmss $advmss)"; return 0
-    fi
-    if [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; then
+    elif [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (replace 模式 15/Advmss $advmss)"; return 0
+    elif [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; then
         [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (dev 模式 15/Advmss $advmss)"; return 0
+    elif ip route change default $opts 2>/dev/null; then
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (通用 change 模式 15/Advmss $advmss)"; return 0
     fi
-    if ip route change default $opts 2>/dev/null; then
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (change 模式 15/Advmss $advmss)"; return 0
-    fi
-
     [[ "$silent" == "false" ]] && warn "InitCWND 优化受限 (虚拟化层锁定或命令不支持 $opts)"
 }
 
@@ -233,7 +219,6 @@ apply_nic_core_boost() {
     local mem=$(probe_memory_total)
     local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}') || return 0
     local CPU_N=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || nproc)
-
     # --- 1. 协议栈补偿优化 (无论什么虚拟化架构都生效) ---
     local bgt=600 usc=4000
     [ "$mem" -ge 256 ] && bgt=1000 && usc=8000
