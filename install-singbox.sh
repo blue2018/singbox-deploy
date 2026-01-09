@@ -632,8 +632,8 @@ IOWeight=1000
 Restart=always
 RestartSec=3s
 StartLimitBurst=5
-$( [[ -n "${SBOX_MEM_HIGH:-}" ]] && echo "MemoryHigh=$SBOX_MEM_HIGH" )
-$( [[ -n "${SBOX_MEM_MAX:-}" ]] && echo "MemoryMax=$SBOX_MEM_MAX" )
+MemoryHigh=${SBOX_MEM_HIGH:-}
+MemoryMax=${SBOX_MEM_MAX:-}
 LimitNOFILE=1000000
 
 [Install]
