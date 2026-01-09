@@ -501,12 +501,10 @@ install_singbox() {
     trap 'rm -rf "${TMP_D:-/dev/null}" >/dev/null 2>&1 || true' EXIT
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
 
-    info "开始下载 sing-box 内核 (实时进度):"
+    info "开始下载 sing-box 内核:"
     for LINK in "https://mirror.ghproxy.com/$URL" "$URL" "https://sing-box.org/releases/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"; do
-        # 移除 -sS，增加 --progress-bar 展现清晰的进度条
-        curl -fL -k --http1.1 --progress-bar --connect-timeout 20 --max-time 45 "$LINK" -o "$TMP_FILE" && \
-        [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; }
-        warn "下载尝试失败: $LINK"
+        curl -fL -k --http1.1 --tlsv1.2 --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 120 "$LINK" -o "$TMP_FILE" && \
+        [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; } || warn "尝试线路失败: $LINK"
     done
 
     if [[ "$success" == "false" ]]; then
