@@ -751,7 +751,7 @@ apply_userspace_adaptive_profile apply_nic_core_boost \
 check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
 
     for f in "${funcs[@]}"; do
-    if declare -f "$f" >/dev/null 2>&1; then declare -f "$f" >> "$CORE_TMP"; echo "" >> "$CORE_TMP"; fi
+        if declare -f "$f" >/dev/null 2>&1; then declare -f "$f" >> "$CORE_TMP"; echo "" >> "$CORE_TMP"; fi
     done
 
     cat >> "$CORE_TMP" <<'EOF'
@@ -791,62 +791,61 @@ EOF
 
     mv "$CORE_TMP" "$SBOX_CORE"
     chmod 700 "$SBOX_CORE"
+
     # 生成交互管理脚本 /usr/local/bin/sb
     local SB_PATH="/usr/local/bin/sb"
-    cat > "$SB_PATH" <<'EOF'
+    cat > "$SB_PATH" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
-CORE="/etc/sing-box/core_script.sh"
-if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
-[[ $# -gt 0 ]] && { /bin/bash "$CORE" "$@"; exit 0; }
-source "$CORE" --detect-only
+SBOX_CORE="/etc/sing-box/core_script.sh"
+if [ ! -f "\$SBOX_CORE" ]; then echo "核心文件丢失"; exit 1; fi
+[[ \$# -gt 0 ]] && { /bin/bash "\$SBOX_CORE" "\$@"; exit 0; }
+source "\$SBOX_CORE" --detect-only
 
 service_ctrl() {
-    /bin/bash "$CORE" --apply-cwnd >/dev/null 2>&1 || true
-    if [ -f /etc/init.d/sing-box ]; then rc-service sing-box "$1"
-    else systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "$1" sing-box; fi
+    /bin/bash "\$SBOX_CORE" --apply-cwnd >/dev/null 2>&1 || true
+    if [ -f /etc/init.d/sing-box ]; then rc-service sing-box "\$1"
+    else systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "\$1" sing-box; fi
 }
 
 while true; do
     echo "=========================="
     echo " Sing-box HY2 管理 (sb)"
     echo "=========================="
-    echo " Level: ${SBOX_OPTIMIZE_LEVEL:-未知} | Plan: $([[ "$INITCWND_DONE" == "true" ]] && echo "Initcwnd 15" || echo "启用补偿")"
+    echo " Level: \${SBOX_OPTIMIZE_LEVEL:-未知} | Plan: \$([[ "\$INITCWND_DONE" == "true" ]] && echo "Initcwnd 15" || echo "启用补偿")"
     echo "--------------------------"
-    echo "1. 查看信息    2. 修改配置    3. 重置端口
-    echo "4. 更新内核"   5. 重启服务"   6. 卸载脚本"
+    echo "1. 查看信息    2. 修改配置    3. 重置端口"
+    echo "4. 更新内核    5. 重启服务    6. 卸载脚本"
     echo "0. 退出"
     echo "=========================="
     read -r -p "请选择 [0-6]: " opt
-    opt=$(echo "$opt" | xargs echo -n 2>/dev/null || echo "$opt")
-    if [[ -z "$opt" ]] || [[ ! "$opt" =~ ^[0-6]$ ]]; then
-    echo -e "\033[1;31m输入有误 [$opt]，请重新输入\033[0m"; sleep 1.5; continue
+    opt=\$(echo "\$opt" | xargs echo -n 2>/dev/null || echo "\$opt")
+    if [[ -z "\$opt" ]] || [[ ! "\$opt" =~ ^[0-6]$ ]]; then
+        echo -e "\033[1;31m输入有误 [\$opt]，请重新输入\033[0m"; sleep 1.5; continue
     fi
-    case "$opt" in
-        1) source "$CORE" --show-only; read -r -p $'\n按回车键返回菜单...' ;;
-        2) f="/etc/sing-box/config.json"; old=$(md5sum $f 2>/dev/null)
-           vi $f; if [ "$old" != "$(md5sum $f 2>/dev/null)" ]; then
+    case "\$opt" in
+        1) source "\$SBOX_CORE" --show-only; read -r -p $'\n按回车键返回菜单...' ;;
+        2) f="/etc/sing-box/config.json"; old=\$(md5sum \$f 2>/dev/null)
+           vi \$f; if [ "\$old" != "\$(md5sum \$f 2>/dev/null)" ]; then
                service_ctrl restart && succ "配置已更新，网络画像与防火墙已同步刷新"
            else info "配置未作变更"; fi
            read -r -p $'\n按回车键返回菜单...' ;;
-        3) source "$CORE" --reset-port "$(prompt_for_port)"; read -r -p $'\n按回车键返回菜单...' ;;
-        4) source "$CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
+        3) source "\$SBOX_CORE" --reset-port "\$(prompt_for_port)"; read -r -p $'\n按回车键返回菜单...' ;;
+        4) source "\$SBOX_CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
         5) service_ctrl restart && info "系统服务和优化参数已重载"; read -r -p $'\n按回车键返回菜单...' ;;
         6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
-           [[ "${cf,,}" == "y" ]] && {
+           [[ "\${cf,,}" == "y" ]] && {
                info "正在执行深度卸载与内核恢复..."
                systemctl stop sing-box >/dev/null 2>&1 || rc-service sing-box stop >/dev/null 2>&1 || true
                [ -f /etc/init.d/sing-box ] && rc-update del sing-box >/dev/null 2>&1 || true
-               
                info "重置系统参数与清理冗余..."
                rm -f /etc/sysctl.d/99-sing-box.conf
                printf "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\nvm.swappiness=60\n" > /etc/sysctl.conf
                sysctl -p >/dev/null 2>&1 || true
-               
                [ -f /swapfile ] && { swapoff /swapfile 2>/dev/null; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; }
                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
-                      /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$SBOX_CORE"
-               succ "深度卸载完成"; exit 0
+                      /etc/systemd/system/sing-box.service /etc/init.d/sing-box "\$SBOX_CORE"
+               succ "深度卸载完成，系统已恢复纯净"; exit 0
            } || info "卸载操作已取消"
            read -r -p "按回车键返回菜单..." ;;
         0) exit 0 ;;
