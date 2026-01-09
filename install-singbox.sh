@@ -501,21 +501,21 @@ install_singbox() {
     trap 'rm -rf "${TMP_D:-/dev/null}" >/dev/null 2>&1 || true' EXIT
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
 
-    info "开始下载 sing-box 内核:"
+    info "开始下载 sing-box 内核 (实时进度):"
     for LINK in "https://mirror.ghproxy.com/$URL" "$URL" "https://sing-box.org/releases/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"; do
-        curl -fL -k --http1.1 --tlsv1.2 --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 120 "$LINK" -o "$TMP_FILE" && \
+        curl -fL -k --http1.1 --tlsv1.2 --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 45 "$LINK" -o "$TMP_FILE" 2>/dev/null && \
         [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; } || warn "尝试线路失败: $LINK"
     done
 
-    if [[ "$success" == "false" ]]; then
+    [[ "$success" == "false" ]] && { 
         [[ "$LOCAL_VER" != "未安装" ]] && { warn "下载失败，保留本地版本 v$LOCAL_VER"; trap - EXIT; rm -rf "$TMP_D"; return 0; } || { err "下载失败，无可用内核文件"; exit 1; }
-    fi
+    }
 
     tar -xf "$TMP_FILE" -C "$TMP_D"
-    pgrep sing-box >/dev/null 2>&1 && { systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true; }
+    pgrep sing-box >/dev/null 2>&1 && { systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true; }  
     
-    local BIN_SRC=$(find "$TMP_D" -type f -name "sing-box" | head -n1)
-    [[ -n "$BIN_SRC" ]] && install -m 755 "$BIN_SRC" /usr/bin/sing-box || { err "未找到二进制文件"; return 1; }
+    install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box 2>/dev/null || \
+    install -m 755 "$(find "$TMP_D" -type f -name "sing-box" | head -n1)" /usr/bin/sing-box || { err "未找到二进制文件"; return 1; }
 
     trap - EXIT; rm -rf "$TMP_D"
     succ "内核安装成功: v$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "$REMOTE_VER")"
