@@ -44,7 +44,6 @@ copy_to_clipboard() {
 #侦测系统类型
 detect_os() {
     if [ -f /etc/os-release ]; then
-        # shellcheck disable=SC1091
         . /etc/os-release
         OS_DISPLAY="${PRETTY_NAME:-$ID}"; ID="${ID:-}"; ID_LIKE="${ID_LIKE:-}"
     else
@@ -60,10 +59,8 @@ detect_os() {
     esac
 
     case "$(uname -m)" in
-        x86_64) SBOX_ARCH="amd64" ;;
-        aarch64) SBOX_ARCH="arm64" ;;
-        armv7l) SBOX_ARCH="armv7" ;;
-        i386|i686) SBOX_ARCH="386" ;;
+        x86_64) SBOX_ARCH="amd64" ;; aarch64) SBOX_ARCH="arm64" ;;
+        armv7l) SBOX_ARCH="armv7" ;; i386|i686) SBOX_ARCH="386" ;;
         *) err "不支持的架构: $(uname -m)"; exit 1 ;;
     esac
 }
@@ -158,7 +155,7 @@ probe_network_rtt() {
     fi
 }
 
-# === 内存资源探测模块 ===
+# 内存资源探测模块
 probe_memory_total() {
     local mem_total=64 mem_cgroup=0
     local mem_host_total=$(free -m | awk '/Mem:/ {print $2}' | tr -cd '0-9')
@@ -262,22 +259,13 @@ prompt_for_port() {
     while :; do
         read -r -p "请输入端口 [1025-65535] (回车随机生成): " p
         if [ -z "$p" ]; then
-            if command -v shuf >/dev/null 2>&1; then
-                p=$(shuf -i 1025-65535 -n 1)
-            elif [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
-                rand=$(od -An -N2 -tu2 /dev/urandom | tr -d ' '); p=$((1025 + rand % 64511))
-            else
-                p=$((1025 + RANDOM % 64511))
-            fi
-            echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $p" >&2
-            echo "$p"; return 0
+            if command -v shuf >/dev/null 2>&1; then p=$(shuf -i 1025-65535 -n 1)
+            elif [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then rand=$(od -An -N2 -tu2 /dev/urandom | tr -d ' '); p=$((1025 + rand % 64511))
+            else p=$((1025 + RANDOM % 64511)); fi
+            echo -e "\033[1;32m[INFO]\033[0m 已自动分配端口: $p" >&2; echo "$p"; return 0
         fi
-
-        if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1025 ] && [ "$p" -le 65535 ]; then
-            echo "$p"; return 0
-        else
-            echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2
-        fi
+        if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1025 ] && [ "$p" -le 65535 ]; then echo "$p"; return 0
+        else echo -e "\033[1;31m[错误]\033[0m 端口无效，请输入1025-65535之间的数字或直接回车" >&2; fi
     done
 }
 
@@ -285,12 +273,10 @@ prompt_for_port() {
 generate_cert() {
     local CERT_DIR="/etc/sing-box/certs"
     [ -f "$CERT_DIR/fullchain.pem" ] && return 0
-
+    
     info "生成 ECC P-256 高性能证书..."
     mkdir -p "$CERT_DIR" && chmod 700 "$CERT_DIR"
-
-    # 核心逻辑：使用一条命令尝试生成，失败则使用最简兼容模式
-    # -subj 中的 O (Organization) 设为变量以减少静态指纹
+    # 使用一条命令尝试生成，失败则使用最简兼容模式
     local ORG="CloudData-$(date +%s | cut -c7-10)"
     
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
@@ -298,7 +284,6 @@ generate_cert() {
         -days 3650 -sha256 -subj "/CN=$TLS_DOMAIN/O=$ORG" \
         -addext "subjectAltName=DNS:$TLS_DOMAIN,DNS:*.$TLS_DOMAIN" &>/dev/null || {
         
-        # 针对极旧版 OpenSSL 的保底方案
         openssl req -x509 -newkey ec:<(openssl ecparam -name prime256v1) -nodes \
             -keyout "$CERT_DIR/privkey.pem" -out "$CERT_DIR/fullchain.pem" \
             -days 3650 -subj "/CN=$TLS_DOMAIN" &>/dev/null
@@ -313,12 +298,9 @@ generate_cert() {
 # ==========================================
 optimize_system() {
     # 1. 执行独立探测模块获取环境画像
-    local RTT_AVG=$(probe_network_rtt)
-    local mem_total=$(probe_memory_total)
-    local max_udp_mb=$((mem_total * 40 / 100))
-    local max_udp_pages=$((max_udp_mb * 256))
-    local swappiness_val=10 busy_poll_val=0 quic_extra_msg=""
-    local VAR_BACKLOG=2000
+    local RTT_AVG=$(probe_network_rtt) mem_total=$(probe_memory_total)
+    local max_udp_mb=$((mem_total * 40 / 100)) max_udp_pages=$((max_udp_mb * 256))
+    local swappiness_val=10 busy_poll_val=0 quic_extra_msg="" VAR_BACKLOG=2000
 
     if [[ "$OS" != "alpine" && "$mem_total" -le 600 ]]; then
         local swap_total
@@ -448,11 +430,8 @@ net.ipv4.udp_wmem_min = 16384            # UDP Socket 最小写缓存保护
 SYSCTL
 
     # 兼容地加载 sysctl（优先 sysctl --system，其次回退）
-    if command -v sysctl >/dev/null 2>&1 && sysctl --system >/dev/null 2>&1; then
-        true
-    else
-        sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true
-    fi
+    if command -v sysctl >/dev/null 2>&1 && sysctl --system >/dev/null 2>&1; then :
+    else sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true; fi
 
     # 网卡队列长度优化 (txqueuelen) 
     local DEFAULT_IFACE
@@ -467,9 +446,7 @@ SYSCTL
         fi
     fi
 
-    apply_initcwnd_optimization "false"
-    apply_userspace_adaptive_profile
-    apply_nic_core_boost
+    apply_initcwnd_optimization "false"; apply_userspace_adaptive_profile; apply_nic_core_boost
 }
 
 # ==========================================
@@ -484,11 +461,8 @@ install_singbox() {
 
     RELEASE_JSON=$(curl -sL --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null || echo "")
     if [ -n "$RELEASE_JSON" ]; then
-        if command -v jq >/dev/null 2>&1; then
-            LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "")
-        else
-            LATEST_TAG=$(echo "$RELEASE_JSON" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"v([0-9]+\.[0-9]+\.[0-9]+)".*/v\1/' || echo "")
-        fi
+    if command -v jq >/dev/null 2>&1; then LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null || echo "")
+    else LATEST_TAG=$(echo "$RELEASE_JSON" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9.]+"' | head -n1 | sed -E 's/.*"(v[0-9.]+)".*/\1/' || echo ""); fi
     fi
 
     [ -z "$LATEST_TAG" ] && { warn "GitHub API 请求失败，尝试官方镜像..."; DOWNLOAD_SOURCE="官方镜像"; LATEST_TAG=$(curl -sL --max-time 15 https://sing-box.org/ 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1 || echo ""); }
@@ -538,23 +512,15 @@ create_config() {
     
     # 1. 端口确定逻辑
     if [ -z "$PORT_HY2" ]; then
-        if [ -f /etc/sing-box/config.json ]; then
-            PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
-        else
-            PORT_HY2=$(shuf -i 10000-60000 -n 1)
-        fi
+        if [ -f /etc/sing-box/config.json ]; then PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
+        else PORT_HY2=$(shuf -i 10000-60000 -n 1); fi
     fi
-
+    
     # 2. PSK (密码) 确定逻辑
     local PSK
-    if [ -f /etc/sing-box/config.json ]; then
-        PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
-    elif [ -f /proc/sys/kernel/random/uuid ]; then
-        PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
-    else
-        local seed=$(openssl rand -hex 16)
-        PSK="${seed:0:8}-${seed:8:4}-${seed:12:4}-${seed:16:4}-${seed:20:12}"
-    fi
+    if [ -f /etc/sing-box/config.json ]; then PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
+    elif [ -f /proc/sys/kernel/random/uuid ]; then PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
+    else local s=$(openssl rand -hex 16); PSK="${s:0:8}-${s:8:4}-${s:12:4}-${s:16:4}-${s:20:12}"; fi
 
     # 3. Salamander 混淆密码确定逻辑
     local SALA_PASS=""
@@ -601,7 +567,6 @@ EOF
 # ==========================================
 setup_service() {  
     info "配置系统服务 (MEM限制: $SBOX_MEM_MAX | Nice: $VAR_SYSTEMD_NICE)..."
-    
     local go_debug_val="GODEBUG=memprofilerate=0,madvdontneed=1"
     local env_list=(
         "Environment=GOGC=${SBOX_GOGC:-100}"
@@ -654,14 +619,11 @@ EOF
         systemctl daemon-reload && systemctl enable sing-box --now
         sleep 1
         if systemctl is-active --quiet sing-box; then
-            local info=$(ps -p $(systemctl show -p MainPID --value sing-box) -o pid=,rss= 2>/dev/null)
-            local pid=$(echo $info | awk '{print $1}')
-            local rss_mb=$(echo $info | awk '{printf "%.2f MB", $2/1024}')
-            succ "sing-box 启动成功 | PID: ${pid:-N/A} | 内存: ${rss_mb:-N/A}"
+        local info=$(ps -p $(systemctl show -p MainPID --value sing-box) -o pid=,rss= 2>/dev/null)
+        local pid=$(echo $info | awk '{print $1}') rss=$(echo $info | awk '{printf "%.2f MB", $2/1024}')
+        succ "sing-box 启动成功 | PID: ${pid:-N/A} | 内存: ${rss:-N/A}"
         else
-            err "sing-box 启动失败。最近 3 行日志："
-            journalctl -u sing-box -n 3 --no-pager | tail -n 3
-            exit 1
+            err "sing-box 启动失败，最近 3 行日志："; journalctl -u sing-box -n 3 --no-pager | tail -n 3; exit 1
         fi
 fi
 }
@@ -680,8 +642,7 @@ get_env_data() {
 }
 
 display_links() {
-    local LINK_V4="" LINK_V6="" FULL_CLIP=""
-    local OBFS_PART="" 
+    local LINK_V4="" LINK_V6="" FULL_CLIP="" OBFS_PART="" 
     [ -n "${RAW_SALA:-}" ] && OBFS_PART="&obfs=salamander&obfs-password=${RAW_SALA}"
 
     echo -e "\n\033[1;32m[节点信息]\033[0m \033[1;34m>>>\033[0m 运行端口: \033[1;33m${RAW_PORT:-"未知"}\033[0m"
@@ -764,15 +725,11 @@ apply_userspace_adaptive_profile apply_nic_core_boost \
 check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
 
     for f in "${funcs[@]}"; do
-        if declare -f "$f" >/dev/null 2>&1; then
-            declare -f "$f" >> "$CORE_TMP"
-            echo "" >> "$CORE_TMP"
-        fi
+    if declare -f "$f" >/dev/null 2>&1; then declare -f "$f" >> "$CORE_TMP"; echo "" >> "$CORE_TMP"; fi
     done
 
     cat >> "$CORE_TMP" <<'EOF'
-detect_os
-set +e
+detect_os; set +e
 
 # 自动从配置提取端口并放行
 apply_firewall() {
@@ -784,34 +741,24 @@ apply_firewall() {
     fi
 }
 
-if [[ "${1:-}" == "--detect-only" ]]; then
-    :
+if [[ "${1:-}" == "--detect-only" ]]; then :
 elif [[ "${1:-}" == "--show-only" ]]; then
-    get_env_data
-    echo -e "\n\033[1;34m==========================================\033[0m"
-    display_system_status
-    display_links
+    get_env_data; echo -e "\n\033[1;34m==========================================\033[0m"
+    display_system_status; display_links
 elif [[ "${1:-}" == "--reset-port" ]]; then
-    optimize_system
-    create_config "$2"
-    apply_firewall
-    setup_service
+    optimize_system; create_config "$2"; apply_firewall; setup_service
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl restart sing-box >/dev/null 2>&1 || rc-service sing-box restart >/dev/null 2>&1 || true
-    get_env_data
-    display_links
+    get_env_data; display_links
 elif [[ "${1:-}" == "--update-kernel" ]]; then
     if install_singbox "update"; then
-        optimize_system
-        setup_service
-        apply_firewall
+        optimize_system; setup_service; apply_firewall
         systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl restart sing-box >/dev/null 2>&1 || rc-service sing-box restart >/dev/null 2>&1 || true
-        echo -e "\033[1;32m[OK]\033[0m 内核已更新并应用防火墙规则"
+        succ "内核已更新并应用防火墙规则"
     fi
 elif [[ "${1:-}" == "--apply-cwnd" ]]; then
-    apply_initcwnd_optimization "true" || true
-    apply_firewall # 确保每次系统启动调用此脚本时都会重新放行端口
+    apply_initcwnd_optimization "true" || true; apply_firewall
 fi
 EOF
 
@@ -845,9 +792,7 @@ while true; do
     read -r -p "请选择 [0-6]: " opt
     opt=$(echo "$opt" | xargs echo -n 2>/dev/null || echo "$opt")
     if [[ -z "$opt" ]] || [[ ! "$opt" =~ ^[0-6]$ ]]; then
-        echo -e "\033[1;31m输入有误 [$opt]，请重新输入\033[0m"
-        sleep 1.5
-        continue
+    echo -e "\033[1;31m输入有误 [$opt]，请重新输入\033[0m"; sleep 1.5; continue
     fi
     case "$opt" in
         1) source "$CORE" --show-only; read -r -p $'\n按回车键返回菜单...' ;;
