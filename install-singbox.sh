@@ -88,16 +88,16 @@ install_dependencies() {
             info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -y >/dev/null 2>&1 || true
-            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping iptables kmod findutils \
+            apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping iptables ufw kmod findutils \
                 || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2 iptables"; exit 1; }
             ;;
         yum)
             info "检测到 RHEL/CentOS 系统，正在安装依赖..."
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y curl jq openssl ca-certificates procps-ng iproute iptables \
+                dnf install -y curl jq openssl ca-certificates procps-ng iproute iptables ufw \
                     || { err "dnf 安装依赖失败，请手动运行"; exit 1; }
             else
-                yum install -y curl jq openssl ca-certificates procps-ng iproute iptables \
+                yum install -y curl jq openssl ca-certificates procps-ng iproute iptables ufw \
                     || { err "yum 安装依赖失败，请手动运行"; exit 1; }
             fi
             ;;
@@ -337,30 +337,30 @@ optimize_system() {
 
     # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="500"
+        SBOX_GOLIMIT="$((mem_total * 88 / 100))MiB"; SBOX_GOGC="500"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; VAR_DEF_MEM="327680"
         VAR_BACKLOG=32768; swappiness_val=10; busy_poll_val=50
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="400"
+        SBOX_GOLIMIT="$((mem_total * 85 / 100))MiB"; SBOX_GOGC="400"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; VAR_DEF_MEM="229376"
         VAR_BACKLOG=16384; swappiness_val=10; busy_poll_val=20
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
+        SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"
         VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
-        SBOX_GOLIMIT="$((mem_total * 75 / 100))MiB"; SBOX_GOGC="300"
-        VAR_UDP_RMEM="2097152"; VAR_UDP_WMEM="2097152"
-        VAR_SYSTEMD_NICE="-2"; VAR_SYSTEMD_IOSCHED="best-effort"
+        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="300"
+        VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304"
+        VAR_SYSTEMD_NICE="-4"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="100"; SBOX_GOMAXPROCS="1"; VAR_DEF_MEM="65536"
         VAR_BACKLOG=5000; swappiness_val=100; busy_poll_val=0
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
@@ -383,7 +383,7 @@ optimize_system() {
         SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} [内存锁限制]"
     fi
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
-    SBOX_MEM_MAX="$((mem_total * 90 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 80 / 100))M"
+    SBOX_MEM_MAX="$((mem_total * 92 / 100))M"; SBOX_MEM_HIGH="$((mem_total * 85 / 100))M"
 
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
 
@@ -638,7 +638,8 @@ User=root
 WorkingDirectory=/etc/sing-box
 $systemd_envs
 ExecStartPre=-$SBOX_CORE --apply-cwnd
-Nice=${VAR_SYSTEMD_NICE:-0}
+Nice=${VAR_SYSTEMD_NICE:--5}
+LimitMEMLOCK=infinity
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
 Restart=on-failure
 RestartSec=5s
@@ -650,7 +651,7 @@ LimitNOFILE=1000000
 WantedBy=multi-user.target
 EOF
 
-        systemctl daemon-reexec && systemctl daemon-reload && systemctl enable sing-box --now
+        systemctl daemon-reload && systemctl enable sing-box --now
         sleep 1
         if systemctl is-active --quiet sing-box; then
             local info=$(ps -p $(systemctl show -p MainPID --value sing-box) -o pid=,rss= 2>/dev/null)
@@ -728,13 +729,9 @@ display_system_status() {
 # ==========================================
 create_sb_tool() {
     mkdir -p /etc/sing-box
-    local FINAL_SALA
-    FINAL_SALA=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
-
-    # 1. 写入固化变量
-    local CORE_TMP
-    CORE_TMP=$(mktemp) || CORE_TMP="/tmp/core_script_$$.sh"
-
+    local FINAL_SALA=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
+    local CORE_TMP=$(mktemp) || CORE_TMP="/tmp/core_script_$$.sh"
+    # 写入固化变量
     cat > "$CORE_TMP" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail 
@@ -759,7 +756,7 @@ RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 EOF
 
-    # 2. 导出函数
+    # 导出函数
     local funcs=(probe_network_rtt probe_memory_total apply_initcwnd_optimization prompt_for_port \
 get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
@@ -773,15 +770,13 @@ check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_co
         fi
     done
 
-    # 3. 追加核心逻辑 (含自动防火墙放行)
     cat >> "$CORE_TMP" <<'EOF'
 detect_os
 set +e
 
 # 自动从配置提取端口并放行
 apply_firewall() {
-    local port
-    port=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
+    local port=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
     if [[ -n "$port" ]]; then
         [[ -x "$(command -v ufw)" ]] && ufw allow "$port"/udp >/dev/null 2>&1 || true
         [[ -x "$(command -v firewall-cmd)" ]] && { firewall-cmd --add-port="$port"/udp --permanent >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1; } || true
@@ -822,8 +817,7 @@ EOF
 
     mv "$CORE_TMP" "$SBOX_CORE"
     chmod 700 "$SBOX_CORE"
-
-    # 4. 生成交互管理脚本 /usr/local/bin/sb (修改选项2和5)
+    # 生成交互管理脚本 /usr/local/bin/sb
     local SB_PATH="/usr/local/bin/sb"
     cat > "$SB_PATH" <<'EOF'
 #!/usr/bin/env bash
@@ -834,13 +828,9 @@ if [ ! -f "$CORE" ]; then echo "核心文件丢失"; exit 1; fi
 source "$CORE" --detect-only
 
 service_ctrl() {
-    /bin/bash "$CORE" --apply-cwnd >/dev/null 2>&1 || true  # 这里内部会调用 apply_firewall
-    if [ -f /etc/init.d/sing-box ]; then 
-        rc-service sing-box $1
-    else 
-        systemctl daemon-reload >/dev/null 2>&1 || true    # 确保 Systemd 意识到配置已改
-        systemctl $1 sing-box
-    fi
+    /bin/bash "$CORE" --apply-cwnd >/dev/null 2>&1 || true
+    if [ -f /etc/init.d/sing-box ]; then rc-service sing-box "$1"
+    else systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "$1" sing-box; fi
 }
 
 while true; do
@@ -863,11 +853,8 @@ while true; do
         1) source "$CORE" --show-only; read -r -p $'\n按回车键返回菜单...' ;;
         2) f="/etc/sing-box/config.json"; old=$(md5sum $f 2>/dev/null)
            vi $f; if [ "$old" != "$(md5sum $f 2>/dev/null)" ]; then
-               service_ctrl restart
-               echo -e "\n\033[1;32m[OK]\033[0m 配置已存且防火墙规则已同步，服务重启完毕"
-           else
-               echo -e "\n\033[1;33m[INFO]\033[0m 配置未作变更"
-           fi
+               service_ctrl restart && succ "配置已更新，防火墙与服务已同步重启"
+           else info "配置未作变更"; fi
            read -r -p $'\n按回车键返回菜单...' ;;
         3) source "$CORE" --reset-port "$(prompt_for_port)"; read -r -p $'\n按回车键返回菜单...' ;;
         4) source "$CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
