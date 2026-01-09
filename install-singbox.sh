@@ -263,13 +263,13 @@ apply_nic_core_boost() {
     # --- 3. 调度与亲和性 ---
     if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
         local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
-        for q in /sys/class/net/"$IFACE"/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
-            [ -e "$q" ] && timeout 0.5s bash -c "echo '$MASK' > '$q'" 2>/dev/null || true
+        find "/sys/class/net/$IFACE/queues" -type f \( -name "rps_cpus" -o -name "xps_cpus" \) 2>/dev/null | while read -r q; do
+            [ -w "$q" ] && timeout 0.5s bash -c "echo '$MASK' > '$q'" 2>/dev/null || true
         done
-        info "NIC Boost → 多核模式 (bgt:$bgt, usc:$usc)"
+        info "NIC Boost → 多核并行模式 (Mask: $MASK)"
     else
         sysctl -w net.core.netdev_max_backlog=5000 >/dev/null 2>&1 || true
-        info "NIC Boost → 单核模式 (bgt:$bgt, usc:$usc)"
+        info "NIC Boost → 单核生存模式 (Backlog: 5000)"
     fi
 }
 
