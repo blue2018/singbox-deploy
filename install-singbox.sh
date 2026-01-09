@@ -615,6 +615,7 @@ EOF
 Description=Sing-box Service (Optimized)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -622,16 +623,12 @@ User=root
 WorkingDirectory=/etc/sing-box
 $systemd_envs
 ExecStartPre=-/bin/bash $SBOX_CORE --apply-cwnd
+ExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json
+ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash $SBOX_CORE --apply-cwnd'
 Nice=$current_nice
 LimitMEMLOCK=infinity
-CPUWeight=1000
-IOWeight=1000
-ExecStart=$SBOX_CORE run -c /etc/sing-box/config.json
-# 联动补刀：改用固化接口，启动 3 秒后再次强制刷一次 initcwnd
-ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash $SBOX_CORE --apply-cwnd'
 Restart=always
 RestartSec=3s
-StartLimitIntervalSec=0
 StartLimitBurst=5
 $( [[ -n "${SBOX_MEM_HIGH:-}" ]] && echo "MemoryHigh=$SBOX_MEM_HIGH" )
 $( [[ -n "${SBOX_MEM_MAX:-}" ]] && echo "MemoryMax=$SBOX_MEM_MAX" )
