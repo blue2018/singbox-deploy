@@ -493,10 +493,9 @@ install_singbox() {
     trap 'rm -rf "${TMP_D:-/dev/null}" >/dev/null 2>&1 || true' EXIT
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
 
-    info "开始下载内核 (实时进度):"
+    info "开始下载内核..."
     for LINK in "https://mirror.ghproxy.com/$URL" "$URL" "https://sing-box.org/releases/$(basename $URL)"; do
-        # 增加 2>/dev/null 屏蔽 curl 内部的 EOF 警告，仅保留进度条显示
-        curl -fL -k --http1.1 --tlsv1.2 --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 120 "$LINK" -o "$TMP_FILE" 2>/dev/null && \
+        curl -fL -k --http1.1 --tlsv1.2 --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 45 "$LINK" -o "$TMP_FILE" 2>/dev/null && \
         [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; } || warn "线路异常，尝试切换..."
     done
 
@@ -505,7 +504,6 @@ install_singbox() {
     tar -xf "$TMP_FILE" -C "$TMP_D"
     pgrep sing-box >/dev/null && (systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true)
     
-    # 压缩安装逻辑：直接尝试通配符路径，失败则使用 find 兜底，单行完成
     install -m 755 "$TMP_D"/sing-box-*/sing-box /usr/bin/sing-box 2>/dev/null || \
     install -m 755 "$(find "$TMP_D" -type f -name "sing-box" | head -n1)" /usr/bin/sing-box || { err "安装失败"; return 1; }
 
