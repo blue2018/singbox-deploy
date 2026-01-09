@@ -8,7 +8,7 @@ set -euo pipefail
 SBOX_ARCH="";          OS_DISPLAY="";         SBOX_CORE="/etc/sing-box/core_script.sh"
 SBOX_GOLIMIT="52MiB";  SBOX_GOGC="80";        SBOX_MEM_MAX="55M"
 SBOX_MEM_HIGH="";      SBOX_GOMAXPROCS="";    SBOX_OPTIMIZE_LEVEL="未检测"
-VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE=""
+VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE="";     INITCWND_DONE="false"
 VAR_SYSTEMD_IOSCHED="";VAR_HY2_BW="200";      RAW_SALA="";             VAR_DEF_MEM=""
 
 # TLS 域名随机池 (针对中国大陆环境优化)
@@ -179,7 +179,6 @@ apply_initcwnd_optimization() {
     dev=$(echo "$info" | grep -oE 'dev [^ ]+' | awk '{print $2}')
     mtu=$(echo "$info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
     mss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $mss"
-    INITCWND_DONE="false"
 
     # 逻辑压缩：尝试 change -> replace -> dev replace -> fallback
     if { [ -n "$gw" ] && [ -n "$dev" ] && ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
@@ -742,12 +741,13 @@ create_sb_tool() {
 set -uo pipefail 
 SBOX_CORE='$SBOX_CORE'
 SBOX_GOLIMIT='$SBOX_GOLIMIT'
-SBOX_GOGC='${SBOX_GOGC:-80}'
+SBOX_GOGC='${SBOX_GOGC:-100}'
 SBOX_MEM_MAX='$SBOX_MEM_MAX'
 SBOX_MEM_HIGH='${SBOX_MEM_HIGH:-}'
 SBOX_GOMAXPROCS='${SBOX_GOMAXPROCS:-}'
 SBOX_OPTIMIZE_LEVEL='$SBOX_OPTIMIZE_LEVEL'
-VAR_SYSTEMD_NICE='$VAR_SYSTEMD_NICE'
+INITCWND_DONE='${INITCWND_DONE:-false}'
+VAR_SYSTEMD_NICE='$nice_val'
 VAR_SYSTEMD_IOSCHED='$VAR_SYSTEMD_IOSCHED'
 VAR_DEF_MEM='${VAR_DEF_MEM:-212992}'
 VAR_UDP_RMEM='${VAR_UDP_RMEM:-4194304}'
@@ -802,6 +802,7 @@ elif [[ "${1:-}" == "--update-kernel" ]]; then
         succ "内核已更新并应用防火墙规则"
     fi
 elif [[ "${1:-}" == "--apply-cwnd" ]]; then
+    apply_userspace_adaptive_profile >/dev/null 2>&1 || true
     apply_initcwnd_optimization "true" || true; apply_firewall
 fi
 EOF
@@ -827,6 +828,7 @@ service_ctrl() {
 while true; do
     echo "=========================="
     echo " Sing-box HY2 管理 (sb)"
+    echo " 档位: ${SBOX_OPTIMIZE_LEVEL:-未知} | 模式: $([[ "$INITCWND_DONE" == "true" ]] && echo "内核15" || echo "应用补偿")"
     echo "=========================="
     echo "1. 查看信息    5. 重启服务"
     echo "2. 修改配置    6. 卸载脚本"
@@ -842,22 +844,23 @@ while true; do
         1) source "$CORE" --show-only; read -r -p $'\n按回车键返回菜单...' ;;
         2) f="/etc/sing-box/config.json"; old=$(md5sum $f 2>/dev/null)
            vi $f; if [ "$old" != "$(md5sum $f 2>/dev/null)" ]; then
-               service_ctrl restart && succ "配置已更新，防火墙与服务已同步重启"
+               service_ctrl restart && succ "配置已更新，网络画像与防火墙已同步刷新"
            else info "配置未作变更"; fi
            read -r -p $'\n按回车键返回菜单...' ;;
         3) source "$CORE" --reset-port "$(prompt_for_port)"; read -r -p $'\n按回车键返回菜单...' ;;
         4) source "$CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
-        5) service_ctrl restart && info "防火墙规则已刷新，服务已重启"; read -r -p $'\n按回车键返回菜单...' ;;
+        5) service_ctrl restart && info "系统服务和优化参数已重载"; read -r -p $'\n按回车键返回菜单...' ;;
         6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
            if [[ "${cf,,}" == "y" ]]; then
                service_ctrl stop >/dev/null 2>&1 || true
                [ -f /etc/init.d/sing-box ] && rc-update del sing-box >/dev/null 2>&1 || true
+               rm -f /etc/sysctl.d/99-sing-box.conf
                printf "net.ipv4.ip_forward=1\nvm.swappiness=60\n" > /etc/sysctl.conf
                sysctl -p >/dev/null 2>&1 || true
                [ -f /swapfile ] && { swapoff /swapfile 2>/dev/null || true; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; }
                rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
                       /etc/systemd/system/sing-box.service /etc/init.d/sing-box "$CORE"
-               echo "卸载完成"; exit 0
+               echo "卸载完成，系统配置已还原"; exit 0
            fi ;;
         0) exit 0 ;;
     esac
