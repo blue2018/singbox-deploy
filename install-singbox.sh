@@ -470,7 +470,7 @@ install_singbox() {
     local MODE="${1:-install}" LOCAL_VER="未安装" TMP_D="" TMP_FILE="" success=false DOWNLOAD_SOURCE="GitHub"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}' || echo "未安装")
 
-    info "通过 GitHub 获取 Sing-Box 最新版本信息 ..."
+    info "通过 $DOWNLOAD_SOURCE 获取 Sing-Box 最新版本信息 ..."
     local RELEASE_JSON=$(curl -sL --http1.1 --connect-timeout 15 --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null || echo "")
     if [[ -n "$RELEASE_JSON" ]]; then
         command -v jq >/dev/null 2>&1 && LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name 2>/dev/null) || \
@@ -501,11 +501,12 @@ install_singbox() {
     trap 'rm -rf "${TMP_D:-/dev/null}" >/dev/null 2>&1 || true' EXIT
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
 
-    info "下载 sing-box 内核..."
+    info "开始下载 sing-box 内核 (实时进度):"
     for LINK in "https://mirror.ghproxy.com/$URL" "$URL" "https://sing-box.org/releases/sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"; do
-    curl -fL -k --http1.1 -sS --connect-timeout 20 --max-time 45 "$LINK" -o "$TMP_FILE" && \
-    [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; }
-    warn "下载失败或文件异常: $LINK"
+        # 移除 -sS，增加 --progress-bar 展现清晰的进度条
+        curl -fL -k --http1.1 --progress-bar --connect-timeout 20 --max-time 45 "$LINK" -o "$TMP_FILE" && \
+        [[ -f "$TMP_FILE" && $(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0) -gt 1000000 ]] && { success=true; break; }
+        warn "下载尝试失败: $LINK"
     done
 
     if [[ "$success" == "false" ]]; then
