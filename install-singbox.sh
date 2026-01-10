@@ -647,18 +647,26 @@ EOF
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service (Optimized)
-After=network-online.target; Wants=network-online.target; StartLimitIntervalSec=60
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
 [Service]
-Type=simple; User=root; WorkingDirectory=/etc/sing-box
+Type=simple
+User=root
+WorkingDirectory=/etc/sing-box
 EnvironmentFile=-/etc/sing-box/env
 Environment=GOTRACEBACK=none
 ExecStartPre=-/bin/bash $SBOX_CORE --apply-cwnd
 ExecStart=$taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json
 ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash $SBOX_CORE --apply-cwnd'
 Nice=$cur_nice
-LimitMEMLOCK=infinity; LimitNOFILE=1000000
-Restart=always; RestartSec=3s; StartLimitBurst=3
-${mem_l}CPUWeight=1000; IOWeight=1000
+LimitMEMLOCK=infinity
+LimitNOFILE=1000000
+Restart=always
+RestartSec=3s
+StartLimitBurst=3
+${mem_l}CPUWeight=1000
+IOWeight=1000
 [Install]
 WantedBy=multi-user.target
 EOF
