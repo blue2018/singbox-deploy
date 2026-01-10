@@ -585,7 +585,7 @@ create_config() {
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
-    "listen": "0.0.0.0",
+    "listen": "::",
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": false,
@@ -626,12 +626,14 @@ setup_service() {
     info "配置服务 (核心: $CPU_N | 绑定: $core_range | 优先级Nice: $cur_nice)..."
     
     if [ "$OS" = "alpine" ]; then
-        local openrc_export="export GOTRACEBACK=none"
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
+respawn_delay=3; respawn_max=3; respawn_period=60
+description="Sing-box Optimized Service"
+supervisor="supervise-daemon"
 [ -f /etc/sing-box/env ] && . /etc/sing-box/env
-$openrc_export
+export GOTRACEBACK=none
 command="/usr/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
