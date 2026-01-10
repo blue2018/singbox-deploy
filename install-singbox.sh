@@ -627,8 +627,6 @@ setup_service() {
     
     if [ "$OS" = "alpine" ]; then
         cat > /etc/init.d/sing-box <<EOF
-if [ "$OS" = "alpine" ]; then
-    cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
 description="Sing-box Optimized Service"
