@@ -799,11 +799,12 @@ detect_os; set +e
 
 # 自动从配置提取端口并放行
 apply_firewall() {
-    local port=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
-    if [[ -n "$port" ]]; then
-        [[ -x "$(command -v ufw)" ]] && ufw allow "$port"/udp >/dev/null 2>&1 || true
-        [[ -x "$(command -v firewall-cmd)" ]] && { firewall-cmd --add-port="$port"/udp --permanent >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1; } || true
-        [[ -x "$(command -v iptables)" ]] && iptables -I INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
+    local port=$(jq -r '.inbounds[0].listen_port // .inbounds[0].port // empty' /etc/sing-box/config.json 2>/dev/null)
+    [ -z "$port" ] && return
+    if command -v ufw >/dev/null 2>&1; then ufw allow "$port"/udp >/dev/null 2>&1 || true
+    elif command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --add-port="$port"/udp --permanent >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 || true
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -C INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1 || iptables -I INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
     fi
 }
 
@@ -843,9 +844,8 @@ if [ ! -f "\$SBOX_CORE" ]; then echo "核心文件丢失"; exit 1; fi
 source "\$SBOX_CORE" --detect-only
 
 service_ctrl() {
-    /bin/bash "\$SBOX_CORE" --apply-cwnd >/dev/null 2>&1 || true
-    if [ -f /etc/init.d/sing-box ]; then rc-service sing-box "\$1"
-    else systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "\$1" sing-box; fi
+    [ -x "/etc/init.d/sing-box" ] && rc-service sing-box "\$1" && return
+    systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "\$1" sing-box
 }
 
 while true; do
