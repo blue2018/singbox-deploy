@@ -277,11 +277,11 @@ apply_nic_core_boost() {
     if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
         local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
         for q in /sys/class/net/"$IFACE"/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
-            [ -e "$q" ] && timeout 0.5s bash -c "echo '$MASK' > '$q'" 2>/dev/null || true
+            [ -e "$q" ] && echo "$MASK" > "$q" 2>/dev/null || true
         done
-        info "NIC Boost → 多核模式 (bgt:$bgt, usc:$usc)"
+        info "NIC Boost → 多核模式 (bgt:$bgt, usc:$usc, mask:$MASK)"
     else
-        # 针对单核小鸡，我们通过增大接收队列长度来“变相优化”
+        # 针对单核小鸡，增大接收队列长度
         sysctl -w net.core.netdev_max_backlog=2000 >/dev/null 2>&1 || true
         info "NIC Boost → 单核模式 (bgt:$bgt, usc:$usc)"
     fi
