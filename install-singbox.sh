@@ -5,11 +5,11 @@ set -euo pipefail
 # 基础变量声明与环境准备
 # ==========================================
 # === 系统与环境参数初始化 ===
-SBOX_ARCH="";          OS_DISPLAY="";         SBOX_CORE="/etc/sing-box/core_script.sh"
-SBOX_GOLIMIT="48MiB";  SBOX_GOGC="80";        SBOX_MEM_MAX="55M";      SBOX_OPTIMIZE_LEVEL="未检测"
-SBOX_MEM_HIGH="";      CPU_CORE="1";          INITCWND_DONE="false";   VAR_DEF_MEM=""
-VAR_UDP_RMEM="";       VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE=""
-VAR_SYSTEMD_IOSCHED="";VAR_HY2_BW="200";      RAW_SALA=""
+SBOX_ARCH="";            OS_DISPLAY="";         SBOX_CORE="/etc/sing-box/core_script.sh"
+SBOX_GOLIMIT="48MiB";    SBOX_GOGC="80";        SBOX_MEM_MAX="55M";      SBOX_OPTIMIZE_LEVEL="未检测"
+SBOX_MEM_HIGH="42M";     CPU_CORE="1";          INITCWND_DONE="false";   VAR_DEF_MEM=""
+VAR_UDP_RMEM="";         VAR_UDP_WMEM="";       VAR_SYSTEMD_NICE=""
+VAR_SYSTEMD_IOSCHED="";  VAR_HY2_BW="200";      RAW_SALA=""
 
 # TLS 域名随机池 (针对中国大陆环境优化)
 TLS_DOMAIN_POOL=(
