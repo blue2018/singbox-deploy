@@ -593,6 +593,8 @@ create_config() {
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
     "udp_fragment": true,
+    "sniff": true,
+    "sniff_override_destination": true,
     "tls": {
       "enabled": true,
       "alpn": ["h3"],
