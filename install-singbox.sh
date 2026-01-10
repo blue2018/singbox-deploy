@@ -585,7 +585,7 @@ create_config() {
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
-    "listen": "::",
+    "listen": "0.0.0.0",
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
     "ignore_client_bandwidth": false,
