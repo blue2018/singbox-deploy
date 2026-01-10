@@ -626,20 +626,45 @@ setup_service() {
     info "配置服务 (核心: $CPU_N | 绑定: $core_range | 优先级Nice: $cur_nice)..."
     
     if [ "$OS" = "alpine" ]; then
+        # 预先获取环境变量，用于在脚本中硬编码导出，确保 supervise-daemon 能够识别
+        local env_file="/etc/sing-box/env"
+        
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
-name="sing-box"; description="Sing-box Optimized Service"
-supervisor="supervise-daemon"; respawn_delay=3; respawn_max=3; respawn_period=60
-depend() { need net; after firewall; }
-[ -f /etc/sing-box/env ] && . /etc/sing-box/env
+name="sing-box"
+description="Sing-box Optimized Service for Alpine"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=3
+respawn_period=60
+[ -f "$env_file" ] && . "$env_file"
+export GOMAXPROCS=\$GOMAXPROCS
+export GOGC=\$GOGC
+export GOMEMLIMIT=\$GOMEMLIMIT
+export GODEBUG="memprofilerate=0,madvdontneed=1"
 export GOTRACEBACK=none
-command="$nice_bin"; command_args="-n $cur_nice $taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
-command_background="yes"; pidfile="/run/\${RC_SVCNAME}.pid"
-start_pre() { ulimit -n 1000000; ulimit -l infinity; /bin/bash $SBOX_CORE --apply-cwnd || true; }
-start_post() { (sleep 3; /bin/bash $SBOX_CORE --apply-cwnd) & }
+depend() {
+    need net
+    after firewall
+}
+command="$nice_bin"
+command_args="-n $cur_nice $taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
+command_background="yes"
+pidfile="/run/\${RC_SVCNAME}.pid"
+start_pre() {
+    local BASH_PATH=\$(command -v bash)
+    ulimit -n 1000000
+    ulimit -l infinity
+    sysctl -w net.ipv6.bindv6only=0 >/dev/null 2>&1 || true
+    [ -n "\$BASH_PATH" ] && \$BASH_PATH $SBOX_CORE --apply-cwnd || true
+}
+start_post() {
+    (sleep 3; /usr/bin/env bash $SBOX_CORE --apply-cwnd) &
+}
 EOF
         chmod +x /etc/init.d/sing-box
-        rc-update add sing-box default && rc-service sing-box restart
+        rc-update add sing-box default >/dev/null 2>&1
+        rc-service sing-box restart
     else
         # Systemd 压缩版：利用变量拼接处理内存限制
         local mem_l=""
@@ -793,10 +818,16 @@ detect_os; set +e
 # 自动从配置提取端口并放行
 apply_firewall() {
     local port=$(jq -r '.inbounds[0].listen_port // empty' /etc/sing-box/config.json 2>/dev/null)
-    if [[ -n "$port" ]]; then
+    [ -z "$port" ] && return
+    
+    if [ "$OS" = "alpine" ]; then
+        apk add -q iptables ip6tables
+        iptables -I INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null
+        ip6tables -I INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null
+        rc-service iptables save 2>/dev/null || true
+        rc-update add iptables default >/dev/null 2>&1
+    else
         [[ -x "$(command -v ufw)" ]] && ufw allow "$port"/udp >/dev/null 2>&1 || true
-        [[ -x "$(command -v firewall-cmd)" ]] && { firewall-cmd --add-port="$port"/udp --permanent >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1; } || true
-        [[ -x "$(command -v iptables)" ]] && iptables -I INPUT -p udp --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
     fi
 }
 
