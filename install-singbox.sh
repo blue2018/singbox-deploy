@@ -164,7 +164,7 @@ get_network_info() {
     [[ -z "$RAW_IP4" && -z "$RAW_IP6" ]] && { err "未检测到公网IP，退出脚本安装"; exit 1; }
 
     ping -4 -c1 -W1 1.1.1.1 >/dev/null 2>&1 && v4_ok="\033[32m✓\033[0m"
-    ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && v6_ok="\033[32m✓\033[0m"
+    ping6 -c1 -W1 2606:4700:4700::1111 >/dev/null 2>&1 && { v6_ok="\033[32m✓\033[0m"; export IS_V6_OK=true; } || export IS_V6_OK=false
 
     [ -n "$RAW_IP4" ] && info "IPv4 地址: \033[32m$RAW_IP4\033[0m [$v4_ok]" || info "IPv4 地址: \033[33m未检测到\033[0m"
     [ -n "$RAW_IP6" ] && info "IPv6 地址: \033[32m$RAW_IP6\033[0m [$v6_ok]" || info "IPv6 地址: \033[33m未检测到\033[0m"
@@ -539,6 +539,8 @@ install_singbox() {
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
+    local ds="ipv4_only"
+    [ "$IS_V6_OK" = "true" ] && ds="prefer_ipv4"
     
     # 1. 端口确定逻辑
     if [ -z "$PORT_HY2" ]; then
@@ -572,7 +574,7 @@ create_config() {
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "error", "timestamp": true },
-  "dns": {"servers":[{"address":"https://1.1.1.1/dns-query","detour":"direct-out"},{"address":"https://8.8.4.4/dns-query","detour":"direct-out"}],"strategy":"prefer_ipv4","independent_cache":true,"disable_cache":false,"disable_expire":false},
+  "dns": {"servers":[{"address":"https://1.1.1.1/dns-query","detour":"direct-out"},{"address":"https://8.8.4.4/dns-query","detour":"direct-out"}],"strategy":"$ds","independent_cache":true,"disable_cache":false,"disable_expire":false},
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
@@ -588,7 +590,7 @@ create_config() {
     "obfs": {"type": "salamander", "password": "$SALA_PASS"},
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
-  "outbounds": [{"type": "direct", "tag": "direct-out", "domain_strategy": "prefer_ipv4"}]
+  "outbounds": [{"type": "direct", "tag": "direct-out", "domain_strategy": "$ds"}]  
 }
 EOF
     chmod 600 "/etc/sing-box/config.json"
