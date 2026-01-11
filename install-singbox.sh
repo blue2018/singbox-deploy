@@ -649,9 +649,7 @@ EOF
             [ "$io_class" = "realtime" ] && [ "$mem_total" -ge 450 ] && \
                 io_config="IOSchedulingClass=realtime"$'\n'"IOSchedulingPriority=0" || \
                 io_config="IOSchedulingClass=best-effort"$'\n'"IOSchedulingPriority=2"
-        else
-            io_config="IOSchedulingClass=best-effort"$'\n'"IOSchedulingPriority=4"
-        fi
+        else { io_config="IOSchedulingClass=best-effort"$'\n'"IOSchedulingPriority=4"; } fi
         local cpu_quota=$((CPU_N * 100))
         [ "$cpu_quota" -lt 100 ] && cpu_quota=100
         cat > /etc/systemd/system/sing-box.service <<EOF
