@@ -560,15 +560,15 @@ create_config() {
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
     local mem=$(probe_memory_total)
-    local timeout idle_timeout recv_window_conn recv_window
+    local timeout idle_timeout #recv_window_conn recv_window
     if [ "$mem" -ge 450 ]; then
-        timeout="60s"; idle_timeout="90s"; recv_window_conn=12582912; recv_window=50331648  # 12MB/48MB
+        timeout="60s"; idle_timeout="90s" #; recv_window_conn=12582912; recv_window=50331648  # 12MB/48MB
     elif [ "$mem" -ge 200 ]; then
-        timeout="50s"; idle_timeout="75s"; recv_window_conn=6291456; recv_window=25165824   # 6MB/24MB
+        timeout="50s"; idle_timeout="75s" #; recv_window_conn=6291456; recv_window=25165824   # 6MB/24MB
     elif [ "$mem" -ge 100 ]; then
-        timeout="40s"; idle_timeout="60s"; recv_window_conn=3145728; recv_window=12582912   # 3MB/12MB
+        timeout="40s"; idle_timeout="60s" #; recv_window_conn=3145728; recv_window=12582912   # 3MB/12MB
     else
-        timeout="20s"; idle_timeout="30s"; recv_window_conn=1048576; recv_window=4194304    # 1MB/4MB
+        timeout="20s"; idle_timeout="30s" #; recv_window_conn=1048576; recv_window=4194304    # 1MB/4MB
     fi
     
     # 4. 写入 Sing-box 配置文件
@@ -586,8 +586,6 @@ create_config() {
     "up_mbps": ${VAR_HY2_BW:-200},
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_fragment": true,
-    "recv_window_conn": $recv_window_conn,
-    "recv_window": $recv_window,
     "disable_mtu_discovery": false,
     "udp_timeout": "$timeout",
     "max_idle_timeout": "$idle_timeout",
