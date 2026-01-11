@@ -683,7 +683,7 @@ TimeoutStopSec=15
 WantedBy=multi-user.target
 EOF
 
-        systemctl daemon-reload && systemctl enable sing-box --now
+        systemctl daemon-reload && systemctl enable sing-box --now >/dev/null 2>&1
         sleep 2
         if systemctl is-active --quiet sing-box; then
             local info=$(ps -p $(systemctl show -p MainPID --value sing-box) -o pid=,rss= 2>/dev/null)
