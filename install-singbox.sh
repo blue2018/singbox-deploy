@@ -582,7 +582,7 @@ create_config() {
   "independent_cache": true,
   "disable_cache": false,
   "disable_expire": false
-},
+  },
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
