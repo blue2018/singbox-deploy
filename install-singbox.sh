@@ -563,11 +563,15 @@ create_config() {
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
     local mem=$(probe_memory_total)
-    local timeout="30s"
-    # 动态判定：内存越小，回收越快
-    [ "$mem" -le 64 ] && timeout="20s"
-    [ "$mem" -gt 64 ] && [ "$mem" -le 128 ] && timeout="30s"
-    [ "$mem" -gt 512 ] && timeout="60s"
+    local timeout="20s" idle_timeout="30s" recv_window_conn=1048576 recv_window=4194304
+
+    if [ "$mem" -ge 450 ]; then
+        timeout="60s"; idle_timeout="90s"; recv_window_conn=12582912; recv_window=50331648
+    elif [ "$mem" -ge 200 ]; then
+        timeout="50s"; idle_timeout="75s"; recv_window_conn=6291456; recv_window=25165824
+    elif [ "$mem" -ge 100 ]; then
+        timeout="40s"; idle_timeout="60s"; recv_window_conn=3145728; recv_window=12582912
+    fi
     # 4. 写入 Sing-box 配置文件
     cat > "/etc/sing-box/config.json" <<EOF
 {
