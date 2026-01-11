@@ -539,55 +539,37 @@ install_singbox() {
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
-
-    # 定义一个安全的读取函数，防止 jq 报错导致脚本退出
-    safe_jq() {
-        [ -f /etc/sing-box/config.json ] && jq -r "$1" /etc/sing-box/config.json 2>/dev/null || echo ""
-    }
-
-    # 1. 端口逻辑
+    
+    # 1. 端口确定逻辑
     if [ -z "$PORT_HY2" ]; then
-        PORT_HY2=$(safe_jq '.inbounds[0].listen_port')
-        [ -z "$PORT_HY2" ] && PORT_HY2=$(shuf -i 10000-60000 -n 1)
+        if [ -f /etc/sing-box/config.json ]; then PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
+        else PORT_HY2=$(shuf -i 10000-60000 -n 1); fi
     fi
+    
+    # 2. PSK (密码) 确定逻辑
+    local PSK
+    if [ -f /etc/sing-box/config.json ]; then PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
+    elif [ -f /proc/sys/kernel/random/uuid ]; then PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
+    else local s=$(openssl rand -hex 16); PSK="${s:0:8}-${s:8:4}-${s:12:4}-${s:16:4}-${s:20:12}"; fi
 
-    # 2. PSK 逻辑
-    local PSK=$(safe_jq '.inbounds[0].users[0].password')
-    if [ -z "$PSK" ]; then
-        if [ -f /proc/sys/kernel/random/uuid ]; then PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
-        else PSK=$(openssl rand -hex 16); fi
+    # 3. Salamander 混淆密码确定逻辑
+    local SALA_PASS=""
+    if [ -f /etc/sing-box/config.json ]; then
+        SALA_PASS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
     fi
+    [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
-    # 3. 内存与变量逻辑 (拆分 local 确保兼容性)
-    local mem=$(probe_memory_total 2>/dev/null || echo 0)
-    local timeout="20s"
-    local idle_timeout="30s"
-    local recv_window_conn=1048576
-    local recv_window=4194304
-
-    # 使用 ${mem:-0} 防止空值比较报错
-    if [ "${mem:-0}" -ge 450 ]; then
-        timeout="60s"; idle_timeout="90s"; recv_window_conn=12582912; recv_window=50331648
-    elif [ "${mem:-0}" -ge 200 ]; then
-        timeout="50s"; idle_timeout="75s"; recv_window_conn=6291456; recv_window=25165824
-    elif [ "${mem:-0}" -ge 100 ]; then
-        timeout="40s"; idle_timeout="60s"; recv_window_conn=3145728; recv_window=12582912
-    fi
-
-    # 4. 写入文件 (注意：在 EOF 前后不要有任何空格或 Tab)
-cat > "/etc/sing-box/config.json" <<EOF
+    local mem=$(probe_memory_total)
+    local timeout="30s"
+    # 动态判定：内存越小，回收越快
+    [ "$mem" -le 64 ] && timeout="20s"
+    [ "$mem" -gt 64 ] && [ "$mem" -le 128 ] && timeout="30s"
+    [ "$mem" -gt 512 ] && timeout="60s"
+    # 4. 写入 Sing-box 配置文件
+    cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "error", "timestamp": true },
-  "dns": {
-    "servers": [
-      { "address": "https://1.1.1.1/dns-query", "detour": "direct-out" },
-      { "address": "https://8.8.4.4/dns-query", "detour": "direct-out" }
-    ],
-    "strategy": "prefer_ipv4",
-    "independent_cache": true,
-    "disable_cache": false,
-    "disable_expire": false
-  },
+  "dns": { "strategy": "prefer_ipv4", "independent_cache": true, "servers": [{ "address": "https://8.8.4.4/dns-query" }] },
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
@@ -597,14 +579,10 @@ cat > "/etc/sing-box/config.json" <<EOF
     "ignore_client_bandwidth": false,
     "up_mbps": ${VAR_HY2_BW:-200},
     "down_mbps": ${VAR_HY2_BW:-200},
-    "udp_fragment": true,
-    "recv_window_conn": $recv_window_conn,
-    "recv_window": $recv_window,
-    "disable_mtu_discovery": false,
     "udp_timeout": "$timeout",
-    "max_idle_timeout": "$idle_timeout",
+    "udp_fragment": true,
     "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
-    "obfs": {"type": "salamander", "password": "${SALA_PASS:-password}"},
+    "obfs": {"type": "salamander", "password": "$SALA_PASS"},
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
   "outbounds": [{"type": "direct", "tag": "direct-out", "domain_strategy": "prefer_ipv4"}]
@@ -612,6 +590,7 @@ cat > "/etc/sing-box/config.json" <<EOF
 EOF
     chmod 600 "/etc/sing-box/config.json"
 }
+
 # ==========================================
 # 服务配置
 # ==========================================
