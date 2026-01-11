@@ -597,7 +597,6 @@ create_config() {
     "recv_window": $recv_window,
     "disable_mtu_discovery": false,
     "udp_timeout": "$timeout",
-    "max_idle_timeout": "$idle_timeout",
     "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
     "obfs": {"type": "salamander", "password": "$SALA_PASS"},
     "masquerade": "${TLS_DOMAIN:-www.microsoft.com}"
