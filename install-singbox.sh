@@ -560,16 +560,19 @@ create_config() {
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
     local mem=$(probe_memory_total)
+    # 预设保底值，确保即便下面 if 全不成立，变量也有值
     local timeout="20s"
     local idle_timeout="30s"
     local recv_window_conn=1048576
     local recv_window=4194304
-    if [ "$mem" -ge 450 ]; then
-        timeout="60s"; idle_timeout="90s"; recv_window_conn=12582912; recv_window=50331648  # 12MB/48MB
-    elif [ "$mem" -ge 200 ]; then
-        timeout="50s"; idle_timeout="75s"; recv_window_conn=6291456; recv_window=25165824   # 6MB/24MB
-    elif [ "$mem" -ge 100 ]; then
-        timeout="40s"; idle_timeout="60s"; recv_window_conn=3145728; recv_window=12582912   # 3MB/12MB
+
+    # 使用数字逻辑确保比较安全
+    if [ "${mem:-0}" -ge 450 ]; then
+        timeout="60s"; idle_timeout="90s"; recv_window_conn=12582912; recv_window=50331648
+    elif [ "${mem:-0}" -ge 200 ]; then
+        timeout="50s"; idle_timeout="75s"; recv_window_conn=6291456; recv_window=25165824
+    elif [ "${mem:-0}" -ge 100 ]; then
+        timeout="40s"; idle_timeout="60s"; recv_window_conn=3145728; recv_window=12582912
     fi
     
     # 4. 写入 Sing-box 配置文件
