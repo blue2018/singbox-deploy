@@ -67,7 +67,7 @@ detect_os() {
 
 # 依赖安装 (容错增强版)
 install_dependencies() {
-    info "正在检查并安装必要依赖 (curl, jq, openssl, iptables)..."
+    info "正在检查系统类型..."
     if command -v apk >/dev/null 2>&1; then PM="apk"
     elif command -v apt-get >/dev/null 2>&1; then PM="apt"
     elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then PM="yum"
