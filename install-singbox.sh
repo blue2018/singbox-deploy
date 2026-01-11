@@ -765,21 +765,22 @@ display_links() {
 
 display_system_status() {
     local VER_INFO=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | sed 's/version /v/')
-    local CWND_VAL=$(ip route show default | awk -F 'initcwnd ' '{if($2) {split($2,a," "); print a[1]}}' | xargs)
+    local ROUTE_DEF=$(ip route show default | head -n1)
+    local CWND_VAL=$(echo "$ROUTE_DEF" | awk -F'initcwnd ' '{if($2){split($2,a," ");print a[1]}else{print "10"}}')
+    local CWND_LBL=$(echo "$ROUTE_DEF" | grep -q "initcwnd" && echo "(已优化)" || echo "(默认)")
+    local SBOX_PID=$(pgrep sing-box | head -n1)
+    local NI_VAL="离线"; local NI_LBL=""
+    if [ -n "$SBOX_PID" ]; then
+        NI_VAL=$(cat /proc/$SBOX_PID/stat | awk '{print $19}')
+        NI_LBL=$([ "$NI_VAL" -lt 0 ] && echo "(进程优先)" || echo "(默认)")
+    fi
     local current_cca=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
-    local CWND_LBL=$([[ "${CWND_VAL:-10}" -ge 15 ]] && echo "(已优化)" || echo "(默认)")
-    local bbr_display=""
-    case "$current_cca" in
-        bbr3)  bbr_display="BBRv3 (极致响应)" ;;
-        bbr2)  bbr_display="BBRv2 (平衡加速)" ;;
-        bbr)   bbr_display="BBRv1 (标准加速)" ;;
-        cubic) bbr_display="Cubic (普通模式)" ;;
-        *)     bbr_display="$current_cca (非标准)" ;;
-    esac
+    case "$current_cca" in bbr3) bbr_display="BBRv3 (极致响应)" ;; bbr2) bbr_display="BBRv2 (平衡加速)" ;; bbr) bbr_display="BBRv1 (标准加速)" ;; *) bbr_display="$current_cca (非标准)" ;; esac
 
     echo -e "系统版本: \033[1;33m$OS_DISPLAY\033[0m"
     echo -e "内核信息: \033[1;33m$VER_INFO\033[0m"
-    echo -e "Initcwnd: \033[1;33m${CWND_VAL:-10} $CWND_LBL\033[0m"
+    echo -e "进程权重: \033[1;33mNice $NI_VAL $NI_LBL\033[0m"
+    echo -e "Initcwnd: \033[1;33m$CWND_VAL $CWND_LBL\033[0m"
     echo -e "拥塞控制: \033[1;33m$bbr_display\033[0m"
     echo -e "优化级别: \033[1;32m${SBOX_OPTIMIZE_LEVEL:-未检测}\033[0m"
     echo -e "伪装SNI:  \033[1;33m${RAW_SNI:-未检测}\033[0m"
