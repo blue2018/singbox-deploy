@@ -634,10 +634,11 @@ setup_service() {
     
     if [ "$OS" = "alpine" ]; then
         command -v taskset >/dev/null || apk add --no-cache util-linux >/dev/null 2>&1
-        local exec_cmd="nice -n $cur_nice $taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
+        local nice_pfx="nice -n $cur_nice"; nice -n $cur_nice true 2>/dev/null || nice_pfx=""
+        local exec_cmd="$nice_pfx $taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
         if [ -n "$ionice_bin" ] && [ "$mem_total" -ge 200 ]; then
             local io_prio=2; [ "$mem_total" -ge 450 ] && [ "$io_class" = "realtime" ] && io_prio=0
-            exec_cmd="$ionice_bin -c 2 -n $io_prio $exec_cmd"  
+            exec_cmd="$ionice_bin -c 2 -n $io_prio $exec_cmd"
         fi
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
@@ -650,7 +651,7 @@ respawn_period=60
 [ -f /etc/sing-box/env ] && . /etc/sing-box/env
 export GOTRACEBACK=none
 command="/bin/sh"
-command_args="-c '$exec_cmd'"
+command_args="-c \"$exec_cmd\""
 pidfile="/run/\${RC_SVCNAME}.pid"
 rc_ulimit="-n 1000000"
 rc_nice="$cur_nice"
