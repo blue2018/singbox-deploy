@@ -652,8 +652,12 @@ respawn_max=5
 respawn_period=90
 [ -f /etc/sing-box/env ] && . /etc/sing-box/env
 export GOTRACEBACK=none
-command="$exec_cmd"
-command_background="yes"
+start() {
+    ebegin "Starting sing-box"
+    start-stop-daemon --start --background --make-pidfile \
+        --pidfile "\$pidfile" --exec /bin/sh -- -c "$exec_cmd"
+    eend \$?
+}
 pidfile="/run/\${RC_SVCNAME}.pid"
 rc_ulimit="-n 1000000"
 rc_nice="$cur_nice"
