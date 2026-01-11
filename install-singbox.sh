@@ -584,8 +584,6 @@ create_config() {
     "ignore_client_bandwidth": false,
     "up_mbps": ${VAR_HY2_BW:-200},
     "down_mbps": ${VAR_HY2_BW:-200},
-    "recv_window_conn": $recv_window_conn,
-    "recv_window": $recv_window,
     "disable_mtu_discovery": false,
     "udp_timeout": "$timeout",
     "max_idle_timeout": "$idle_timeout",
