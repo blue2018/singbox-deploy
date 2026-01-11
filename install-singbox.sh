@@ -248,43 +248,51 @@ EOF
 }
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
+# NIC 网卡层优化（避免与 optimize_system 冲突）
 apply_nic_core_boost() {
-    local mem=$(probe_memory_total)
-    local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}') || return 0
+    local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+    [ -z "$IFACE" ] && return 0
+    
     local CPU_N="$CPU_CORE"
-    # --- 1. 协议栈补偿优化 (CPU 算力与内存双维判定) ---
-    local bgt=600 usc=3000  # 基础档位
+    local mem=$(probe_memory_total)
     
+    # === 1. 协议栈批处理参数 (与 optimize_system 互补) ===
+    # 注意: netdev_max_backlog 已在 optimize_system 设置，这里不重复
+    local bgt usc
+    
+    # 按标准档位: 64/128/256/512
     if [ "$CPU_N" -ge 2 ]; then
-        # 多核环境：算力充足，追求低延迟切换
-        [ "$mem" -ge 256 ] && bgt=1000 && usc=2500
-        [ "$mem" -ge 512 ] && bgt=3000 && usc=2000
+        # 多核: 低延迟策略
+        if [ "$mem" -ge 450 ]; then   bgt=3000; usc=2000    # 512M
+        elif [ "$mem" -ge 200 ]; then bgt=1500; usc=2500    # 256M
+        elif [ "$mem" -ge 100 ]; then bgt=1000; usc=3000    # 128M
+        else                          bgt=800;  usc=3500; fi # 64M
     else
-        # 单核环境：内存再大也减少切换频率，保住单核吞吐量
-        [ "$mem" -ge 256 ] && bgt=1200 && usc=4000
-        [ "$mem" -ge 512 ] && bgt=2500 && usc=5000
+        # 单核: 高吞吐策略
+        if [ "$mem" -ge 450 ]; then   bgt=2500; usc=5000    # 512M
+        elif [ "$mem" -ge 200 ]; then bgt=2000; usc=4500    # 256M
+        elif [ "$mem" -ge 100 ]; then bgt=1500; usc=4000    # 128M
+        else                          bgt=1000; usc=3500; fi # 64M
     fi
     
-    sysctl -w net.core.netdev_budget=$bgt net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
-
-    # --- 2. 硬件层：关闭中断聚合 (消除忽快忽慢的核心) ---
+    sysctl -w net.core.netdev_budget=$bgt \
+               net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
+    
+    # === 2. 网卡硬件优化 (仅设置未被 optimize_system 覆盖的) ===
     if command -v ethtool >/dev/null 2>&1; then
-        #ethtool -C "$IFACE" adaptive-rx off adaptive-tx off rx-usecs 0 rx-frames 1 tx-usecs 0 tx-frames 1 >/dev/null 2>&1 || true
-        ethtool -K "$IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
+        # GRO/GSO/TSO/LRO 优化
+        ethtool -K "$IFACE" gro on gso on tso off lro off 2>/dev/null || true
     fi
-
-    # --- 3. 调度层：多核或单核优化 ---
+    
+    # === 3. 多核 RPS 分发 (仅多核启用) ===
     if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
         local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
-        for q in /sys/class/net/"$IFACE"/queues/{rx-*,tx-*}/{rps_cpus,xps_cpus}; do
+        for q in /sys/class/net/"$IFACE"/queues/*/rps_cpus; do
             [ -e "$q" ] && echo "$MASK" > "$q" 2>/dev/null || true
         done
-        info "NIC Boost → 多核模式 (bgt:$bgt, usc:$usc, mask:$MASK)"
-    else
-        # 针对单核小鸡，增大接收队列长度
-        sysctl -w net.core.netdev_max_backlog=2000 >/dev/null 2>&1 || true
-        info "NIC Boost → 单核模式 (bgt:$bgt, usc:$usc)"
     fi
+    
+    info "NIC 优化 → CPU:$CPU_N核 | budget:$bgt | usecs:$usc"
 }
 
 # 获取并校验端口 (范围：1025-65535)
