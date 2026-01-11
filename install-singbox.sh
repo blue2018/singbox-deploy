@@ -602,16 +602,8 @@ create_config() {
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
     "udp_fragment": true,
-    "tls": {
-      "enabled": true,
-      "alpn": ["h3"],
-      "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-      "key_path": "/etc/sing-box/certs/privkey.pem"
-    },
-    "obfs": {
-      "type": "salamander",
-      "password": "$SALA_PASS"
-    },
+    "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
+    "obfs": {"type": "salamander", "password": "$SALA_PASS"},
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
   "outbounds": [{"type": "direct", "tag": "direct-out", "domain_strategy": "prefer_ipv4"}]
@@ -628,27 +620,22 @@ setup_service() {
     local taskset_bin=$(command -v taskset 2>/dev/null || echo "taskset")
     local nice_bin=$(command -v nice 2>/dev/null || echo "nice")
     local cur_nice="${VAR_SYSTEMD_NICE:--5}"
-    
     [ "$CPU_N" -le 1 ] && core_range="0" || core_range="0-$((CPU_N - 1))"
-    info "配置服务 (核心: $CPU_N | Nice: $cur_nice)..."
+    info "配置服务 (核心: $CPU_N | 绑定: $core_range | 进程Nice: $cur_nice)..."
     
     if [ "$OS" = "alpine" ]; then
-        # 确保有 taskset
         command -v taskset >/dev/null || apk add --no-cache util-linux >/dev/null 2>&1
-        
-        # 构建启动命令
         local exec_cmd="$taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
-        
         cat > /etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 name="sing-box"
 description="Sing-box Service"
 supervisor="supervise-daemon"
-respawn_delay=30
-
+respawn_delay=5
+respawn_max=3
+respawn_period=60
 [ -f /etc/sing-box/env ] && . /etc/sing-box/env
 export GOTRACEBACK=none
-
 command="$nice_bin"
 command_args="$cur_nice $exec_cmd"
 command_background="yes"
@@ -672,30 +659,21 @@ start_post() {
 }
 EOF
         chmod +x /etc/init.d/sing-box
-        rc-update add sing-box default >/dev/null 2>&1
-        rc-service sing-box restart
-        
-        sleep 2
-        if rc-service sing-box status >/dev/null 2>&1; then
-            local pid=$(cat /run/sing-box.pid 2>/dev/null)
-            succ "sing-box 启动成功 | PID: ${pid:-N/A}"
-        else
-            err "启动失败"; exit 1
-        fi
+        rc-update add sing-box default >/dev/null 2>&1 && rc-service sing-box restart && sleep 2
+        rc-service sing-box status >/dev/null 2>&1 && succ "sing-box 启动成功 | PID: $(cat /run/sing-box.pid 2>/dev/null || echo 'N/A')" || { err "sing-box 启动失败"; exit 1; }
     
     else
         local mem_l=""
         [ -n "$SBOX_MEM_HIGH" ] && mem_l+="MemoryHigh=$SBOX_MEM_HIGH"$'\n'
         [ -n "$SBOX_MEM_MAX" ] && mem_l+="MemoryMax=$SBOX_MEM_MAX"$'\n'
-        
         local cpu_quota=$((CPU_N * 100))
         [ "$cpu_quota" -lt 100 ] && cpu_quota=100
-
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -712,6 +690,7 @@ LimitMEMLOCK=infinity
 ${mem_l}CPUQuota=${cpu_quota}%
 Restart=always
 RestartSec=5s
+StartLimitBurst=3
 
 [Install]
 WantedBy=multi-user.target
