@@ -126,23 +126,25 @@ prompt_for_port() {
 generate_cert() {
     local CERT_DIR="/etc/sing-box/certs"
     [ -f "$CERT_DIR/fullchain.pem" ] && return 0
-    
     info "生成 ECC P-256 高性能证书..."
     mkdir -p "$CERT_DIR" && chmod 700 "$CERT_DIR"
-    local ORG="CloudData-$(date +%s | cut -c7-10)"
     
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
         -keyout "$CERT_DIR/privkey.pem" -out "$CERT_DIR/fullchain.pem" \
-        -days 3650 -sha256 -subj "/CN=$TLS_DOMAIN/O=$ORG" \
-        -addext "subjectAltName=DNS:$TLS_DOMAIN,DNS:*.$TLS_DOMAIN" &>/dev/null || {
-        
+        -days 3650 -sha256 -subj "/CN=$TLS_DOMAIN" \
+        -addext "basicConstraints=critical,CA:FALSE" \
+        -addext "subjectAltName=DNS:$TLS_DOMAIN,DNS:*.$TLS_DOMAIN" \
+        -addext "extendedKeyUsage=serverAuth" &>/dev/null || {
+        # 兼容老版本：去除扩展重试
         openssl req -x509 -newkey ec:<(openssl ecparam -name prime256v1) -nodes \
             -keyout "$CERT_DIR/privkey.pem" -out "$CERT_DIR/fullchain.pem" \
             -days 3650 -subj "/CN=$TLS_DOMAIN" &>/dev/null
     }
 
-    chmod 600 "$CERT_DIR"/*.pem
-    [ -s "$CERT_DIR/fullchain.pem" ] && succ "ECC 证书就绪" || { err "证书生成失败"; exit 1; }
+    [ -s "$CERT_DIR/fullchain.pem" ] && {
+        openssl x509 -in "$CERT_DIR/fullchain.pem" -noout -sha256 -fingerprint | cut -d'=' -f2 | tr -d ': ' | tr '[:upper:]' '[:lower:]' > "$CERT_DIR/cert_fingerprint.txt"
+        chmod 600 "$CERT_DIR"/*.pem; succ "ECC 证书就绪"
+    } || { err "证书生成失败"; exit 1; }
 }
 
 #获取公网IP
@@ -706,29 +708,33 @@ EOF
 get_env_data() {
     local CONFIG_FILE="/etc/sing-box/config.json"
     [ ! -f "$CONFIG_FILE" ] && return 1
-    RAW_PSK=$(jq -r '.inbounds[0].users[0].password // ""' "$CONFIG_FILE" | xargs)
-    RAW_PORT=$(jq -r '.inbounds[0].listen_port // ""' "$CONFIG_FILE" | xargs)
-    RAW_SALA=$(jq -r '.inbounds[0].obfs.password // ""' "$CONFIG_FILE" | xargs)
-    local CERT_PATH=$(jq -r '.inbounds[0].tls.certificate_path' "$CONFIG_FILE" | xargs)
-    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/.*CN=\([^,]*\).*/\1/' | xargs || echo "unknown")
+    local data=$(jq -r '.inbounds[0] | "\(.users[0].password) \(.listen_port) \(.obfs.password) \(.tls.certificate_path)"' "$CONFIG_FILE")
+    read -r RAW_PSK RAW_PORT RAW_SALA CERT_PATH <<< "$data"
+    RAW_SNI=$(openssl x509 -in "$CERT_PATH" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/.*CN=\([^,]*\).*/\1/' || echo "$TLS_DOMAIN")
+    local FP_FILE="/etc/sing-box/certs/cert_fingerprint.txt"
+    RAW_FP=$([ -f "$FP_FILE" ] && cat "$FP_FILE" || openssl x509 -in "$CERT_PATH" -noout -sha256 -fingerprint 2>/dev/null | cut -d'=' -f2 | tr -d ': ' | tr '[:upper:]' '[:lower:]')
 }
 
 display_links() {
-    local LINK_V4="" LINK_V6="" FULL_CLIP="" OBFS_PART="" 
-    [ -n "${RAW_SALA:-}" ] && OBFS_PART="&obfs=salamander&obfs-password=${RAW_SALA}"
+    local LINK_V4="" LINK_V6="" FULL_CLIP="" 
+    local BASE_PARAM="sni=$RAW_SNI&alpn=h3&insecure=1"
+    [ -n "${RAW_FP:-}" ] && BASE_PARAM="${BASE_PARAM}&pinsha256=${RAW_FP}"
+    [ -n "${RAW_SALA:-}" ] && BASE_PARAM="${BASE_PARAM}&obfs=salamander&obfs-password=${RAW_SALA}"
     echo -e "\n\033[1;32m[节点信息]\033[0m \033[1;34m>>>\033[0m 运行端口: \033[1;33m${RAW_PORT:-"未知"}\033[0m"
 
-    if [ -n "${RAW_IP4:-}" ]; then
-        LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1${OBFS_PART}#$(hostname)_v4"
-        FULL_CLIP="$LINK_V4"
+    [ -n "${RAW_IP4:-}" ] && {
+        LINK_V4="hy2://$RAW_PSK@$RAW_IP4:$RAW_PORT/?${BASE_PARAM}#$(hostname)_v4"
         echo -e "\n\033[1;35m[IPv4节点链接]\033[0m\n$LINK_V4\n"
-    fi
-    if [ -n "${RAW_IP6:-}" ]; then
-        LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?sni=$RAW_SNI&alpn=h3&insecure=1${OBFS_PART}#$(hostname)_v6"
-        [ -n "$FULL_CLIP" ] && FULL_CLIP="${FULL_CLIP}\n${LINK_V6}" || FULL_CLIP="$LINK_V6"
+        FULL_CLIP="$LINK_V4"
+    }
+    [ -n "${RAW_IP6:-}" ] && {
+        LINK_V6="hy2://$RAW_PSK@[$RAW_IP6]:$RAW_PORT/?${BASE_PARAM}#$(hostname)_v6"
         echo -e "\033[1;36m[IPv6节点链接]\033[0m\n$LINK_V6"
-    fi
+        FULL_CLIP="${FULL_CLIP:+$FULL_CLIP\n}$LINK_V6"
+    }
+
     echo -e "\033[1;34m==========================================\033[0m"
+    [ -n "${RAW_FP:-}" ] && echo -e "\033[1;32m[安全提示]\033[0m 证书 SHA256 指纹已集成，支持强校验"
     [ -n "$FULL_CLIP" ] && copy_to_clipboard "$FULL_CLIP"
 }
 
