@@ -287,8 +287,6 @@ apply_nic_core_boost() {
     sysctl -w net.core.netdev_budget=$bgt \
                net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
     
-    # === 网卡硬件优化 (已合并到optimize_system函数) ===
-    
     # === 多核 RPS 分发 (仅多核启用) ===
     if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
         local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
@@ -582,7 +580,9 @@ create_config() {
     local mem=$(probe_memory_total)
     local timeout="30s"
     # 动态判定：内存越小，回收越快
-    [ "$mem" -ge 450 ] && timeout="60s" || { [ "$mem" -ge 200 ] && timeout="50s"; } || { [ "$mem" -ge 100 ] && timeout="40s"; }
+    [ "$mem" -le 64 ] && timeout="20s"
+    [ "$mem" -gt 64 ] && [ "$mem" -le 128 ] && timeout="30s"
+    [ "$mem" -gt 512 ] && timeout="60s"
     # 4. 写入 Sing-box 配置文件
     cat > "/etc/sing-box/config.json" <<EOF
 {
@@ -599,10 +599,9 @@ create_config() {
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
     "udp_fragment": true,
-    "tcp_fast_open": true,
     "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
     "obfs": {"type": "salamander", "password": "$SALA_PASS"},
-    "masquerade": "${TLS_DOMAIN:-www.microsoft.com}"
+    "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
   "outbounds": [{"type": "direct", "tag": "direct-out", "domain_strategy": "$ds"}]
 }
