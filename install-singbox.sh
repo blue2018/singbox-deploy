@@ -581,6 +581,7 @@ create_config() {
     "up_mbps": ${VAR_HY2_BW:-200},
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
+    "tcp_fast_open": true,
     "udp_fragment": true,
     "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
     "obfs": {"type": "salamander", "password": "$SALA_PASS"},
