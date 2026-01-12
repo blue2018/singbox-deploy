@@ -854,8 +854,9 @@ if [ ! -f "\$SBOX_CORE" ]; then echo "核心文件丢失"; exit 1; fi
 source "\$SBOX_CORE" --detect-only
 
 service_ctrl() {
-    [ -x "/etc/init.d/sing-box" ] && rc-service sing-box "\$1" && return
-    systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "\$1" sing-box
+    [[ "$1" == "restart" || "$1" == "start" ]] && /bin/bash -c "source \$SBOX_CORE && apply_firewall" >/dev/null 2>&1
+    if [ -x "/etc/init.d/sing-box" ]; then rc-service sing-box "\$1"
+    else systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "\$1" sing-box; fi
 }
 
 while true; do
