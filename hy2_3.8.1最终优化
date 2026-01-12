@@ -578,9 +578,7 @@ create_config() {
 
     local mem=$(probe_memory_total); local timeout="30s"
     # 动态判定：内存越小，回收越快
-    [ "$mem" -le 64 ] && timeout="20s"
-    [ "$mem" -gt 64 ] && [ "$mem" -le 128 ] && timeout="30s"
-    [ "$mem" -gt 512 ] && timeout="60s"
+    [ "$mem" -ge 450 ] && timeout="60s" || { [ "$mem" -ge 200 ] && timeout="50s"; } || { [ "$mem" -ge 100 ] && timeout="40s"; }
     # 4. 写入 Sing-box 配置文件
     cat > "/etc/sing-box/config.json" <<EOF
 {
