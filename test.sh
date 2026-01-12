@@ -358,7 +358,7 @@ optimize_system() {
         VAR_SYSTEMD_NICE="-8"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="131072"  
         VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
-        [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; wnd=6; buf=524288
+        [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; g_wnd=6; g_buf=524288
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3000; } || { net_bgt=1500; net_usc=4000; }
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
