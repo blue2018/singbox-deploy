@@ -661,8 +661,7 @@ EOF
                 io_config="-IOSchedulingClass=best-effort"$'\n'"-IOSchedulingPriority=2"
         else io_config="-IOSchedulingClass=best-effort"$'\n'"-IOSchedulingPriority=4"; fi
         local cpu_quota=$((CPU_N * 100))
-        [ "$cpu_quota" -lt 100 ] && cpu_quota=100
-        
+        [ "$cpu_quota" -lt 100 ] && cpu_quota=100        
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service
@@ -720,7 +719,6 @@ get_env_data() {
 display_links() {
     local LINK_V4="" LINK_V6="" FULL_CLIP="" OBFS_PART="" 
     [ -n "${RAW_SALA:-}" ] && OBFS_PART="&obfs=salamander&obfs-password=${RAW_SALA}"
-
     echo -e "\n\033[1;32m[节点信息]\033[0m \033[1;34m>>>\033[0m 运行端口: \033[1;33m${RAW_PORT:-"未知"}\033[0m"
 
     if [ -n "${RAW_IP4:-}" ]; then
