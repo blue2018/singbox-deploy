@@ -611,7 +611,7 @@ EOF
 # ==========================================
 # 服务配置
 # ==========================================
-setup_service() {  
+setup_service() {
     local CPU_N="$CPU_CORE" core_range=""
     local taskset_bin=$(command -v taskset 2>/dev/null || echo "taskset")
     local ionice_bin=$(command -v ionice 2>/dev/null || echo "")
@@ -700,14 +700,14 @@ TimeoutStopSec=15
 WantedBy=multi-user.target
 EOF
 
-        systemctl daemon-reload && systemctl enable sing-box --now >/dev/null 2>&1
+        systemctl daemon-reload && systemctl enable sing-box --now >/dev/null 2>&1 || true
         sleep 2
         if systemctl is-active --quiet sing-box; then
-            local info=$(ps -p $(systemctl show -p MainPID --value sing-box) -o pid=,rss= 2>/dev/null)
-            local pid=$(echo $info | awk '{print $1}') rss=$(echo $info | awk '{printf "%.2f MB", $2/1024}')  
-            local mode_tag=$([[ "$INITCWND_DONE" == "true" ]] && echo "内核" || echo "应用层")
-            succ "sing-box 启动成功 | PID: ${pid:-N/A} | 内存: ${rss:-N/A} | 模式: $mode_tag"
-        else { err "sing-box 启动失败，最近日志："; journalctl -u sing-box -n 5 --no-pager; exit 1; } fi
+            local pid=$(systemctl show -p MainPID --value sing-box 2>/dev/null); local rss="N/A"
+            [ -n "$pid" ] && [ "$pid" -ne 0 ] && rss=$(ps -q "$pid" -o rss= 2>/dev/null | awk '{printf "%.2f MB", $1/1024}') || rss="N/A"
+            local mode_tag=$([[ "${INITCWND_DONE:-false}" == "true" ]] && echo "内核" || echo "应用层")
+            succ "sing-box 启动成功 | PID: ${pid:-N/A} | 内存: $rss | 模式: $mode_tag"
+        else err "sing-box 启动失败，最近日志："; journalctl -u sing-box -n 5 --no-pager 2>/dev/null || true; exit 1; fi
     fi
 }
 
