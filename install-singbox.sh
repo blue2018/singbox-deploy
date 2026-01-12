@@ -486,6 +486,7 @@ SYSCTL
             else
                 ethtool -C "$DEFAULT_IFACE" rx-usecs 20 tx-usecs 20 2>/dev/null || true
             fi
+            info "网卡硬件加速已启用 (GSO/GRO/UDP-Offload)"
         fi
     fi
 
@@ -597,6 +598,7 @@ create_config() {
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
     "udp_fragment": true,
+    "tcp_fast_open": true,
     "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
     "obfs": {"type": "salamander", "password": "$SALA_PASS"},
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
