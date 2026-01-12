@@ -158,8 +158,8 @@ get_network_info() {
     RAW_IP4=$(tr -d '[:space:]' < "$t4" 2>/dev/null | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || echo "")
     RAW_IP6=$(tr -d '[:space:]' < "$t6" 2>/dev/null | grep -E '([a-fA-F0-9:]+:+)+[a-fA-F0-9]+' || echo "")
     rm -f "$t4" "$t6"; [ -n "$RAW_IP6" ] && IS_V6_OK="true" || IS_V6_OK="false"
-    [ -n "$RAW_IP4" ] && succ "IPv4: $RAW_IP4 [✔ ]" || warn "IPv4: 不可用"
-    [ "$IS_V6_OK" = "true" ] && succ "IPv6: $RAW_IP6 [✔ ]" || warn "IPv6: 不可用"  
+    [ -n "$RAW_IP4" ] && succ "IPv4: $RAW_IP4  [✔ ]" || warn "IPv4: 不可用"
+    [ "$IS_V6_OK" = "true" ] && succ "IPv6: $RAW_IP6  [✔ ]" || warn "IPv6: 不可用"  
 }
 
 # === 网络延迟探测模块 ===
@@ -863,7 +863,7 @@ service_ctrl() {
 }
 
 while true; do
-    echo "=========================" 
+    echo "========================" 
     echo " Sing-box HY2 管理 (sb)"
     echo "------------------------------------------------------"
     echo " Level: \${SBOX_OPTIMIZE_LEVEL:-未知} | Plan: \$([[ "\$INITCWND_DONE" == "true" ]] && echo "Initcwnd 15" || echo "应用层补偿")"
