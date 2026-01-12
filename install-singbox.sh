@@ -497,12 +497,12 @@ install_singbox() {
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}')
     # 1. 获取版本号 (增加多源获取)
     info "获取 Sing-Box 最新版本信息..."
-    local RJ=$(curl -sL --connect-timeout 5 --max-time 15 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null)
+    local RJ=$(curl -sL --connect-timeout 15 --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null)
     [ -n "$RJ" ] && LATEST_TAG=$(echo "$RJ" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9.]+"' | head -n1 | cut -d'"' -f4)
 
     [ -z "$LATEST_TAG" ] && { 
         DOWNLOAD_SOURCE="官方镜像"
-        LATEST_TAG=$(curl -sL --connect-timeout 5 "https://sing-box.org/" 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1)
+        LATEST_TAG=$(curl -sL --connect-timeout 15 "https://sing-box.org/" 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1)
     }
 
     [ -z "$LATEST_TAG" ] && { 
@@ -530,8 +530,7 @@ install_singbox() {
 
     for LINK in "${LINKS[@]}"; do
         info "正在下载: $(echo $LINK | cut -d'/' -f3)..."
-        # -k 解决 SSL key too weak 问题，确保镜像站可用
-        if curl -fkL --connect-timeout 8 --max-time 120 "$LINK" -o "$TF" && [ "$(stat -c%s "$TF" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+        if curl -fkL --connect-timeout 15 --max-time 60 "$LINK" -o "$TF" && [ "$(stat -c%s "$TF" 2>/dev/null || echo 0)" -gt 1000000 ]; then
             dl_ok=true; break
         fi
         warn "源失效，切换备用源..."
