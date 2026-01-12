@@ -659,16 +659,16 @@ EOF
             succ "sing-box 启动成功 | PID: $real_pid | Nice: ${nice_val:-N/A}"
         else { err "sing-box 启动失败"; exit 1; } fi
     else
-        local mem_config=""; [ -n "$SBOX_MEM_HIGH" ] && mem_config+="MemoryHigh=$SBOX_MEM_HIGH"$'\n'
-        [ -n "$SBOX_MEM_MAX" ] && mem_config+="MemoryMax=$SBOX_MEM_MAX"$'\n'
-        local io_config=""
-        if [ "$mem_total" -ge 200 ]; then
-            [ "$io_class" = "realtime" ] && [ "$mem_total" -ge 450 ] && \
-                io_config="IOSchedulingClass=realtime"$'\n'"IOSchedulingPriority=0" || \
-                io_config="IOSchedulingClass=best-effort"$'\n'"IOSchedulingPriority=2"
-        else { io_config="IOSchedulingClass=best-effort"$'\n'"IOSchedulingPriority=4"; } fi
-        local cpu_quota=$((CPU_N * 100))
-        [ "$cpu_quota" -lt 100 ] && cpu_quota=100
+        # 1. 强制局部变量保底，防止 set -u 触发闪退
+        local m_cfg="${mem_config:-}"
+        local i_cfg="${io_config:-}"
+        local t_bin="${taskset_bin:-taskset}"
+        local c_rng="${core_range:-0}"
+        local c_nice="${cur_nice:--5}"
+        local s_core="${SBOX_CORE:-/etc/sing-box/core_script.sh}"
+        local c_quota="${cpu_quota:-100}"
+
+        # 2. 使用保底变量写入文件
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-box Service
@@ -683,16 +683,16 @@ User=root
 EnvironmentFile=-/etc/sing-box/env
 Environment=GOTRACEBACK=none
 ExecStartPre=/usr/bin/sing-box check -c /etc/sing-box/config.json
-ExecStartPre=-/bin/bash ${SBOX_CORE:-/etc/sing-box/core_script.sh} --apply-cwnd
-ExecStart=$taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json
-ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash ${SBOX_CORE:-/etc/sing-box/core_script.sh} --apply-cwnd'
-Nice=$cur_nice
-${io_config}
+ExecStartPre=-/bin/bash $s_core --apply-cwnd
+ExecStart=$t_bin -c $c_rng /usr/bin/sing-box run -c /etc/sing-box/config.json
+ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash $s_core --apply-cwnd'
+Nice=$c_nice
+${i_cfg}
 OOMScoreAdjust=-500
 LimitNOFILE=1000000
 LimitMEMLOCK=infinity
-${mem_config}
-CPUQuota=${cpu_quota}%
+${m_cfg}
+CPUQuota=${c_quota}%
 Restart=always
 RestartSec=10s
 TimeoutStopSec=15
