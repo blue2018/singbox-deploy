@@ -287,10 +287,7 @@ apply_nic_core_boost() {
     sysctl -w net.core.netdev_budget=$bgt \
                net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
     
-    # === 网卡硬件优化 (GRO/GSO/TSO/LRO 优化) ===
-    if command -v ethtool >/dev/null 2>&1; then
-        ethtool -K "$IFACE" gro on gso on tso off lro off 2>/dev/null || true
-    fi
+    # === 网卡硬件优化 (已合并到optimize_system函数) ===
     
     # === 多核 RPS 分发 (仅多核启用) ===
     if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
@@ -315,6 +312,7 @@ optimize_system() {
     local swappiness_val=10 busy_poll_val=0 quic_extra_msg="" VAR_BACKLOG=2000
     local ct_max=16384 ct_udp_to=30 ct_stream_to=30
     local g_procs g_wnd g_buf net_bgt net_usc
+    local udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
 
     if [[ "$OS" != "alpine" && "$mem_total" -le 600 ]]; then
         local swap_total
@@ -336,62 +334,74 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="500"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
-        VAR_HY2_BW="500"; VAR_DEF_MEM="327680"
+        VAR_HY2_BW="500"; VAR_DEF_MEM="16777216"
         VAR_BACKLOG=32768; swappiness_val=10; busy_poll_val=50
         g_procs=$real_c; g_wnd=12; g_buf=2097152
         [ "$real_c" -ge 2 ] && { net_bgt=3000; net_usc=2000; } || { net_bgt=2500; net_usc=5000; }
+        udp_mem_global_min=131072; udp_mem_global_pressure=262144; udp_mem_global_max=524288
         ct_max=65535; ct_stream_to=60
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
         SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="400"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="300"; VAR_DEF_MEM="229376"
+        VAR_HY2_BW="300"; VAR_DEF_MEM="8388608"
         VAR_BACKLOG=16384; swappiness_val=10; busy_poll_val=20
         g_procs=$real_c; g_wnd=8; g_buf=1048576
         [ "$real_c" -ge 2 ] && { net_bgt=1500; net_usc=2500; } || { net_bgt=2000; net_usc=4500; }
+        udp_mem_global_min=65536; udp_mem_global_pressure=131072; udp_mem_global_max=262144
         ct_max=32768; ct_stream_to=45; 
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
         SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-8"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="200"; VAR_DEF_MEM="131072"  
+        VAR_HY2_BW="200"; VAR_DEF_MEM="4194304"  
         VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; g_wnd=6; g_buf=524288
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3000; } || { net_bgt=1500; net_usc=4000; }
+        udp_mem_global_min=32768; udp_mem_global_pressure=65536; udp_mem_global_max=131072
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
         SBOX_GOLIMIT="$((mem_total * 72 / 100))MiB"; SBOX_GOGC="300"
-        VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304"
+        VAR_UDP_RMEM="7500000"; VAR_UDP_WMEM="7500000"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="100"; VAR_DEF_MEM="65536"
+        VAR_HY2_BW="100"; VAR_DEF_MEM="2097152"
         VAR_BACKLOG=5000; swappiness_val=100; busy_poll_val=0
         g_procs=1; g_wnd=4; g_buf=262144
         [ "$real_c" -ge 2 ] && { net_bgt=800; net_usc=3500; } || { net_bgt=1000; net_usc=3500; }
+        udp_mem_global_min=16384; udp_mem_global_pressure=32768; udp_mem_global_max=65536
         SBOX_OPTIMIZE_LEVEL="64M 生存版"
     fi
 
-    # 3. RTT 驱动与安全钳位 (保留原有逻辑)
+    # 3. RTT 驱动与安全钳位
     local rtt_scale_min=$((RTT_AVG * 128)); local rtt_scale_pressure=$((RTT_AVG * 256)); local rtt_scale_max=$((RTT_AVG * 512))
     local quic_min; local quic_press; local quic_max
+    
     if [ "$RTT_AVG" -ge 150 ]; then
         quic_min=262144; quic_press=524288; quic_max=1048576; quic_extra_msg=" (QUIC长距模式)"
     else
         quic_min=131072; quic_press=262144; quic_max=524288; quic_extra_msg=" (QUIC竞速模式)"
     fi
     SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL}${quic_extra_msg}"
+    # QUIC 最小值保护
     [ "$quic_min" -gt "$rtt_scale_min" ] && rtt_scale_min=$quic_min
     [ "$quic_press" -gt "$rtt_scale_pressure" ] && rtt_scale_pressure=$quic_press
     [ "$quic_max" -gt "$rtt_scale_max" ] && rtt_scale_max=$quic_max
+    # 内存总量保护（40% 上限）
     if [ "$rtt_scale_max" -gt "$max_udp_pages" ]; then
         rtt_scale_max=$max_udp_pages; rtt_scale_pressure=$((max_udp_pages * 3 / 4)); rtt_scale_min=$((max_udp_pages / 2))
-        SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL}"
     fi
+    # 内存档位保护（新增：确保不超出内存档位限制）
+    rtt_scale_max=$(( rtt_scale_max < udp_mem_global_max ? rtt_scale_max : udp_mem_global_max ))
+    rtt_scale_pressure=$(( rtt_scale_pressure < udp_mem_global_pressure ? rtt_scale_pressure : udp_mem_global_pressure ))
+    rtt_scale_min=$(( rtt_scale_min < udp_mem_global_min ? rtt_scale_min : udp_mem_global_min ))
     local udp_mem_scale="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
+    
     SBOX_MEM_MAX="$((mem_total * 90 / 100))M"
     SBOX_MEM_HIGH="$((mem_total * 85 / 100))M"
     info "优化策略: $SBOX_OPTIMIZE_LEVEL"
+    info "UDP 内存池: ${rtt_scale_min}页/${rtt_scale_pressure}页/${rtt_scale_max}页 ($(( rtt_scale_max * 4 / 1024 ))MB上限)"
 
     # 4. BBR 探测与内核锐化 (递进式锁定最强算法)
     local tcp_cca="cubic"; modprobe tcp_bbr tcp_bbr2 tcp_bbr3 >/dev/null 2>&1 || true
@@ -439,7 +449,7 @@ net.ipv4.tcp_frto = 2                    # 针对丢包环境的重传判断优�
 net.ipv4.tcp_ecn = 1
 net.ipv4.tcp_ecn_fallback = 1
 
-# === 5. 连接复用与超时管理 (原始逻辑回归) ===
+# === 5. 连接复用与超时管理 ===
 net.ipv4.tcp_mtu_probing = 1             # 自动探测 MTU 解决 UDP 黑洞
 net.ipv4.ip_no_pmtu_disc = 0             # 启用 MTU 探测 (自动寻找最优包大小，防止 Hy2 丢包)
 net.ipv4.tcp_fin_timeout = 20
@@ -448,8 +458,10 @@ net.ipv4.tcp_max_orphans = $((mem_total * 1024))
 
 # === 6. UDP 协议栈优化 (Hysteria2 传输核心) ===
 net.ipv4.udp_mem = $udp_mem_scale        # 全局 UDP 内存页配额 (根据 RTT 动态计算)
-net.ipv4.udp_rmem_min = 16384            # UDP Socket 最小读缓存保护
-net.ipv4.udp_wmem_min = 16384            # UDP Socket 最小写缓存保护
+net.ipv4.udp_rmem_min = 16384            # 最小接收缓冲区保护
+net.ipv4.udp_wmem_min = 16384            # 最小发送缓冲区保护
+net.ipv4.udp_early_demux = 1             # UDP 早期路由优化
+net.core.somaxconn = 4096                # 监听队列深度
 
 # === 7. Conntrack 连接跟踪自适应优化 ===
 net.netfilter.nf_conntrack_max = $ct_max
@@ -467,10 +479,15 @@ SYSCTL
     if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
         ip link set dev "$DEFAULT_IFACE" txqueuelen 10000 2>/dev/null || true
         if command -v ethtool >/dev/null 2>&1; then
-             ethtool -K "$DEFAULT_IFACE" gro on gso on tso off lro off >/dev/null 2>&1 || true
-             local RING_MAX
-             RING_MAX=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | grep -A1 "Pre-set maximums" | grep "RX:" | awk '{print $2}')
-             [ -n "$RING_MAX" ] && ethtool -G "$DEFAULT_IFACE" rx "$RING_MAX" tx "$RING_MAX" 2>/dev/null || true
+            ethtool -K "$DEFAULT_IFACE" gro on gso on tso on lro off >/dev/null 2>&1 || true
+            ethtool -K "$DEFAULT_IFACE" tx-udp-segmentation on 2>/dev/null || true
+            ethtool -K "$DEFAULT_IFACE" rx-udp-gro-forwarding on 2>/dev/null || true
+            ethtool -C "$DEFAULT_IFACE" adaptive-rx on adaptive-tx on 2>/dev/null || true
+            if [ "$CPU_CORE" -ge 2 ]; then
+                ethtool -C "$DEFAULT_IFACE" rx-usecs 50 tx-usecs 50 2>/dev/null || true
+            else
+                ethtool -C "$DEFAULT_IFACE" rx-usecs 20 tx-usecs 20 2>/dev/null || true
+            fi
         fi
     fi
 
