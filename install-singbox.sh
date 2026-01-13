@@ -500,25 +500,17 @@ SYSCTL
 # ==========================================
 # 安装/更新 Sing-box 内核
 # ==========================================
-install_singbox() {
+Install_singbox() {
     local MODE="${1:-install}" LOCAL_VER="未安装" LATEST_TAG="" DOWNLOAD_SOURCE="GitHub"
     [ -f /usr/bin/sing-box ] && LOCAL_VER=$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}')
-    # 1. 获取版本号 (增加多源获取)
+    
+    # 1. 获取版本号
     info "获取 Sing-Box 最新版本信息..."
-    local RJ=$(curl -sL --connect-timeout 15 --max-time 23 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null)
+    local RJ=$(curl -sL --connect-timeout 10 --max-time 15 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null)
     [ -n "$RJ" ] && LATEST_TAG=$(echo "$RJ" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9.]+"' | head -n1 | cut -d'"' -f4)
+    [ -z "$LATEST_TAG" ] && DOWNLOAD_SOURCE="官方镜像" && LATEST_TAG=$(curl -sL --connect-timeout 10 "https://sing-box.org/" 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1)
+    [ -z "$LATEST_TAG" ] && { [ "$LOCAL_VER" != "未安装" ] && { warn "远程获取失败，保持本地版本 v$LOCAL_VER"; return 0; } || { err "获取版本失败，请检查网络"; exit 1; }; }
 
-    [ -z "$LATEST_TAG" ] && { 
-        DOWNLOAD_SOURCE="官方镜像"
-        LATEST_TAG=$(curl -sL --connect-timeout 15 "https://sing-box.org/" 2>/dev/null | grep -oE 'v1\.[0-9]+\.[0-9]+' | head -n1)
-    }
-
-    [ -z "$LATEST_TAG" ] && { 
-        [ "$LOCAL_VER" != "未安装" ] && { warn "远程获取失败，保持本地版本 v$LOCAL_VER"; return 0; }
-        err "获取版本失败，请检查网络"; exit 1
-    }
-
-    # 2. 版本展示与更新判断
     local REMOTE_VER="${LATEST_TAG#v}"
     if [[ "$MODE" == "update" ]]; then
         echo -e "---------------------------------"
@@ -529,33 +521,44 @@ install_singbox() {
         info "发现新版本，开始下载更新..."
     fi
 
-    # 3. 多源并行/循环下载逻辑
+    # 3. 核心优化：多源并行探测与稳健下载
     local FILE="sing-box-${REMOTE_VER}-linux-${SBOX_ARCH}.tar.gz"
     local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/${FILE}"
     local TD=$(mktemp -d); local TF="$TD/sb.tar.gz"; local dl_ok=false
-    # 优化的备用源列表
-    local LINKS=("$URL" "https://sing-box.org/releases/$FILE" "https://testingcf.jsdelivr.net/gh/SagerNet/sing-box@v${REMOTE_VER}/$FILE" "https://mirror.ghproxy.com/$URL")
+    # 精选 2026 年依然高度可用的镜像站
+    local LINKS=("$URL" "https://"{ghproxy.net,kkgh.tk,gh.ddlc.top,gh-proxy.com}"/$URL")
 
-    for LINK in "${LINKS[@]}"; do
-        info "正在下载: $(echo $LINK | cut -d'/' -f3)..."
-        if curl -fkL --connect-timeout 15 --max-time 60 "$LINK" -o "$TF" && [ "$(stat -c%s "$TF" 2>/dev/null || echo 0)" -gt 1000000 ]; then
-            dl_ok=true; break
-        fi
-        warn "源失效，切换备用源..."
-    done
+    info "正在筛选最优下载节点..."
+    local best_link=""
+    # 并发探测：对每个源发起 HEAD 请求，第一个成功的被记录
+    for LINK in "${LINKS[@]}"; do (curl -Is --connect-timeout 4 --max-time 6 "$LINK" | grep -q "200 OK" && echo "$LINK" > "$TD/best_node") & done
+    wait # 等待所有探测结束（约 4-6 秒）
 
-    [ "$dl_ok" = false ] && { 
-        [ "$LOCAL_VER" != "未安装" ] && { warn "下载失败，保留旧版"; rm -rf "$TD"; return 0; }
-        err "下载失败，安装中断"; exit 1
-    }
+    [ -f "$TD/best_node" ] && best_link=$(cat "$TD/best_node" | head -n1)  
+    [ -z "$best_link" ] && best_link="${LINKS[0]}" # 兜底使用原链
+    info "选定节点: $(echo $best_link | cut -d'/' -f3)，启动下载..."
+    
+    # 使用断点续传 (-C -) 和自动重试 (--retry)，增加校验（Sing-box 二进制压缩包通常在 10MB 以上）
+    if curl -fkL -C - --connect-timeout 15 --retry 3 --retry-delay 2 "$best_link" -o "$TF" && [ "$(stat -c%s "$TF" 2>/dev/null || echo 0)" -gt 8000000 ]; then
+        dl_ok=true
+    else
+        warn "首选源体积异常或下载失败，尝试遍历备用源..."
+        for LINK in "${LINKS[@]}"; do
+            info "尝试源: $(echo "$LINK" | cut -d'/' -f3)..."
+            curl -fkL --connect-timeout 10 --max-time 60 "$LINK" -o "$TF" && [ "$(stat -c%s "$TF" 2>/dev/null || echo 0)" -gt 8000000 ] && { dl_ok=true; break; }
+        done
+    fi
 
-    # 4. 解压安装逻辑块
+    [ "$dl_ok" = false ] && { [ "$LOCAL_VER" != "未安装" ] && { warn "所有下载源均失效，保留旧版"; rm -rf "$TD"; return 0; } || { err "下载失败，安装中断"; exit 1; }; }
+
+    # 4. 解压安装
     tar -xf "$TF" -C "$TD" --strip-components=1
-    pgrep sing-box >/dev/null && systemctl stop sing-box 2>/dev/null
+    pgrep sing-box >/dev/null && { info "停止旧版进程..."; systemctl stop sing-box 2>/dev/null; }
+    
     [ -f "$TD/sing-box" ] && { 
-        install -m 755 "$TD/sing-box" /usr/bin/sing-box; rm -rf "$TD"
+        install -m 755 "$TD/sing-box" /usr/bin/sing-box && rm -rf "$TD"
         succ "内核安装成功: v$(/usr/bin/sing-box version 2>/dev/null | head -n1 | awk '{print $3}')"
-    } || { err "解压校验失败"; rm -rf "$TD"; return 1; }
+    } || { rm -rf "$TD"; err "文件解压校验失败"; return 1; }
 }
 
 # ==========================================
@@ -702,13 +705,18 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload && systemctl enable sing-box --now >/dev/null 2>&1 || true
     fi
-    sleep 2; local pid="" rss="N/A" ni="N/A"
+    
+    sleep 2; local pid=""
     [ "$OS" = "alpine" ] && pid=$(pgrep -f "sing-box run" | head -n1) || pid=$(systemctl show -p MainPID --value sing-box 2>/dev/null | grep -E -v '^0$|^$' || echo "")
     if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
-        rss=$(awk '/VmRSS/ {printf "%.2f MB", $2/1024}' /proc/"$pid"/status 2>/dev/null || echo "N/A")
-        ni=$(awk '{print $19}' /proc/"$pid"/stat 2>/dev/null || echo "0")
-        succ "sing-box 启动成功 | PID: $pid | 内存: $rss | Nice: $ni | 模式: $([[ "${INITCWND_DONE:-false}" == "true" ]] && echo "内核" || echo "应用层")"
-    else err "sing-box 启动失败，最近日志："; [ "$OS" = "alpine" ] && { logread | tail -n 5 2>/dev/null || tail -n 5 /var/log/messages 2>/dev/null; } || journalctl -u sing-box -n 5 --no-pager 2>/dev/null; exit 1; fi
+        local ma=$(awk '/^MemAvailable:/{a=$2;f=1} /^MemFree:|Buffers:|Cached:/{s+=$2} END{print (f?a:s)}' /proc/meminfo 2>/dev/null)
+        local ma_mb=$(( ${ma:-0} / 1024 ))
+        succ "sing-box 启动成功 | 总内存: ${mem_total:-N/A} MB | 可用: ${ma_mb} MB | 模式: $([[ "${INITCWND_DONE:-false}" == "true" ]] && echo "内核" || echo "应用层")"
+    else 
+        err "sing-box 启动失败，最近日志："
+        [ "$OS" = "alpine" ] && { logread | tail -n 5 2>/dev/null || tail -n 5 /var/log/messages 2>/dev/null; } || journalctl -u sing-box -n 5 --no-pager 2>/dev/null
+        exit 1
+    fi
 }
 
 # ==========================================
