@@ -946,7 +946,7 @@ optimize_system
 install_singbox "install"
 generate_cert
 create_config "$USER_PORT"
-create_sb_tool  
+create_sb_tool
 setup_service
 get_env_data
 echo -e "\n\033[1;34m==========================================\033[0m"
