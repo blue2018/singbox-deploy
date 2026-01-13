@@ -71,23 +71,26 @@ install_dependencies() {
     if command -v apk >/dev/null 2>&1; then PM="apk"
     elif command -v apt-get >/dev/null 2>&1; then PM="apt"
     elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then PM="yum"
-    else err "未检测到支持的包管理器 (apk/apt-get/yum)，请手动安装 curl jq openssl 等依赖"; exit 1; fi
+    else err "未检测到支持的包管理器 (apk/apt-get/yum)，请手动安装依赖"; exit 1; fi
 
     case "$PM" in
         apk) info "检测到 Alpine 系统，正在同步仓库并安装依赖..."
              apk update >/dev/null 2>&1 || true
-             apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates busybox-openrc iputils \
-                || { err "apk 安装依赖失败，请检查网络与仓库设置"; exit 1; } ;;
+             apk add --no-cache bash curl jq openssl iproute2 coreutils grep ca-certificates tar ethtool iptables \
+                || { err "apk 安装依赖失败"; exit 1; } ;;
         apt) info "检测到 Debian/Ubuntu 系统，正在更新源并安装依赖..."
              export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null 2>&1 || true
-             apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep iputils-ping iptables ufw kmod findutils \
-                || { err "apt 安装依赖失败，请手动运行: apt-get install -y curl jq openssl ca-certificates iproute2 iptables"; exit 1; } ;;
+             apt-get install -y --no-install-recommends curl jq openssl ca-certificates procps iproute2 coreutils grep tar ethtool iptables kmod \
+                || { err "apt 安装依赖失败"; exit 1; } ;;
         yum) info "检测到 RHEL/CentOS 系统，正在安装依赖..."
              M=$(command -v dnf || echo "yum")
-             $M install -y curl jq openssl ca-certificates procps-ng iproute iptables firewalld \
-                || { err "$M 安装依赖失败，请手动运行"; exit 1; } ;;
+             $M install -y curl jq openssl ca-certificates procps-ng iproute tar ethtool iptables \
+                || { err "$M 安装依赖失败"; exit 1; } ;;
     esac
-    command -v jq >/dev/null 2>&1 || { err "依赖安装失败：未找到 jq，请手动运行安装命令查看报错"; exit 1; }
+
+    # [优化] 针对小鸡常见的 CA 证书缺失问题进行强制刷新
+    [ -f /etc/ssl/certs/ca-certificates.crt ] || update-ca-certificates 2>/dev/null || true
+    for cmd in jq curl tar; do command -v "$cmd" >/dev/null 2>&1 || { err "核心依赖 $cmd 安装失败"; exit 1; }; done
     succ "所需依赖已就绪"
 }
 
@@ -249,9 +252,29 @@ apply_initcwnd_optimization() {
     fi
 }
 
+# 创建 swap
+setup_swap() {
+    local mem_total="$1"
+    # 如果是 Alpine 或 内存 > 600MB，直接退出
+    [ "$OS" = "alpine" ] || [ "$mem_total" -gt 600 ] && return 0
+    # 兼容性获取 Swap：Busybox 的 free 命令输出处理
+    local swap_total
+    swap_total=$(LC_ALL=C free -m 2>/dev/null | awk '/Swap/ {print $2}')
+    : "${swap_total:=0}" # 如果变量为空则设为 0
+    
+    # 只有在无 Swap 且非 OpenVZ 时尝试创建
+    if [ "$swap_total" -eq 0 ] && [ ! -d /proc/vz ]; then
+        info "检测到低内存环境，正在尝试创建 512M 交换文件..."
+        # 逻辑组封装：确保任何一步失败都会执行清理
+        { (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 status=none) && \
+          chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile >/dev/null 2>&1 && \
+          { grep -q "/swapfile" /etc/fstab || echo "/swapfile swap swap defaults 0 0" >> /etc/fstab; succ "Swap 已激活"; } } || \
+          { rm -f /swapfile; warn "Swap 创建跳过 (受限或磁盘不足)"; }
+    fi
+}
+
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
 apply_userspace_adaptive_profile() {
-    local mem=$(probe_memory_total)
     local real_c="$CPU_CORE"
     local g_procs="$1" wnd="$2" buf="$3"
     
@@ -328,19 +351,7 @@ optimize_system() {
     local g_procs g_wnd g_buf net_bgt net_usc
     local udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
 
-    if [[ "$OS" != "alpine" && "$mem_total" -le 600 ]]; then
-        local swap_total
-        swap_total=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}' || echo "0")
-        if [ "${swap_total:-0}" -eq 0 ] && [ ! -d /proc/vz ]; then
-            info "检测到低内存环境，正在尝试创建 512M 交换文件..."
-            # 简洁高效：创建、权限设置、格式化、挂载 一气呵成，失败则自动清理
-            (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 status=none) && \
-            chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile >/dev/null 2>&1 && \
-            { grep -q "/swapfile" /etc/fstab || echo "/swapfile swap swap defaults 0 0" >> /etc/fstab; succ "Swap 已激活"; } || \
-            { rm -f /swapfile; warn "Swap 创建跳过 (受虚拟化技术限制)"; }
-        fi
-    fi
-
+    setup_swap "$mem_total"
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
 
     # 2. 差异化档位计算
@@ -583,10 +594,10 @@ create_config() {
     fi
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
-    local mem=$(probe_memory_total); : ${mem:=64}; local timeout="30s"
-    [ "$mem" -ge 450 ] && timeout="60s"
-    [ "$mem" -lt 450 ] && [ "$mem" -ge 200 ] && timeout="50s"
-    [ "$mem" -lt 200 ] && [ "$mem" -ge 100 ] && timeout="40s"
+    local mem_total=$(probe_memory_total); : ${mem_total:=64}; local timeout="30s"
+    [ "$mem_total" -ge 450 ] && timeout="60s"
+    [ "$mem_total" -lt 450 ] && [ "$mem_total" -ge 200 ] && timeout="50s"
+    [ "$mem_total" -lt 200 ] && [ "$mem_total" -ge 100 ] && timeout="40s"
     # 4. 写入 Sing-box 配置文件
     cat > "/etc/sing-box/config.json" <<EOF
 {
@@ -813,7 +824,7 @@ EOF
 get_cpu_core get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
 apply_userspace_adaptive_profile apply_nic_core_boost \
-check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
+setup_swap check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
 
     for f in "${funcs[@]}"; do
         if declare -f "$f" >/dev/null 2>&1; then declare -f "$f" >> "$CORE_TMP"; echo "" >> "$CORE_TMP"; fi
