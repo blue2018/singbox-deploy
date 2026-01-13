@@ -170,8 +170,8 @@ get_network_info() {
     # 错误退出判断
     [ -z "$RAW_IP4" ] && [ -z "$RAW_IP6" ] && { err "错误: 未能探测到任何有效的公网 IP，安装中断"; exit 1; }
     # 原有输出信息保持不变
-    [ -n "$RAW_IP4" ] && succ "IPv4: $RAW_IP4 [✔]" || warn "IPv4: 不可用 (单栈 IPv6 环境)"
-    [ "$IS_V6_OK" = "true" ] && succ "IPv6: $RAW_IP6 [✔]" || warn "IPv6: 不可用 (单栈 IPv4 环境)"
+    [ -n "$RAW_IP4" ] && succ "IPv4: $RAW_IP4 [✔]" || info "IPv4: 不可用 (单栈 IPv6 环境)"
+    [ "$IS_V6_OK" = "true" ] && succ "IPv6: $RAW_IP6 [✔]" || info "IPv6: 不可用 (单栈 IPv4 环境)"
 }
 
 # === 网络延迟探测模块 ===
