@@ -628,8 +628,7 @@ setup_service() {
     
     if [ "$OS" = "alpine" ]; then
         command -v taskset >/dev/null || apk add --no-cache util-linux >/dev/null 2>&1
-        local nice_pfx="nice -n $cur_nice"; nice -n $cur_nice true 2>/dev/null || nice_pfx=""
-        local exec_cmd="$nice_pfx $taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
+        local exec_cmd="nice -n $cur_nice $taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
         if [ -n "$ionice_bin" ] && [ "$mem_total" -ge 200 ]; then
             local io_prio=2; [ "$mem_total" -ge 450 ] && [ "$io_class" = "realtime" ] && io_prio=0
             exec_cmd="$ionice_bin -c 2 -n $io_prio $exec_cmd"
@@ -652,7 +651,7 @@ rc_nice="$cur_nice"
 rc_oom_score_adj="-500"
 depend() { need net; after firewall; }
 start_pre() { /usr/bin/sing-box check -c /etc/sing-box/config.json >/dev/null 2>&1 || return 1; ([ -f "$SBOX_CORE" ] && /bin/bash "$SBOX_CORE" --apply-cwnd) & }
-start_post() { sleep 2; pgrep -f "sing-box run" >/dev/null && (sleep 3; [ -f "$SBOX_CORE" ] && /bin/bash "$SBOX_CORE" --apply-cwnd) & }
+start_post() { sleep 2; pidof sing-box >/dev/null && (sleep 3; [ -f "$SBOX_CORE" ] && /bin/bash "$SBOX_CORE" --apply-cwnd) & }
 EOF
         chmod +x /etc/init.d/sing-box
         rc-update add sing-box default >/dev/null 2>&1 || true; RC_NO_DEPENDS=yes rc-service sing-box restart >/dev/null 2>&1 || true
