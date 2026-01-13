@@ -700,24 +700,23 @@ EOF
         systemctl daemon-reload && systemctl enable sing-box --now >/dev/null 2>&1 || true
     fi
     
+    # ... 前面的代码保持不变 ...
     sleep 2; local pid=""
-    # 优化 PID 获取：在 Alpine 上，pgrep -f 有时太严格，我们直接匹配进程名最稳
-    if [ "$OS" = "alpine" ]; then
-        pid=$(pidof sing-box | awk '{print $1}')
-    else
-        pid=$(systemctl show -p MainPID --value sing-box 2>/dev/null | grep -E -v '^0$|^$' || echo "")
-    fi
-
-    if [ -n "$pid" ] && [ -e "/proc/$pid" ]; then
+    [ "$OS" = "alpine" ] && pid=$(pgrep -f "sing-box run" | head -n1) || pid=$(systemctl show -p MainPID --value sing-box 2>/dev/null | grep -E -v '^0$|^$' || echo "")
+    
+    if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
         local ma=$(awk '/^MemAvailable:/{a=$2;f=1} /^MemFree:|Buffers:|Cached:/{s+=$2} END{print (f?a:s)}' /proc/meminfo 2>/dev/null)
         local ma_mb=$(( ${ma:-0} / 1024 ))
-        succ "sing-box 启动成功 | 总内存: ${mem_total:-N/A} MB | 可用: ${ma_mb} MB | 模式: $([[ "${INITCWND_DONE:-false}" == "true" ]] && echo "内核" || echo "应用层")"
+        succ "sing-box 启动成功 | 总内存: ${mem_total:-N/A} MB | 可用: ${ma_mb} MB"
     else 
-        err "sing-box 启动失败，最近日志："
-        # 保持你喜欢的紧凑合并版日志输出
-        [ "$OS" = "alpine" ] && { logread 2>/dev/null | tail -n 5 || tail -n 5 /var/log/messages 2>/dev/null || echo "无法获取系统日志"; } || { journalctl -u sing-box -n 5 --no-pager 2>/dev/null || echo "无法获取服务日志"; }
-        # 额外增加一个配置自检提示，帮助小白用户
-        /usr/bin/sing-box check -c /etc/sing-box/config.json || true
+        err "sing-box 启动失败，尝试获取线索："
+        if [ "$OS" = "alpine" ]; then
+            # 增加 || true 防止 logread 失败导致 set -e 退出
+            logread 2>/dev/null | tail -n 5 || echo "系统 syslogd 未运行，无法获取实时日志"
+            [ -f /var/log/messages ] && tail -n 5 /var/log/messages
+        else
+            journalctl -u sing-box -n 5 --no-pager 2>/dev/null || echo "无法读取 journal 日志"
+        fi
         exit 1
     fi
 }
