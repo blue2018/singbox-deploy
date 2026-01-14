@@ -241,13 +241,11 @@ apply_initcwnd_optimization() {
 }
 
 # ZRAM/Swap 智能配置（精简版）
-setup_swap() {
+setup_zrm_swap() {
     local mem_total="$1"
     [ "$mem_total" -ge 600 ] && return 0  # 高内存环境跳过
-    
     local swap_exist=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
     [ "$swap_exist" -gt 0 ] && { info "Swap 已存在 (${swap_exist}M)"; return 0; }
-    
     # === ZRAM 快速路径 ===
     if [ "$mem_total" -lt 600 ] && modprobe zram 2>/dev/null && [ -b /dev/zram0 ]; then
         # 容器环境检测（sysfs 可写性）
@@ -256,7 +254,6 @@ setup_swap() {
         else
             local zram_size=$((mem_total * 2))
             [ "$zram_size" -gt 512 ] && zram_size=512
-            
             # 压缩算法自动选择
             local algo="lz4"
             if [ -f /sys/block/zram0/comp_algorithm ]; then
@@ -265,13 +262,11 @@ setup_swap() {
                 algo=$(awk '{print $1}' /sys/block/zram0/comp_algorithm 2>/dev/null || echo "lzo")
                 echo "$algo" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
             fi
-            
             # 配置并激活
             if echo $((zram_size * 1024 * 1024)) > /sys/block/zram0/disksize 2>/dev/null && \
                mkswap /dev/zram0 >/dev/null 2>&1 && \
                swapon -p 10 /dev/zram0 2>/dev/null; then
                 succ "ZRAM 已激活: ${zram_size}M ($algo)"
-                
                 # 持久化（简化版）
                 if command -v systemctl >/dev/null 2>&1; then
                     cat > /etc/systemd/system/zram-swap.service <<-EOF
@@ -303,10 +298,9 @@ setup_swap() {
             fi
         fi
     fi
-    
+	
     # === 磁盘 Swap 兜底 ===
     [ -d /proc/vz ] && { warn "OpenVZ 容器不支持 Swap"; return 0; }  # OpenVZ 检测
-    
     info "创建磁盘 Swap (512M)..."
     {
         (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null) && \
@@ -427,7 +421,7 @@ optimize_system() {
     local udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
     local swappiness_val="${SWAPPINESS_VAL:-10}" busy_poll_val="${BUSY_POLL_VAL:-0}" VAR_BACKLOG="${VAR_BACKLOG:-5000}"
     
-    setup_swap "$mem_total"
+    setup_zrm_swap "$mem_total"
     info "系统画像: 可用内存=${mem_total}MB | 平均延迟=${RTT_AVG}ms"
 
     # 2. 差异化档位计算
@@ -911,7 +905,7 @@ EOF
 get_cpu_core get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
 apply_userspace_adaptive_profile apply_nic_core_boost \
-setup_swap safe_rtt check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
+setup_zrm_swap safe_rtt check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
 
     for f in "${funcs[@]}"; do
         if declare -f "$f" >/dev/null 2>&1; then declare -f "$f" >> "$CORE_TMP"; echo "" >> "$CORE_TMP"; fi
@@ -1000,18 +994,36 @@ while true; do
         5) service_ctrl restart && info "系统服务和优化参数已重载"; read -r -p $'\n按回车键返回菜单...' ;;
         6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
            [[ "\${cf,,}" == "y" ]] && {
-               info "正在执行深度卸载与内核恢复..."
-               systemctl stop sing-box >/dev/null 2>&1 || rc-service sing-box stop >/dev/null 2>&1 || true
-               [ -f /etc/init.d/sing-box ] && rc-update del sing-box >/dev/null 2>&1 || true
-               info "重置系统参数与清理冗余..."
-               rm -f /etc/sysctl.d/99-sing-box.conf
-               [ "$OS" = "alpine" ] && rm -f /run/sing-box.pid
+               info "正在执行深度卸载..."
+               # 停止服务
+               systemctl stop sing-box 2>/dev/null || rc-service sing-box stop 2>/dev/null || true
+               # ZRAM 清理（精简版）
+               if grep -q "^/dev/zram0 " /proc/swaps 2>/dev/null; then
+                   swapoff /dev/zram0 2>/dev/null
+                   echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+                   info "ZRAM 已清理"
+               fi
+               # 磁盘 Swap 清理
+               if grep -q "^/swapfile " /proc/swaps 2>/dev/null; then
+                   swapoff /swapfile 2>/dev/null
+                   rm -f /swapfile
+                   sed -i '/\/swapfile/d' /etc/fstab 2>/dev/null
+                   info "磁盘 Swap 已清理"
+               fi
+               # 服务清理
+               systemctl disable zram-swap.service sing-box.service 2>/dev/null || true
+               rc-update del zram-swap sing-box 2>/dev/null || true
+               # 文件清理
+               rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/{sb,SB} \
+                      /etc/systemd/system/{zram-swap,sing-box}.service \
+                      /etc/init.d/{zram-swap,sing-box} \
+                      /etc/sysctl.d/99-sing-box.conf
+               # 系统恢复
                printf "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\nvm.swappiness=60\n" > /etc/sysctl.conf
                sysctl -p >/dev/null 2>&1 || true
-               [ -f /swapfile ] && { swapoff /swapfile 2>/dev/null; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; }
-               rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/sb /usr/local/bin/SB \
-                      /etc/systemd/system/sing-box.service /etc/init.d/sing-box "\$SBOX_CORE"
-               succ "深度卸载完成，系统已恢复纯净"; exit 0
+               systemctl daemon-reload 2>/dev/null || true
+               succ "卸载完成，系统已恢复"
+               exit 0
            } || info "卸载操作已取消"
            read -r -p "按回车键返回菜单..." ;;
         0) exit 0 ;;
