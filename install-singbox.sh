@@ -264,7 +264,7 @@ setup_swap() {
 # 计算 RTT 安全钳位
 safe_rtt() {
     local RTT_AVG="$1" max_udp_pages="$2" udp_mem_global_min="$3" udp_mem_global_pressure="$4" udp_mem_global_max="$5"
-    rtt_scale_min=$((RTT_AVG * 128)); rtt_scale_pressure=$((RTT_AVG * 256)); rtt_scale_max=$((RTT_AVG * 512))
+    rtt_scale_min=$((RTT_AVG * 256)); rtt_scale_pressure=$((RTT_AVG * 512)); rtt_scale_max=$((RTT_AVG * 1024))
     local quic_min quic_press quic_max quic_extra_msg
     
     if [ "$RTT_AVG" -ge 150 ]; then quic_min=262144; quic_press=524288; quic_max=1048576; quic_extra_msg=" (QUIC长距模式)"; \
@@ -276,6 +276,9 @@ safe_rtt() {
     [ "$quic_max" -gt "$rtt_scale_max" ] && rtt_scale_max=$quic_max
     # 内存总量保护（40% 上限）
     [ "$rtt_scale_max" -gt "$max_udp_pages" ] && { rtt_scale_max=$max_udp_pages; rtt_scale_pressure=$((max_udp_pages * 3 / 4)); rtt_scale_min=$((max_udp_pages / 2)); }
+    # 实际可用内存二次校验
+    local avail_mem_pages=$(awk '/MemAvailable/{print int($2/4)}' /proc/meminfo 2>/dev/null || echo "$max_udp_pages")
+    [ "$rtt_scale_max" -gt "$avail_mem_pages" ] && rtt_scale_max=$avail_mem_pages
     # 内存档位保护（新增：确保不超出内存档位限制）
     rtt_scale_max=$(( rtt_scale_max < udp_mem_global_max ? rtt_scale_max : udp_mem_global_max ))
     rtt_scale_pressure=$(( rtt_scale_pressure < udp_mem_global_pressure ? rtt_scale_pressure : udp_mem_global_pressure ))
@@ -290,7 +293,13 @@ apply_userspace_adaptive_profile() {
     # === 1. GOMAXPROCS 计算 (CPU 核心数) & 导出运行时变量 ===
     export GOGC="$SBOX_GOGC" GOMEMLIMIT="$SBOX_GOLIMIT"
     export GOMAXPROCS="$g_procs" GODEBUG="madvdontneed=1"
-    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd"
+    # 【新增】64M专属优化：启用软内存限制 + 激进GC
+    local mem_total=$(probe_memory_total)
+    if [ "$mem_total" -lt 100 ]; then
+        export GODEBUG="madvdontneed=1,gctrace=0,asyncpreemptoff=1"  # 禁用异步抢占降低开销
+        export GOGC="150"  # 更激进的GC策略
+    fi
+    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="$VAR_HY2_BW"
     export SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"
     
     # === 2. 持久化到环境文件 (用于服务重启) ===
@@ -303,6 +312,7 @@ GODEBUG=madvdontneed=1
 SINGBOX_QUIC_MAX_CONN_WINDOW=$SINGBOX_QUIC_MAX_CONN_WINDOW
 SINGBOX_UDP_RECVBUF=$SINGBOX_UDP_RECVBUF
 SINGBOX_UDP_SENDBUF=$SINGBOX_UDP_SENDBUF
+VAR_HY2_BW=${VAR_HY2_BW}
 EOF
     chmod 644 /etc/sing-box/env
     
@@ -368,9 +378,9 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="500"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
-        VAR_HY2_BW="500"; VAR_DEF_MEM="16777216"
+        VAR_HY2_BW="0"; VAR_DEF_MEM="16777216"
         VAR_BACKLOG=32768; swappiness_val=10; busy_poll_val=50
-        g_procs=$real_c; g_wnd=12; g_buf=2097152
+        g_procs=$real_c; g_wnd=24; g_buf=4194304
         [ "$real_c" -ge 2 ] && { net_bgt=3000; net_usc=2000; } || { net_bgt=2500; net_usc=5000; }
         udp_mem_global_min=131072; udp_mem_global_pressure=262144; udp_mem_global_max=524288
         ct_max=65535; ct_stream_to=60
@@ -379,9 +389,9 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="400"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="300"; VAR_DEF_MEM="8388608"
+        VAR_HY2_BW="0"; VAR_DEF_MEM="8388608"
         VAR_BACKLOG=16384; swappiness_val=10; busy_poll_val=20
-        g_procs=$real_c; g_wnd=8; g_buf=1048576
+        g_procs=$real_c; g_wnd=16; g_buf=2097152
         [ "$real_c" -ge 2 ] && { net_bgt=1500; net_usc=2500; } || { net_bgt=2000; net_usc=4500; }
         udp_mem_global_min=65536; udp_mem_global_pressure=131072; udp_mem_global_max=262144
         ct_max=32768; ct_stream_to=45; 
@@ -390,22 +400,22 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-8"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="200"; VAR_DEF_MEM="4194304"  
+        VAR_HY2_BW="0"; VAR_DEF_MEM="4194304"  
         VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
-        [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; g_wnd=6; g_buf=524288
+        [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; g_wnd=10; g_buf=1048576
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3000; } || { net_bgt=1500; net_usc=4000; }
         udp_mem_global_min=32768; udp_mem_global_pressure=65536; udp_mem_global_max=131072
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
-        SBOX_GOLIMIT="$((mem_total * 72 / 100))MiB"; SBOX_GOGC="300"
-        VAR_UDP_RMEM="7500000"; VAR_UDP_WMEM="7500000"
+        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="200"
+        VAR_UDP_RMEM="10485760"; VAR_UDP_WMEM="10485760"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="100"; VAR_DEF_MEM="2097152"
-        VAR_BACKLOG=5000; swappiness_val=100; busy_poll_val=0
-        g_procs=1; g_wnd=4; g_buf=262144
-        [ "$real_c" -ge 2 ] && { net_bgt=800; net_usc=3500; } || { net_bgt=1000; net_usc=3500; }
-        udp_mem_global_min=16384; udp_mem_global_pressure=32768; udp_mem_global_max=65536
-        SBOX_OPTIMIZE_LEVEL="64M 生存版"
+        VAR_HY2_BW="0"; VAR_DEF_MEM="3145728"
+        VAR_BACKLOG=8000; swappiness_val=100; busy_poll_val=0
+        g_procs=1; g_wnd=8; g_buf=524288
+        [ "$real_c" -ge 2 ] && { net_bgt=1200; net_usc=3000; } || { net_bgt=1500; net_usc=3000; }
+        udp_mem_global_min=24576; udp_mem_global_pressure=49152; udp_mem_global_max=98304
+        SBOX_OPTIMIZE_LEVEL="64M 激进版"
     fi
 
     # 3. RTT 驱动与安全钳位
@@ -476,11 +486,30 @@ net.ipv4.udp_rmem_min = 16384            # 最小接收缓冲区保护
 net.ipv4.udp_wmem_min = 16384            # 最小发送缓冲区保护
 net.ipv4.udp_early_demux = 1             # UDP 早期路由优化
 net.core.somaxconn = 4096                # 监听队列深度
+net.ipv4.udp_gro_enabled = 1             # UDP GRO 聚合减少中断
+net.ipv4.udp_l4_early_demux = 1          # UDP 四层早期分流
+net.core.netdev_tstamp_prequeue = 0      # 禁用时间戳预处理降低延迟
 
 # === 7. Conntrack 连接跟踪自适应优化 ===
 net.netfilter.nf_conntrack_max = $ct_max
 net.netfilter.nf_conntrack_udp_timeout = $ct_udp_to
 net.netfilter.nf_conntrack_udp_timeout_stream = $ct_stream_to
+
+# === 8. 低内存专属优化 (64M-100M) ===
+$([ "$mem_total" -lt 100 ] && cat <<LOWMEM
+net.ipv4.tcp_sack = 0                    # 禁用 SACK 减少内存占用
+net.ipv4.tcp_dsack = 0                   # 禁用 D-SACK
+net.ipv4.tcp_fack = 0                    # 禁用前向确认
+net.ipv4.tcp_timestamps = 0              # 禁用时间戳节省 12 字节/包
+net.ipv4.tcp_window_scaling = 1          # 保持窗口缩放
+net.ipv4.tcp_adv_win_scale = 1           # 应用窗口缩放系数
+net.ipv4.tcp_moderate_rcvbuf = 0         # 禁用接收缓冲自动调整
+net.ipv4.tcp_max_syn_backlog = 2048      # SYN队列限制
+vm.min_free_kbytes = 2048                # 保留最小空闲内存
+vm.overcommit_memory = 1                 # 允许内存超额分配
+vm.panic_on_oom = 0                      # OOM时不panic
+LOWMEM
+)
 SYSCTL
     # 兼容地加载 sysctl（优先 sysctl --system，其次回退）
     if command -v sysctl >/dev/null 2>&1 && sysctl --system >/dev/null 2>&1; then :
@@ -561,6 +590,7 @@ install_singbox() {
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
+    local FINAL_BW="${VAR_HY2_BW:-0}"
     local ds="ipv4_only"
     [ "${IS_V6_OK:-false}" = "true" ] && ds="prefer_ipv4"
     
@@ -591,16 +621,16 @@ create_config() {
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "fatal", "timestamp": true },
-  "dns": {"servers":[{"address":"https://1.1.1.1/dns-query","detour":"direct-out"},{"address":"https://8.8.4.4/dns-query","detour":"direct-out"}],"strategy":"$ds","independent_cache":true,"disable_cache":false,"disable_expire":false},
+  "dns": {"servers":[{"address":"https://8.8.4.4/dns-query","detour":"direct-out"},{"address":"https://1.1.1.1/dns-query","detour":"direct-out"}],"strategy":"$ds","independent_cache":true,"disable_cache":false,"disable_expire":false},
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
     "listen": "::",
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
-    "ignore_client_bandwidth": false,
-    "up_mbps": ${VAR_HY2_BW:-200},
-    "down_mbps": ${VAR_HY2_BW:-200},
+    "ignore_client_bandwidth": true,
+$([ "$FINAL_BW" -gt 0 ] && echo "    \"up_mbps\": $FINAL_BW," || echo "")
+$([ "$FINAL_BW" -gt 0 ] && echo "    \"down_mbps\": $FINAL_BW," || echo "")
     "udp_timeout": "$timeout",
     "udp_fragment": true,
     "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
@@ -656,7 +686,8 @@ EOF
         chmod +x /etc/init.d/sing-box
         rc-update add sing-box default >/dev/null 2>&1 || true; RC_NO_DEPENDS=yes rc-service sing-box restart >/dev/null 2>&1 || true
     else
-        local mem_config=""; [ -n "$SBOX_MEM_HIGH" ] && mem_config+="MemoryHigh=$SBOX_MEM_HIGH"$'\n'
+        local mem_config=""
+        [ -n "$SBOX_MEM_HIGH" ] && mem_config+="MemoryHigh=$SBOX_MEM_HIGH"$'\n'
         [ -n "$SBOX_MEM_MAX" ] && mem_config+="MemoryMax=$SBOX_MEM_MAX"$'\n'
         local io_config=""
         if [ "$mem_total" -ge 200 ]; then
@@ -685,10 +716,11 @@ ExecStart=$taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/con
 ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash $SBOX_CORE --apply-cwnd'
 Nice=$cur_nice
 ${io_config}
-OOMScoreAdjust=-500
 LimitNOFILE=1000000
 LimitMEMLOCK=infinity
 ${mem_config}CPUQuota=${cpu_quota}%
+OOMPolicy=continue
+OOMScoreAdjust=-500
 Restart=always
 RestartSec=10s
 TimeoutStopSec=15
