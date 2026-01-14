@@ -429,7 +429,7 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="500"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
-        VAR_HY2_BW="0"; VAR_DEF_MEM="16777216"
+        VAR_HY2_BW="500"; VAR_DEF_MEM="16777216"
         VAR_BACKLOG=32768; swappiness_val=10; busy_poll_val=50
         g_procs=$real_c; g_wnd=24; g_buf=4194304
         [ "$real_c" -ge 2 ] && { net_bgt=3000; net_usc=2000; } || { net_bgt=2500; net_usc=5000; }
@@ -440,7 +440,7 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="400"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="0"; VAR_DEF_MEM="8388608"
+        VAR_HY2_BW="300"; VAR_DEF_MEM="8388608"
         VAR_BACKLOG=16384; swappiness_val=10; busy_poll_val=20
         g_procs=$real_c; g_wnd=16; g_buf=2097152
         [ "$real_c" -ge 2 ] && { net_bgt=1500; net_usc=2500; } || { net_bgt=2000; net_usc=4500; }
@@ -451,7 +451,7 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-8"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="0"; VAR_DEF_MEM="4194304"  
+        VAR_HY2_BW="200"; VAR_DEF_MEM="4194304"  
         VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; g_wnd=10; g_buf=1048576
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3000; } || { net_bgt=1500; net_usc=4000; }
@@ -461,7 +461,7 @@ optimize_system() {
         SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="200"
         VAR_UDP_RMEM="10485760"; VAR_UDP_WMEM="10485760"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="0"; VAR_DEF_MEM="3145728"
+        VAR_HY2_BW="130"; VAR_DEF_MEM="3145728"
         VAR_BACKLOG=8000; swappiness_val=100; busy_poll_val=0
         g_procs=1; g_wnd=8; g_buf=524288
         [ "$real_c" -ge 2 ] && { net_bgt=1200; net_usc=3000; } || { net_bgt=1500; net_usc=3000; }
@@ -649,7 +649,6 @@ install_singbox() {
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
-    local FINAL_BW="${VAR_HY2_BW:-0}"
     local ds="ipv4_only"
     [ "${IS_V6_OK:-false}" = "true" ] && ds="prefer_ipv4"
     
@@ -687,9 +686,9 @@ create_config() {
     "listen": "::",
     "listen_port": $PORT_HY2,
     "users": [ { "password": "$PSK" } ],
-    "ignore_client_bandwidth": true,
-$([ "$FINAL_BW" -gt 0 ] && echo "    \"up_mbps\": $FINAL_BW," || echo "")
-$([ "$FINAL_BW" -gt 0 ] && echo "    \"down_mbps\": $FINAL_BW," || echo "")
+    "ignore_client_bandwidth": false,
+    "up_mbps": ${VAR_HY2_BW:-200},
+    "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
     "udp_fragment": true,
     "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
