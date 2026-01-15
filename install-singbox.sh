@@ -246,10 +246,8 @@ apply_initcwnd_optimization() {
 setup_zrm_swap() {
     local mt="$1" zs algo="lz4"
     [ -z "$mt" ] || [ "$mt" -ge 600 ] && return 0
-    # 修复：使用 grep 代替 swapon --show 兼容 BusyBox
     grep -q "/dev/zram0" /proc/swaps 2>/dev/null && { info "ZRAM 已就绪"; return 0; }
     
-    # 尝试加载 ZRAM
     if ! modprobe zram 2>/dev/null; then
         [ "$OS" = "alpine" ] && apk add linux-virt-modules >/dev/null 2>&1 && modprobe zram 2>/dev/null
     fi
@@ -257,12 +255,16 @@ setup_zrm_swap() {
     if ! modprobe zram 2>/dev/null; then warn "内核不支持 ZRAM"; elif [ ! -b /dev/zram0 ]; then warn "未发现 ZRAM 设备"; else
         if ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then warn "容器限制，ZRAM 不可用"; else
             zs=$((mt * 15 / 10)); [ "$zs" -gt 512 ] && zs=512
+            local z_size_bytes=$((zs * 1024 * 1024))
+
             if [ -f /sys/block/zram0/comp_algorithm ]; then
                 grep -qw lz4 /sys/block/zram0/comp_algorithm 2>/dev/null && algo="lz4" || algo="lzo"
                 echo "$algo" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
             fi
-            if echo $((zs * 1024 * 1024)) > /sys/block/zram0/disksize 2>/dev/null && mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 10 /dev/zram0 2>/dev/null; then
+
+            if echo "$z_size_bytes" > /sys/block/zram0/disksize 2>/dev/null && mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 10 /dev/zram0 2>/dev/null; then
                 succ "ZRAM 激活: ${zs}M ($algo)"; [ "$mt" -le 128 ] && sysctl -w vm.swappiness=80 >/dev/null 2>&1
+                
                 if command -v systemctl >/dev/null 2>&1; then
                     cat > /etc/systemd/system/zram-swap.service <<EOF
 [Unit]
@@ -271,7 +273,7 @@ Before=sing-box.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'modprobe zram; echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null; echo $((zs*1024*1024)) > /sys/block/zram0/disksize; mkswap /dev/zram0; swapon -p 10 /dev/zram0'
+ExecStart=/bin/sh -c 'modprobe zram; echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null; echo $z_size_bytes > /sys/block/zram0/disksize; mkswap /dev/zram0; swapon -p 10 /dev/zram0'
 ExecStop=/sbin/swapoff /dev/zram0
 [Install]
 WantedBy=multi-user.target
@@ -280,7 +282,7 @@ EOF
                 elif [ "$OS" = "alpine" ]; then
                     cat > /etc/init.d/zram-swap <<EOF
 #!/sbin/openrc-run
-start() { modprobe zram; mt=\$(awk '/MemTotal/{print int(\$2/1024)}' /proc/meminfo); zs=\$(( mt * 15 / 10 )); [ "\$zs" -gt 512 ] && zs=512; echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null; echo \$((zs*1024*1024)) > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null && swapon -p 10 /dev/zram0; }
+start() { modprobe zram; echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null; echo $z_size_bytes > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null && swapon -p 10 /dev/zram0; }
 stop() { swapoff /dev/zram0 2>/dev/null; echo 1 > /sys/block/zram0/reset 2>/dev/null; }
 EOF
                     chmod +x /etc/init.d/zram-swap && rc-update add zram-swap default 2>/dev/null
@@ -288,7 +290,7 @@ EOF
             else warn "ZRAM 初始化失败"; fi
         fi
     fi
-    # 磁盘 Swap 兜底逻辑：仅在无任何 Swap 且非容器/Alpine 时执行
+
     [ "$OS" = "alpine" ] && { info "Alpine 跳过磁盘 Swap"; return 0; }
     local st=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
     [ "${st:-0}" -eq 0 ] && [ ! -d /proc/vz ] && {
