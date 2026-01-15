@@ -348,33 +348,23 @@ safe_rtt() {
 
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
 apply_userspace_adaptive_profile() {
-    local g_procs="$1" wnd="$2" buf="$3"
-    local real_c="${4:-$CPU_CORE}"
-    local mem_total="${5:-$(probe_memory_total)}"
+    local g_procs="$1" wnd="$2" buf="$3" real_c="$4" mem_total="$5"
+	export GOGC="$SBOX_GOGC" GOMEMLIMIT="$SBOX_GOLIMIT" GOMAXPROCS="$g_procs" GODEBUG="madvdontneed=1"
     
-    # 基础 Go 运行时参数
-    export GOGC="$SBOX_GOGC" GOMEMLIMIT="$SBOX_GOLIMIT"
-    export GOMAXPROCS="$g_procs" GODEBUG="madvdontneed=1"
-    
-    # === 1. 单核低内存特殊优化 ===
+    # === 1. GOMAXPROCS 智能调整 ===
     if [ "$real_c" -eq 1 ] && [ "$mem_total" -lt 100 ]; then
-        export GOMAXPROCS=2  # 单核环境启用并发 GC
+        export GOMAXPROCS=2  # 单核环境: GOMAXPROCS=2 让 GC 与业务逻辑并发 (减少 STW 时间)
         info "单核低内存优化: GOMAXPROCS=2 (启用并发 GC)"
-    fi
-    
-    # === 2. 64M-128M 专属激进优化 ===
+    fi    
+    # === 2. 64M 专属优化强化 ===
     if [ "$mem_total" -lt 100 ]; then
-        export GODEBUG="madvdontneed=1,asyncpreemptoff=1"
-        export GOGC="130"
+        export GODEBUG="madvdontneed=1,asyncpreemptoff=1" # 禁用异步抢占 (减少调度开销)
+        export GOGC="130"  # 更激进的 GC 但避免过度触发，从150调整为130 (平衡点)
     fi
+    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="$VAR_HY2_BW"
+    export SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"  
     
-    # === 3. 导出 QUIC/UDP 参数 ===
-    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd"
-    export SINGBOX_UDP_RECVBUF="$buf"
-    export SINGBOX_UDP_SENDBUF="$buf"
-    export VAR_HY2_BW="${VAR_HY2_BW:-200}"
-    
-    # === 4. 持久化到环境文件 ===
+    # 持久化配置...
     mkdir -p /etc/sing-box
     cat > /etc/sing-box/env <<EOF
 GOMAXPROCS=$GOMAXPROCS
@@ -382,17 +372,16 @@ GOGC=${GOGC:-$SBOX_GOGC}
 GOMEMLIMIT=${SBOX_GOLIMIT}
 GODEBUG=${GODEBUG:-madvdontneed=1}
 SINGBOX_QUIC_MAX_CONN_WINDOW=$SINGBOX_QUIC_MAX_CONN_WINDOW
-SINGBOX_UDP_RECVBUF=$SINGBOX_UDP_RECVBUF
+SINGBOX_UDP_RECVBUF=$SINGBOX_UDP_SENDBUF
 SINGBOX_UDP_SENDBUF=$SINGBOX_UDP_SENDBUF
 VAR_HY2_BW=${VAR_HY2_BW}
 EOF
     chmod 644 /etc/sing-box/env
     
-    # === 5. CPU 亲和力（仅多核启用）===
+    # CPU 亲和力 (仅多核启用)
     if [ "$real_c" -gt 1 ] && command -v taskset >/dev/null 2>&1; then
         taskset -pc 0-$((real_c - 1)) $$ >/dev/null 2>&1 || true
     fi
-    
     info "Runtime → CPU:$GOMAXPROCS核 | QUIC窗口:$wnd | Buffer:$((buf/1024))KB"
 }
 
@@ -401,26 +390,19 @@ apply_nic_core_boost() {
     local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
     [ -z "$IFACE" ] && return 0
     local CPU_N="$CPU_CORE" bgt="$1" usc="$2"
-    
-    # 禁用 pipefail 避免 sysctl 部分失败导致退出
-    set +e
-    sysctl -w net.core.netdev_budget=$bgt net.core.netdev_budget_usecs=$usc >/dev/null 2>&1
-    set -e
+    sysctl -w net.core.netdev_budget=$bgt net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
 
-    # 安全检测驱动（防止 readlink 失败）
-    local driver="unknown"
+    local driver=""
     if [ -L "/sys/class/net/$IFACE/device/driver" ]; then
-        driver=$(readlink "/sys/class/net/$IFACE/device/driver" 2>/dev/null | awk -F'/' '{print $NF}' || echo "unknown")
+        driver=$(readlink "/sys/class/net/$IFACE/device/driver" | awk -F'/' '{print $NF}')
     fi
     
-    # 根据驱动动态调整队列长度
     local target_qlen=10000
     case "$driver" in
-        virtio_net|veth) target_qlen=3000 ;;
+        virtio_net|veth) target_qlen=3000 ;;  # 虚拟化环境降低队列
         *) target_qlen=10000 ;;
     esac
     
-    # 应用网卡优化（静默失败）
     if [ -d "/sys/class/net/$IFACE" ]; then
         ip link set dev "$IFACE" txqueuelen $target_qlen 2>/dev/null || true
         
@@ -429,20 +411,19 @@ apply_nic_core_boost() {
             ethtool -K "$IFACE" tx-udp-segmentation on 2>/dev/null || true
             ethtool -K "$IFACE" rx-udp-gro-forwarding on 2>/dev/null || true
             ethtool -C "$IFACE" adaptive-rx on adaptive-tx on 2>/dev/null || true
-            local us=$( [ "$CPU_CORE" -ge 2 ] && echo 50 || echo 20 )
+            [ "$CPU_CORE" -ge 2 ] && us=50 || us=20
             ethtool -C "$IFACE" rx-usecs $us tx-usecs $us 2>/dev/null || true
         fi
     fi
     
-    # 多核 RPS 分发
+    # 多核 RPS 分发 (虚拟化环境尤其重要)
     if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
         local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
         for q in /sys/class/net/"$IFACE"/queues/*/rps_cpus; do
             [ -e "$q" ] && echo "$MASK" > "$q" 2>/dev/null || true
         done
     fi
-    
-    info "NIC 优化 → Driver:${driver} | CPU:$CPU_N核 | QLen:$target_qlen"
+    info "NIC 优化 → Driver:${driver:-unknown} | CPU:$CPU_N核 | QLen:$target_qlen"
 }
 
 # ==========================================
@@ -452,8 +433,7 @@ optimize_system() {
     # 1. 执行独立探测模块获取环境画像
     local RTT_AVG=$(probe_network_rtt) 
     local mem_total=$(probe_memory_total)
-    local real_c="$CPU_CORE"
-	local ct_max=16384 ct_udp_to=30 ct_stream_to=30
+    local real_c="$CPU_CORE" ct_max=16384 ct_udp_to=30 ct_stream_to=30
     local g_procs g_wnd g_buf net_bgt net_usc
     local max_udp_mb udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
     local swappiness_val="${SWAPPINESS_VAL:-10}" busy_poll_val="${BUSY_POLL_VAL:-0}" VAR_BACKLOG="${VAR_BACKLOG:-5000}"
