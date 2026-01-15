@@ -597,14 +597,9 @@ SYSCTL
 	if command -v sysctl >/dev/null 2>&1 && sysctl --system >/dev/null 2>&1; then :
 	else sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true; fi
 
-	info "anchor 1"
-
     apply_initcwnd_optimization "false"
-	info "anchor 2"
     apply_userspace_adaptive_profile "$g_procs" "$g_wnd" "$g_buf" "$real_c" "$mem_total"
-	info "anchor 3"
     apply_nic_core_boost "$net_bgt" "$net_usc"
-	info "anchor 4"
 }
 
 # ==========================================
@@ -719,7 +714,6 @@ create_config() {
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
     "udp_fragment": true,
-	"zero_rtt_handshake": true,
     "tls": {"enabled": true, "alpn": ["h3"], "min_version": "1.3", "max_early_data": 16384, "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
     "obfs": {"type": "salamander", "password": "$SALA_PASS"},
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
