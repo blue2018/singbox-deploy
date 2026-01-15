@@ -246,14 +246,16 @@ apply_initcwnd_optimization() {
 setup_zrm_swap() {
     local mem_total="$1" zram_size algo="lz4"
     [ "$mem_total" -ge 600 ] && return 0
-    swapon --show | grep -q "/dev/zram0" && { info "ZRAM 已就绪"; return 0; }
+    # 兼容 BusyBox 的 Swap 检测
+    grep -q "/dev/zram0" /proc/swaps 2>/dev/null && { info "ZRAM 已就绪"; return 0; }
+    
+    # 针对 Alpine 尝试自动安装模块
+    [ "$OS" = "alpine" ] && ! modprobe zram 2>/dev/null && apk add linux-virt-modules >/dev/null 2>&1
+
     if ! modprobe zram 2>/dev/null; then warn "内核不支持 ZRAM"; elif [ ! -b /dev/zram0 ]; then warn "未发现 ZRAM 设备"; else
         if ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then warn "容器环境限制，ZRAM 不可用"; else
             zram_size=$((mem_total * 15 / 10)); [ "$zram_size" -gt 512 ] && zram_size=512
-            if [ -f /sys/block/zram0/comp_algorithm ]; then
-                grep -qw lz4 /sys/block/zram0/comp_algorithm 2>/dev/null && algo="lz4" || algo="lzo"
-                echo "$algo" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-            fi
+            [ -f /sys/block/zram0/comp_algorithm ] && { grep -qw lz4 /sys/block/zram0/comp_algorithm 2>/dev/null && algo="lz4" || algo="lzo"; echo "$algo" > /sys/block/zram0/comp_algorithm 2>/dev/null || true; }
             if echo $((zram_size * 1024 * 1024)) > /sys/block/zram0/disksize 2>/dev/null && mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 10 /dev/zram0 2>/dev/null; then
                 succ "ZRAM 激活: ${zram_size}M ($algo)"; [ "$mem_total" -le 128 ] && sysctl -w vm.swappiness=80 >/dev/null 2>&1
                 if command -v systemctl >/dev/null 2>&1; then
@@ -282,7 +284,7 @@ EOF
         fi
     fi
     [ "$OS" = "alpine" ] && { info "Alpine 系统！跳过磁盘 Swap"; return 0; }
-	# 兜底：如果 ZRAM 没成功且没有其他 Swap，才创建磁盘 Swap
+	# 磁盘 Swap 兜底逻辑：仅在无任何 Swap 且非容器/Alpine 时执行
     local st=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
     [ "$st" -eq 0 ] && [ ! -d /proc/vz ] && {
         info "创建磁盘 Swap (512M)..."
@@ -984,18 +986,18 @@ while true; do
         3) source "\$SBOX_CORE" --reset-port "\$(prompt_for_port)"; read -r -p $'\n按回车键返回菜单...' ;;
         4) source "\$SBOX_CORE" --update-kernel; read -r -p $'\n按回车键返回菜单...' ;;
         5) service_ctrl restart && info "系统服务和优化参数已重载"; read -r -p $'\n按回车键返回菜单...' ;;
-        6) read -r -p "确定卸载？(默认N) [Y/N]: " cf
-		   if [[ "${cf:-n}" == [Yy]* ]]; then
-		       info "正在深度卸载..."
+		6) read -r -p "是否确定卸载？(默认N) [Y/N]: " cf
+		   if [ "${cf}" = "y" ] || [ "${cf}" = "Y" ]; then
+		       info "正在执行深度卸载..."
 		       # 1. 停止并禁用所有服务
-		       systemctl stop sing-box 2>/dev/null; systemctl disable zram-swap sing-box 2>/dev/null
-		       rc-service sing-box stop 2>/dev/null; rc-update del zram-swap sing-box 2>/dev/null
-		       # 2. 清理内存与磁盘交换 (保持逻辑判断)
+		       systemctl stop sing-box 2>/dev/null; rc-service sing-box stop 2>/dev/null
+		       systemctl disable zram-swap sing-box 2>/dev/null; rc-update del zram-swap sing-box 2>/dev/null
+		       # 2. 清理 ZRAM 与 磁盘 Swap (兼容 BusyBox)
 		       grep -q "/dev/zram0" /proc/swaps && { swapoff /dev/zram0 2>/dev/null; echo 1 > /sys/block/zram0/reset 2>/dev/null; info "ZRAM 已清理"; }
 		       grep -q "/swapfile" /proc/swaps && { swapoff /swapfile 2>/dev/null; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; info "磁盘 Swap 已清理"; }
-		       # 3. 文件与配置一键抹除
+		       # 3. 文件一键清理
 		       rm -rf /etc/sing-box /usr/bin/sing-box /usr/local/bin/{sb,SB} /etc/systemd/system/{zram-swap,sing-box}.service /etc/init.d/{zram-swap,sing-box} /etc/sysctl.d/99-sing-box.conf
-		       # 4. 恢复内核参数并退出
+		       # 4. 系统恢复
 		       printf "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\nvm.swappiness=60\n" > /etc/sysctl.conf; sysctl -p >/dev/null 2>&1; systemctl daemon-reload 2>/dev/null; succ "卸载完成"; exit 0
 		   else info "卸载操作已取消"; read -r -p "按回车键返回菜单..." ; fi ;;
         0) exit 0 ;;
