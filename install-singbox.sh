@@ -247,8 +247,8 @@ setup_zrm_swap() {
     local mem_total="$1" zram_size algo="lz4"
     [ "$mem_total" -ge 600 ] && return 0
     swapon --show | grep -q "/dev/zram0" && { info "ZRAM 已就绪"; return 0; }
-    if [ "$mem_total" -lt 600 ] && modprobe zram 2>/dev/null && [ -b /dev/zram0 ]; then
-        if ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then warn "容器限制，ZRAM 不可用"; else
+    if ! modprobe zram 2>/dev/null; then warn "内核不支持 ZRAM"; elif [ ! -b /dev/zram0 ]; then warn "未发现 ZRAM 设备"; else
+        if ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then warn "容器环境限制，ZRAM 不可用"; else
             zram_size=$((mem_total * 15 / 10)); [ "$zram_size" -gt 512 ] && zram_size=512
             if [ -f /sys/block/zram0/comp_algorithm ]; then
                 grep -qw lz4 /sys/block/zram0/comp_algorithm 2>/dev/null && algo="lz4" || algo="lzo"
@@ -281,8 +281,7 @@ EOF
             else warn "ZRAM 初始化失败"; fi
         fi
     fi
-	
-    [ "$OS" = "alpine" ] && { info "Alpine 环境跳过磁盘 Swap"; return 0; }
+    [ "$OS" = "alpine" ] && { info "Alpine 系统！跳过磁盘 Swap"; return 0; }
 	# 兜底：如果 ZRAM 没成功且没有其他 Swap，才创建磁盘 Swap
     local st=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
     [ "$st" -eq 0 ] && [ ! -d /proc/vz ] && {
