@@ -244,84 +244,53 @@ apply_initcwnd_optimization() {
 
 # ZRAM/Swap 智能配置
 setup_zrm_swap() {
-    local mem_total="$1"
-    [ "$mem_total" -ge 600 ] && return 0  # 高内存环境跳过
-    local swap_exist=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
-    [ "$swap_exist" -gt 0 ] && { info "Swap 已存在 (${swap_exist}M)"; return 0; }
-
+    local mem_total="$1" zram_size algo="lz4"
+    [ "$mem_total" -ge 600 ] && return 0
+    swapon --show | grep -q "/dev/zram0" && { info "ZRAM 已就绪"; return 0; }
     if [ "$mem_total" -lt 600 ] && modprobe zram 2>/dev/null && [ -b /dev/zram0 ]; then
-        if ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then
-            warn "容器环境限制，ZRAM 不可用"
-        else
-            # 动态计算大小：物理内存的 1.5 倍，最高 512M
-            local zram_size=$((mem_total * 15 / 10))
-            [ "$zram_size" -gt 512 ] && zram_size=512
-            
-            local algo="lz4"
+        if ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then warn "容器限制，ZRAM 不可用"; else
+            zram_size=$((mem_total * 15 / 10)); [ "$zram_size" -gt 512 ] && zram_size=512
             if [ -f /sys/block/zram0/comp_algorithm ]; then
-                grep -qw lz4 /sys/block/zram0/comp_algorithm 2>/dev/null && algo="lz4" || \
-                grep -qw lzo /sys/block/zram0/comp_algorithm 2>/dev/null && algo="lzo" || \
-                algo=$(awk '{print $1}' /sys/block/zram0/comp_algorithm 2>/dev/null || echo "lzo")
+                grep -qw lz4 /sys/block/zram0/comp_algorithm 2>/dev/null && algo="lz4" || algo="lzo"
                 echo "$algo" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
             fi
-
-            if echo $((zram_size * 1024 * 1024)) > /sys/block/zram0/disksize 2>/dev/null && \
-               mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 10 /dev/zram0 2>/dev/null; then
-                succ "ZRAM 已激活: ${zram_size}M ($algo)"
-				# --- 新增：针对低内存机器（如64M/128M），提高交换积极性 ---
-                [ "$mem_total" -le 128 ] && sysctl -w vm.swappiness=80 >/dev/null 2>&1
-                
+            if echo $((zram_size * 1024 * 1024)) > /sys/block/zram0/disksize 2>/dev/null && mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 10 /dev/zram0 2>/dev/null; then
+                succ "ZRAM 激活: ${zram_size}M ($algo)"; [ "$mem_total" -le 128 ] && sysctl -w vm.swappiness=80 >/dev/null 2>&1
                 if command -v systemctl >/dev/null 2>&1; then
-                    cat > /etc/systemd/system/zram-swap.service <<-EOF
-					[Unit]
-					Description=ZRAM Swap
-					Before=sing-box.service
-					[Service]
-					Type=oneshot
-					RemainAfterExit=yes
-					ExecStart=/bin/sh -c 'modprobe zram; echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null; echo $((zram_size*1024*1024)) > /sys/block/zram0/disksize; mkswap /dev/zram0; swapon -p 10 /dev/zram0'
-					ExecStop=/sbin/swapoff /dev/zram0
-					[Install]
-					WantedBy=multi-user.target
-					EOF
+                    cat > /etc/systemd/system/zram-swap.service <<EOF
+[Unit]
+Description=ZRAM Swap
+Before=sing-box.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'modprobe zram; echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null; echo $((zram_size*1024*1024)) > /sys/block/zram0/disksize; mkswap /dev/zram0; swapon -p 10 /dev/zram0'
+ExecStop=/sbin/swapoff /dev/zram0
+[Install]
+WantedBy=multi-user.target
+EOF
                     systemctl daemon-reload && systemctl enable zram-swap.service 2>/dev/null
                 elif [ "$OS" = "alpine" ]; then
-                    # Alpine 动态计算脚本：在启动时现场读取内存并计算
                     cat > /etc/init.d/zram-swap <<EOF
 #!/sbin/openrc-run
-description="ZRAM Swap (Dynamic)"
-start() {
-    modprobe zram 2>/dev/null
-    local mt=\$(awk '/MemTotal/{print int(\$2/1024)}' /proc/meminfo)
-    local zs=\$(( mt * 15 / 10 ))
-    [ "\$zs" -gt 512 ] && zs=512
-    echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null
-    echo \$((zs*1024*1024)) > /sys/block/zram0/disksize
-    mkswap /dev/zram0 >/dev/null && swapon -p 10 /dev/zram0
-}
+start() { modprobe zram; local mt=\$(awk '/MemTotal/{print int(\$2/1024)}' /proc/meminfo); local zs=\$(( mt * 15 / 10 )); [ "\$zs" -gt 512 ] && zs=512; echo $algo > /sys/block/zram0/comp_algorithm 2>/dev/null; echo \$((zs*1024*1024)) > /sys/block/zram0/disksize; mkswap /dev/zram0 >/dev/null && swapon -p 10 /dev/zram0; }
 stop() { swapoff /dev/zram0 2>/dev/null; echo 1 > /sys/block/zram0/reset 2>/dev/null; }
 EOF
-                    chmod +x /etc/init.d/zram-swap
-                    rc-update add zram-swap default 2>/dev/null
-                fi
-                return 0
-            else
-                warn "ZRAM 初始化失败"
-            fi
+                    chmod +x /etc/init.d/zram-swap && rc-update add zram-swap default 2>/dev/null
+                fi; return 0
+            else warn "ZRAM 初始化失败"; fi
         fi
     fi
-    [ "$OS" = "alpine" ] && { info "Alpine 环境不强制创建磁盘 Swap"; return 0; }
-
-    # === 磁盘 Swap 兜底 (仅限非 Alpine 系统) ===
-    [ -d /proc/vz ] && { warn "OpenVZ 容器不支持 Swap"; return 0; }
-    info "创建磁盘 Swap (512M)..."
-    {
-        (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null) && \
-        chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && \
-        swapon -p 5 /swapfile 2>/dev/null && \
-        { grep -q "^/swapfile " /etc/fstab || echo "/swapfile swap swap pri=5 0 0" >> /etc/fstab; } && \
-        succ "磁盘 Swap 已激活 (512M)"
-    } || { rm -f /swapfile; warn "Swap 创建失败"; }
+	
+    [ "$OS" = "alpine" ] && { info "Alpine 环境跳过磁盘 Swap"; return 0; }
+	# 兜底：如果 ZRAM 没成功且没有其他 Swap，才创建磁盘 Swap
+    local st=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
+    [ "$st" -eq 0 ] && [ ! -d /proc/vz ] && {
+        info "创建磁盘 Swap (512M)..."
+        if (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null) && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon -p 5 /swapfile 2>/dev/null; then
+            { grep -q "^/swapfile " /etc/fstab || echo "/swapfile swap swap pri=5 0 0" >> /etc/fstab; } && succ "磁盘 Swap 已激活"
+        else rm -f /swapfile; warn "磁盘 Swap 创建失败"; fi
+    }
 }
 
 # 计算 RTT 安全钳位
