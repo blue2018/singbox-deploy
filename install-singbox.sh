@@ -217,26 +217,40 @@ probe_memory_total() {
 
 # InitCWND 专项优化模块 (取黄金分割点 15 ，比默认 10 强 50%，比 20 更隐蔽)
 apply_initcwnd_optimization() {
-    local silent="${1:-false}" info gw dev mtu mss opts
+    local silent="${1:-false}" info gw dev mtu mss opts current_cwnd
     command -v ip >/dev/null || return 0
-    # 提取核心路由信息
-    info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
+    # 1. 先检测当前是否已优化
+    info=$(ip route get 1.1.1.1 2>/dev/null | head -n1)
     [ -z "$info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
-
+    
+    current_cwnd=$(echo "$info" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}')
+    if [ -n "$current_cwnd" ] && [ "$current_cwnd" -ge 15 ]; then
+        INITCWND_DONE="true"
+        [[ "$silent" == "false" ]] && succ "InitCWND 已优化 (当前值: $current_cwnd)"
+        return 0
+    fi
+    
     gw=$(echo "$info" | grep -oE 'via [^ ]+' | awk '{print $2}')
     dev=$(echo "$info" | grep -oE 'dev [^ ]+' | awk '{print $2}')
     mtu=$(echo "$info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
-    mss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $mss"
-
-    # 逻辑压缩：尝试 change -> replace -> dev replace -> fallback
-    if { [ -n "$gw" ] && [ -n "$dev" ] && ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
-       { [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
-       { [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; } || \
-       ip route change default $opts 2>/dev/null; then
+    mss=$((mtu - 40))
+    opts="initcwnd 15 initrwnd 15 advmss $mss"
+    
+    # 2. 优先使用 replace (避免 change 失败导致的网络中断)
+    if [ -n "$gw" ] && [ -n "$dev" ]; then
+        if ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
+            INITCWND_DONE="true"
+            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/MSS $mss)"
+            return 0
+        fi
+    fi
+    
+    # 3. 仅在必要时使用 change (兜底方案)
+    if ip route change $(ip route show default | head -n1 | sed "s/$/ $opts/") 2>/dev/null; then
         INITCWND_DONE="true"
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/MSS $mss)"
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (兜底模式)"
     else
-        [[ "$silent" == "false" ]] && warn "InitCWND 内核锁定，将切换应用层补偿"
+        [[ "$silent" == "false" ]] && warn "InitCWND 内核锁定,将切换应用层补偿"
     fi
 }
 
@@ -348,72 +362,81 @@ safe_rtt() {
 
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
 apply_userspace_adaptive_profile() {
-    local real_c="$CPU_CORE"
-    local g_procs="$1" wnd="$2" buf="$3"
-    
-    # === 1. GOMAXPROCS 计算 (CPU 核心数) & 导出运行时变量 ===
-    export GOGC="$SBOX_GOGC" GOMEMLIMIT="$SBOX_GOLIMIT"
-    export GOMAXPROCS="$g_procs" GODEBUG="madvdontneed=1"
-    # 【新增】64M专属优化：启用软内存限制 + 激进GC
-    local mem_total=$(probe_memory_total)
+    local g_procs="$1" wnd="$2" buf="$3" real_c="$4" mem_total="$5"
+	export GOGC="$SBOX_GOGC" GOMEMLIMIT="$SBOX_GOLIMIT" GOMAXPROCS="$g_procs" GODEBUG="madvdontneed=1"
+    # === 1. GOMAXPROCS 智能调整 ===
+    if [ "$real_c" -eq 1 ] && [ "$mem_total" -lt 100 ]; then
+        export GOMAXPROCS=2  #  单核环境: GOMAXPROCS=2 让 GC 与业务逻辑并发 (减少 STW 时间)
+        info "单核低内存优化: GOMAXPROCS=2 (启用并发 GC)"
+    fi
+    # === 2. 64M 专属优化强化 ===
     if [ "$mem_total" -lt 100 ]; then
-        export GODEBUG="madvdontneed=1,gctrace=0,asyncpreemptoff=1"  # 禁用异步抢占降低开销
-        export GOGC="150"  # 更激进的GC策略
+        # 禁用异步抢占 (减少调度开销)
+        export GODEBUG="madvdontneed=1,asyncpreemptoff=1"
+        export GOGC="130"  # 更激进的 GC ，但避免过度触发，从150调整为130 (平衡点)
     fi
     export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="$VAR_HY2_BW"
     export SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"
-    
-    # === 2. 持久化到环境文件 (用于服务重启) ===
+    # 持久化配置...
     mkdir -p /etc/sing-box
     cat > /etc/sing-box/env <<EOF
 GOMAXPROCS=$GOMAXPROCS
-GOGC=${SBOX_GOGC}
+GOGC=${GOGC:-$SBOX_GOGC}
 GOMEMLIMIT=${SBOX_GOLIMIT}
-GODEBUG=madvdontneed=1
+GODEBUG=${GODEBUG:-madvdontneed=1}
 SINGBOX_QUIC_MAX_CONN_WINDOW=$SINGBOX_QUIC_MAX_CONN_WINDOW
-SINGBOX_UDP_RECVBUF=$SINGBOX_UDP_RECVBUF
+SINGBOX_UDP_RECVBUF=$SINGBOX_UDP_SENDBUF
 SINGBOX_UDP_SENDBUF=$SINGBOX_UDP_SENDBUF
 VAR_HY2_BW=${VAR_HY2_BW}
 EOF
     chmod 644 /etc/sing-box/env
-    
-    # === 3. CPU 亲和力 (多核环境优化，单核跳过) ===
+    # CPU 亲和力 (仅多核启用)
     if [ "$real_c" -gt 1 ] && command -v taskset >/dev/null 2>&1; then
         taskset -pc 0-$((real_c - 1)) $$ >/dev/null 2>&1 || true
     fi
-    info "Runtime → CPU:$g_procs核 | QUIC窗口:$wnd | Buffer:$((buf/1024))KB"
+    info "Runtime → CPU:$GOMAXPROCS核 | QUIC窗口:$wnd | Buffer:$((buf/1024))KB"
 }
+    
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
 apply_nic_core_boost() {
     local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
     [ -z "$IFACE" ] && return 0
     local CPU_N="$CPU_CORE" bgt="$1" usc="$2"
-    
     sysctl -w net.core.netdev_budget=$bgt net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
 
-    # ===  网卡队列长度优化 (txqueuelen) ===
-    if [ -n "$IFACE" ] && [ -d "/sys/class/net/$IFACE" ]; then
-        ip link set dev "$IFACE" txqueuelen 10000 2>/dev/null || true
+    local driver=""
+    if [ -L "/sys/class/net/$IFACE/device/driver" ]; then
+        driver=$(readlink "/sys/class/net/$IFACE/device/driver" | awk -F'/' '{print $NF}')
+    fi
+    
+    local target_qlen=10000
+    case "$driver" in
+        virtio_net|veth) target_qlen=3000 ;;  # 虚拟化环境降低队列
+        *) target_qlen=10000 ;;
+    esac
+    
+    if [ -d "/sys/class/net/$IFACE" ]; then
+        ip link set dev "$IFACE" txqueuelen $target_qlen 2>/dev/null || true
+        
         if command -v ethtool >/dev/null 2>&1; then
-            ethtool -K "$IFACE" gro on gso on tso on lro off >/dev/null 2>&1 || true
+            ethtool -K "$IFACE" gro on gso on tso on lro off 2>/dev/null || true
             ethtool -K "$IFACE" tx-udp-segmentation on 2>/dev/null || true
             ethtool -K "$IFACE" rx-udp-gro-forwarding on 2>/dev/null || true
             ethtool -C "$IFACE" adaptive-rx on adaptive-tx on 2>/dev/null || true
             [ "$CPU_CORE" -ge 2 ] && us=50 || us=20
             ethtool -C "$IFACE" rx-usecs $us tx-usecs $us 2>/dev/null || true
-            info "网卡硬件加速已启用 (GSO/GRO/UDP-Offload)"
         fi
     fi
     
-    # === 多核 RPS 分发 (仅多核启用) ===
+    # 多核 RPS 分发 (虚拟化环境尤其重要)
     if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
         local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
         for q in /sys/class/net/"$IFACE"/queues/*/rps_cpus; do
             [ -e "$q" ] && echo "$MASK" > "$q" 2>/dev/null || true
         done
     fi
-    info "NIC 优化 → CPU:$CPU_N核 | budget:$bgt | usecs:$usc"
+    info "NIC 优化 → Driver:${driver:-unknown} | CPU:$CPU_N核 | QLen:$target_qlen"
 }
 
 # ==========================================
@@ -423,12 +446,9 @@ optimize_system() {
     # 1. 执行独立探测模块获取环境画像
     local RTT_AVG=$(probe_network_rtt) 
     local mem_total=$(probe_memory_total)
-    local max_udp_mb=$((mem_total * 40 / 100))
-    local max_udp_pages=$((max_udp_mb * 256))
-    local real_c="$CPU_CORE"
-    local ct_max=16384 ct_udp_to=30 ct_stream_to=30
+    local real_c="$CPU_CORE" ct_max=16384 ct_udp_to=30 ct_stream_to=30
     local g_procs g_wnd g_buf net_bgt net_usc
-    local udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
+    local max_udp_mb udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
     local swappiness_val="${SWAPPINESS_VAL:-10}" busy_poll_val="${BUSY_POLL_VAL:-0}" VAR_BACKLOG="${VAR_BACKLOG:-5000}"
     
     setup_zrm_swap "$mem_total"
@@ -444,7 +464,7 @@ optimize_system() {
         g_procs=$real_c; g_wnd=24; g_buf=4194304
         [ "$real_c" -ge 2 ] && { net_bgt=3000; net_usc=2000; } || { net_bgt=2500; net_usc=5000; }
         udp_mem_global_min=131072; udp_mem_global_pressure=262144; udp_mem_global_max=524288
-        ct_max=65535; ct_stream_to=60
+        max_udp_mb=$((mem_total * 40 / 100)); ct_max=65535; ct_stream_to=60
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
         SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="400"
@@ -455,14 +475,14 @@ optimize_system() {
         g_procs=$real_c; g_wnd=16; g_buf=2097152
         [ "$real_c" -ge 2 ] && { net_bgt=1500; net_usc=2500; } || { net_bgt=2000; net_usc=4500; }
         udp_mem_global_min=65536; udp_mem_global_pressure=131072; udp_mem_global_max=262144
-        ct_max=32768; ct_stream_to=45; 
+        max_udp_mb=$((mem_total * 36 / 100)); ct_max=32768; ct_stream_to=45
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
         SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-8"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="200"; VAR_DEF_MEM="4194304"  
-        VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
+        VAR_HY2_BW="200"; VAR_DEF_MEM="4194304"
+        max_udp_mb=$((mem_total * 30 / 100)); VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; g_wnd=10; g_buf=1048576
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3000; } || { net_bgt=1500; net_usc=4000; }
         udp_mem_global_min=32768; udp_mem_global_pressure=65536; udp_mem_global_max=131072
@@ -473,13 +493,14 @@ optimize_system() {
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="130"; VAR_DEF_MEM="3145728"
         VAR_BACKLOG=5000; swappiness_val=100; busy_poll_val=0
-        g_procs=1; g_wnd=6; g_buf=524288
+        max_udp_mb=$((mem_total * 26 / 100)); g_procs=1; g_wnd=6; g_buf=524288
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3500; } || { net_bgt=1300; net_usc=3500; }
         udp_mem_global_min=24576; udp_mem_global_pressure=49152; udp_mem_global_max=98304
         SBOX_OPTIMIZE_LEVEL="64M 激进版"
     fi
 
     # 3. RTT 驱动与安全钳位
+	local max_udp_pages=$((max_udp_mb * 256))
     safe_rtt "$RTT_AVG" "$max_udp_pages" "$udp_mem_global_min" "$udp_mem_global_pressure" "$udp_mem_global_max"
     UDP_MEM_SCALE="$rtt_scale_min $rtt_scale_pressure $rtt_scale_max"
     
@@ -525,14 +546,19 @@ net.core.default_qdisc = fq              # BBR 必须配合 FQ 队列调度
 net.ipv4.tcp_congestion_control = $tcp_cca # 拥塞控制算法
 net.ipv4.tcp_no_metrics_save = 1         # 实时探测，不记忆旧 RTT 指标
 net.ipv4.tcp_fastopen = 3                # 开启 TCP Fast Open (减少三次握手消耗)
-net.ipv4.tcp_slow_start_after_idle = 0   # 闲置后不进入慢启动 (保持高吞吐)
-net.ipv4.tcp_notsent_lowat = 16384       # 限制待发送数据长度，降低缓冲膨胀延迟
-net.ipv4.tcp_limit_output_bytes = 262144 # 限制单个 TCP 连接占用发送队列的大小
+net.ipv4.tcp_slow_start_after_idle = $([ "$RTT_AVG" -ge 150 ] && echo "1" || echo "0")   # 闲置后不进入慢启动 (保持高吞吐)
+net.ipv4.tcp_notsent_lowat = $([ "$mem_total" -ge 200 ] && echo "16384" || echo "32768") # 限制待发送数据长度，降低缓冲膨胀延迟
+net.ipv4.tcp_limit_output_bytes = $([ "$mem_total" -ge 200 ] && echo "262144" || echo "131072") # 限制单个 TCP 连接占用发送队列的大小
 net.ipv4.tcp_rmem = 4096 87380 $VAR_UDP_RMEM
 net.ipv4.tcp_wmem = 4096 65536 $VAR_UDP_WMEM
 net.ipv4.tcp_frto = 2                    # 针对丢包环境的重传判断优化
 net.ipv4.tcp_ecn = 1
 net.ipv4.tcp_ecn_fallback = 1
+$(if [[ "$tcp_cca" == "bbr3" ]]; then cat <<BBR3_OPTS
+net.ipv4.tcp_ecn = 2                     # 强制 ECN (BBRv3 核心)
+sysctl.net.ipv4.tcp_reflect_tos = 1      # TOS 反射优化
+BBR3_OPTS
+fi)
 
 # === 5. 连接复用与超时管理 ===
 net.ipv4.tcp_mtu_probing = 1             # 自动探测 MTU 解决 UDP 黑洞
@@ -585,7 +611,7 @@ SYSCTL
     else sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true; fi
 
     apply_initcwnd_optimization "false"
-    apply_userspace_adaptive_profile "$g_procs" "$g_wnd" "$g_buf"
+    apply_userspace_adaptive_profile "$g_procs" "$g_wnd" "$g_buf" "$real_c" "$mem_total"
     apply_nic_core_boost "$net_bgt" "$net_usc"
 }
 
@@ -701,7 +727,8 @@ create_config() {
     "down_mbps": ${VAR_HY2_BW:-200},
     "udp_timeout": "$timeout",
     "udp_fragment": true,
-    "tls": {"enabled": true, "alpn": ["h3"], "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
+	"zero_rtt_handshake": true,
+    "tls": {"enabled": true, "alpn": ["h3"], "min_version": "1.3", "max_early_data": 16384, "certificate_path": "/etc/sing-box/certs/fullchain.pem", "key_path": "/etc/sing-box/certs/privkey.pem"},
     "obfs": {"type": "salamander", "password": "$SALA_PASS"},
     "masquerade": "https://${TLS_DOMAIN:-www.microsoft.com}"
   }],
