@@ -328,14 +328,14 @@ apply_userspace_adaptive_profile() {
     # === 2. 低内存环境 (100M以下) 专属优化 ===
     if [ "$mem_total" -lt 100 ]; then
         export GODEBUG="madvdontneed=1,asyncpreemptoff=1,scavenge_target=1"
-        export GOGC="100" 
+        export GOGC="200"
         info "Runtime → 激进内存回收模式策略"
     fi
     export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="${VAR_HY2_BW:-100}"
     export SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"  
     
     # === 3. 持久化配置 (修复潜在变量引用问题) ===
-    mkdir -p /etc/sing-box
+    mkdir -p /etc/sing-box  
     cat > /etc/sing-box/env <<EOF
 GOMAXPROCS=$GOMAXPROCS
 GOGC=$GOGC
