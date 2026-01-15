@@ -328,7 +328,7 @@ apply_userspace_adaptive_profile() {
     # === 2. 低内存环境 (100M以下) 专属优化 ===
     if [ "$mem_total" -lt 100 ]; then
         export GODEBUG="madvdontneed=1,asyncpreemptoff=1,scavenge_target=1"
-        export GOGC="200" 
+        export GOGC="100" 
         info "Runtime → 激进内存回收模式策略"
     fi
     export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="${VAR_HY2_BW:-100}"
