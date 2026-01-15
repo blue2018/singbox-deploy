@@ -327,35 +327,36 @@ safe_rtt() {
 apply_userspace_adaptive_profile() {
     local g_procs="$1" wnd="$2" buf="$3" real_c="$4" mem_total="$5"
 	export GOGC="$SBOX_GOGC" GOMEMLIMIT="$SBOX_GOLIMIT" GOMAXPROCS="$g_procs" GODEBUG="madvdontneed=1"
-    
     # === 1. GOMAXPROCS 智能调整 ===
-    if [ "$real_c" -eq 1 ] && [ "$mem_total" -lt 100 ]; then
-        export GOMAXPROCS=2  # 单核环境: GOMAXPROCS=2 让 GC 与业务逻辑并发 (减少 STW 时间)
-        info "单核低内存优化: GOMAXPROCS=2 (启用并发 GC)"
+    if [ "$real_c" -eq 1 ]; then
+        export GOMAXPROCS=2      # 单核强行设置 2 个 P (Processor) 能让 GC 协程不完全阻塞业务协程
+        [ "$mem_total" -lt 100 ] && info "极低内存环境: 启用并发 GC 优化"
     fi    
-    # === 2. 64M 专属优化强化 ===
+
+    # === 2. 低内存环境 (100M以下) 专属优化 ===
     if [ "$mem_total" -lt 100 ]; then
-        export GODEBUG="madvdontneed=1,asyncpreemptoff=1" # 禁用异步抢占 (减少调度开销)
-        export GOGC="130"  # 更激进的 GC 但避免过度触发，从150调整为130 (平衡点)
+        export GODEBUG="madvdontneed=1,asyncpreemptoff=1,scavenge_target=1"
+        export GOGC="80" 
+        info "Runtime → 激进内存回收模式策略"
     fi
-    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="$VAR_HY2_BW"
-    export SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"  
+    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="${VAR_HY2_BW:-100}"
+    export SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"  
     
-    # 持久化配置...
+    # === 3. 持久化配置 (修复潜在变量引用问题) ===
     mkdir -p /etc/sing-box
     cat > /etc/sing-box/env <<EOF
 GOMAXPROCS=$GOMAXPROCS
-GOGC=${GOGC:-$SBOX_GOGC}
-GOMEMLIMIT=${SBOX_GOLIMIT}
-GODEBUG=${GODEBUG:-madvdontneed=1}
+GOGC=$GOGC
+GOMEMLIMIT=$GOMEMLIMIT
+GODEBUG=$GODEBUG
 SINGBOX_QUIC_MAX_CONN_WINDOW=$SINGBOX_QUIC_MAX_CONN_WINDOW
-SINGBOX_UDP_RECVBUF=$SINGBOX_UDP_SENDBUF
-SINGBOX_UDP_SENDBUF=$SINGBOX_UDP_SENDBUF
+SINGBOX_UDP_RECVBUF=$buf
+SINGBOX_UDP_SENDBUF=$buf
 VAR_HY2_BW=${VAR_HY2_BW}
 EOF
     chmod 644 /etc/sing-box/env
     
-    # CPU 亲和力 (仅多核启用)
+    # === 4. CPU 亲和力优化 ===
     if [ "$real_c" -gt 1 ] && command -v taskset >/dev/null 2>&1; then
         taskset -pc 0-$((real_c - 1)) $$ >/dev/null 2>&1 || true
     fi
