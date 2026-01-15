@@ -446,7 +446,8 @@ optimize_system() {
     # 1. 执行独立探测模块获取环境画像
     local RTT_AVG=$(probe_network_rtt) 
     local mem_total=$(probe_memory_total)
-    local real_c="$CPU_CORE" ct_max=16384 ct_udp_to=30 ct_stream_to=30
+    local real_c="$CPU_CORE"
+	local ct_max=16384 ct_udp_to=30 ct_stream_to=30
     local g_procs g_wnd g_buf net_bgt net_usc
     local max_udp_mb udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
     local swappiness_val="${SWAPPINESS_VAL:-10}" busy_poll_val="${BUSY_POLL_VAL:-0}" VAR_BACKLOG="${VAR_BACKLOG:-5000}"
