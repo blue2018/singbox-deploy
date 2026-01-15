@@ -606,12 +606,9 @@ vm.vfs_cache_pressure = 500              # 更积极回收dentry/inode缓存
 ZRAM_TUNING
 )
 SYSCTL
-    # 安全加载 sysctl 配置（带 10 秒超时）
-	if command -v timeout >/dev/null 2>&1; then
-	    timeout 10 sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || warn "sysctl 超时或部分参数失败"
-	else
-	    sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true
-	fi
+    # 兼容地加载 sysctl（优先 sysctl --system，其次回退）
+	if command -v sysctl >/dev/null 2>&1 && sysctl --system >/dev/null 2>&1; then :
+	else sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true; fi
 
     apply_initcwnd_optimization "false"
     apply_userspace_adaptive_profile "$g_procs" "$g_wnd" "$g_buf" "$real_c" "$mem_total"
