@@ -364,43 +364,48 @@ EOF
 
 # NIC/softirq 网卡入口层调度加速（RPS/XPS/批处理密度）
 apply_nic_core_boost() {
-    local IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+    # 修改: 优化 awk 匹配，确保只抓取默认路由那一行
+    local IFACE=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
     [ -z "$IFACE" ] && return 0
-    local CPU_N="$CPU_CORE" bgt="$1" usc="$2"
-    sysctl -w net.core.netdev_budget=$bgt net.core.netdev_budget_usecs=$usc >/dev/null 2>&1 || true
-
+    local real_c="$1" bgt="$2" usc="$3"
+    sysctl -w net.core.netdev_budget="$bgt" net.core.netdev_budget_usecs="$usc" >/dev/null 2>&1 || true
+	
     local driver=""
     if [ -L "/sys/class/net/$IFACE/device/driver" ]; then
-        driver=$(readlink "/sys/class/net/$IFACE/device/driver" | awk -F'/' '{print $NF}')
+        driver=$(basename "$(readlink "/sys/class/net/$IFACE/device/driver")")
     fi
     
     local target_qlen=10000
     case "$driver" in
-        virtio_net|veth) target_qlen=3000 ;;  # 虚拟化环境降低队列
+        virtio_net|veth|"") target_qlen=3000 ;;  # 修改: 增加了空驱动判断，虚拟化环境降低队列
         *) target_qlen=10000 ;;
     esac
     
     if [ -d "/sys/class/net/$IFACE" ]; then
-        ip link set dev "$IFACE" txqueuelen $target_qlen 2>/dev/null || true
+        ip link set dev "$IFACE" txqueuelen "$target_qlen" 2>/dev/null || true
         
         if command -v ethtool >/dev/null 2>&1; then
             ethtool -K "$IFACE" gro on gso on tso on lro off 2>/dev/null || true
             ethtool -K "$IFACE" tx-udp-segmentation on 2>/dev/null || true
             ethtool -K "$IFACE" rx-udp-gro-forwarding on 2>/dev/null || true
             ethtool -C "$IFACE" adaptive-rx on adaptive-tx on 2>/dev/null || true
-            [ "$CPU_CORE" -ge 2 ] && us=50 || us=20
-            ethtool -C "$IFACE" rx-usecs $us tx-usecs $us 2>/dev/null || true
+            [ "$real_c" -ge 2 ] && us=50 || us=20
+            ethtool -C "$IFACE" rx-usecs "$us" tx-usecs "$us" 2>/dev/null || true
         fi
     fi
     
-    # 多核 RPS 分发 (虚拟化环境尤其重要)
-    if [ "$CPU_N" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
-        local MASK=$(printf '%x' $(( (1<<CPU_N)-1 )))
-        for q in /sys/class/net/"$IFACE"/queues/*/rps_cpus; do
-            [ -e "$q" ] && echo "$MASK" > "$q" 2>/dev/null || true
+    # 多核 RPS/XPS 分发 (解决单核处理瓶颈)
+    if [ "$real_c" -ge 2 ] && [ -d "/sys/class/net/$IFACE/queues" ]; then
+        local MASK=$(printf '%x' $(( (1<<real_c)-1 )))
+        for q in /sys/class/net/"$IFACE"/queues/rx-*/rps_cpus; do
+            [ -w "$q" ] && echo "$MASK" > "$q" 2>/dev/null || true
+        done
+        # XPS (Transmit Packet Steering) 优化，提升发送端效率
+        for q in /sys/class/net/"$IFACE"/queues/tx-*/xps_cpus; do
+            [ -w "$q" ] && echo "$MASK" > "$q" 2>/dev/null || true
         done
     fi
-    info "NIC 优化 → Driver:${driver:-unknown} | CPU:$CPU_N核 | QLen:$target_qlen"
+    info "NIC 优化 → Driver:${driver:-unknown} | CPU:${real_c}核 | QLen:$target_qlen"
 }
 
 # ==========================================
@@ -576,7 +581,7 @@ SYSCTL
 
     apply_initcwnd_optimization "false"
     apply_userspace_adaptive_profile "$g_procs" "$g_wnd" "$g_buf" "$real_c" "$mem_total"
-    apply_nic_core_boost "$net_bgt" "$net_usc"
+    apply_nic_core_boost "$real_c" "$net_bgt" "$net_usc"
 }
 
 # ==========================================
