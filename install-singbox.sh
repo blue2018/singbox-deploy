@@ -247,30 +247,16 @@ setup_zrm_swap() {
     local mt="$1" zs z_bytes st algo="lz4"
     [ -z "$mt" ] || [ "$mt" -ge 600 ] && return 0
     grep -q "zram0" /proc/swaps && { info "ZRAM 已就绪"; return 0; }
-    
-    # 1. 加载 ZRAM 模块
-    if ! modprobe zram 2>/dev/null; then
-        [ "$OS" = "alpine" ] && apk add linux-virt-modules >/dev/null 2>&1 && modprobe zram 2>/dev/null
-    fi
-
-    if ! modprobe zram 2>/dev/null; then
-        warn "内核不支持 ZRAM"
-    elif [ ! -b /dev/zram0 ]; then
-        warn "未发现 ZRAM 设备"
-    elif ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then
-        warn "容器限制，ZRAM 不可用"
-    else
-        zs=$((mt * 15 / 10)); [ "$zs" -gt 512 ] && zs=512; z_bytes=$((zs * 1024 * 1024))
-        [ -f /sys/block/zram0/comp_algorithm ] && {
-            grep -qw lz4 /sys/block/zram0/comp_algorithm && algo="lz4" || algo="lzo"
-            echo "$algo" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-        }
-        if echo "$z_bytes" > /sys/block/zram0/disksize 2>/dev/null && mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 10 /dev/zram0 2>/dev/null; then
-            succ "ZRAM 激活: ${zs}M ($algo)"
-            [ "$mt" -le 128 ] && sysctl -w vm.swappiness=80 >/dev/null 2>&1
-            # 写入启动项 (针对 Debian 的 Systemd)
-            if command -v systemctl >/dev/null 2>&1; then
-                cat > /etc/systemd/system/zram-swap.service <<EOF
+	
+    if ! modprobe zram 2>/dev/null; then [ "$OS" = "alpine" ] && apk add linux-virt-modules >/dev/null 2>&1 && modprobe zram 2>/dev/null; fi
+    if ! modprobe zram 2>/dev/null; then warn "内核不支持 ZRAM"; elif [ ! -b /dev/zram0 ]; then warn "未发现 ZRAM 设备"; else
+        if ! echo 1 > /sys/block/zram0/reset 2>/dev/null; then warn "容器限制，ZRAM 不可用"; else
+            zs=$((mt * 15 / 10)); [ "$zs" -gt 512 ] && zs=512; z_bytes=$((zs * 1024 * 1024))
+            [ -f /sys/block/zram0/comp_algorithm ] && { grep -qw lz4 /sys/block/zram0/comp_algorithm && algo="lz4" || algo="lzo"; echo "$algo" > /sys/block/zram0/comp_algorithm 2>/dev/null || true; }
+            if echo "$z_bytes" > /sys/block/zram0/disksize 2>/dev/null && mkswap /dev/zram0 >/dev/null 2>&1 && swapon -p 10 /dev/zram0 2>/dev/null; then
+                succ "ZRAM 激活: ${zs}M ($algo)"; [ "$mt" -le 128 ] && sysctl -w vm.swappiness=80 >/dev/null 2>&1
+                if command -v systemctl >/dev/null 2>&1; then
+                    cat > /etc/systemd/system/zram-swap.service <<EOF
 [Unit]
 Description=ZRAM Swap
 Before=sing-box.service
@@ -282,42 +268,26 @@ ExecStop=/sbin/swapoff /dev/zram0
 [Install]
 WantedBy=multi-user.target
 EOF
-                systemctl daemon-reload && systemctl enable zram-swap.service 2>/dev/null
-            elif [ "$OS" = "alpine" ]; then
-                cat > /etc/init.d/zram-swap <<EOF
+                    systemctl daemon-reload && systemctl enable zram-swap.service 2>/dev/null
+                elif [ "$OS" = "alpine" ]; then
+                    cat > /etc/init.d/zram-swap <<EOF
 #!/sbin/openrc-run
 start() { modprobe zram; echo $algo > /sys/block/zram0/comp_algorithm; echo $z_bytes > /sys/block/zram0/disksize; mkswap /dev/zram0 && swapon -p 10 /dev/zram0; }
 stop() { swapoff /dev/zram0; echo 1 > /sys/block/zram0/reset; }
 EOF
-                chmod +x /etc/init.d/zram-swap && rc-update add zram-swap default 2>/dev/null
-            fi
-            return 0
-        else
-            warn "ZRAM 初始化失败"
+                    chmod +x /etc/init.d/zram-swap && rc-update add zram-swap default 2>/dev/null
+                fi; return 0
+            else warn "ZRAM 初始化失败"; fi
         fi
     fi
-
-    # 2. 磁盘 Swap 兜底 (Debian 中断高发区)
+	
     [ "$OS" = "alpine" ] && { info "Alpine 跳过磁盘 Swap"; return 0; }
-    
-    # 修复点：分步获取变量，带上默认值，防止 [ 比较报错
     st=$(grep "SwapTotal" /proc/meminfo | awk '{print $2}')
     if [ "${st:-0}" -eq 0 ] && [ ! -d /proc/vz ]; then
         info "创建磁盘 Swap (512M)..."
-        # 修复点：fallocate 失败不代表 dd 也会失败，且必须确保 rm 不抛错
-        if (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null); then
-            chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon -p 5 /swapfile 2>/dev/null
-            if [ $? -eq 0 ]; then
-                grep -q "/swapfile" /etc/fstab || echo "/swapfile swap swap pri=5 0 0" >> /etc/fstab
-                succ "磁盘 Swap 已激活"
-            else
-                rm -f /swapfile 2>/dev/null
-                warn "磁盘 Swap 挂载失败"
-            fi
-        else
-            rm -f /swapfile 2>/dev/null
-            warn "磁盘 Swap 创建失败"
-        fi
+        if (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null) && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon -p 5 /swapfile 2>/dev/null; then
+            grep -q "/swapfile" /etc/fstab || echo "/swapfile swap swap pri=5 0 0" >> /etc/fstab && succ "磁盘 Swap 已激活"
+        else rm -f /swapfile 2>/dev/null; warn "磁盘 Swap 创建失败"; fi
     fi
 }
 
