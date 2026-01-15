@@ -219,16 +219,20 @@ probe_memory_total() {
 apply_initcwnd_optimization() {
     local silent="${1:-false}" info gw dev mtu mss opts
     command -v ip >/dev/null || return 0
-    # 提取核心路由信息
-    info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
-    [ -z "$info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
+    local current_route=$(ip route show default | head -n1)
+    
+    # 幂等性检查：如果已经包含了 initcwnd 15，则直接退出
+    # 幂等性检查：若已包含 initcwnd 15 则跳过
+    echo "$current_route" | grep -q "initcwnd 15" && { [[ "$silent" == "false" ]] && info "InitCWND 已优化，跳过"; INITCWND_DONE="true"; return 0; }
 
-    gw=$(echo "$info" | grep -oE 'via [^ ]+' | awk '{print $2}')
-    dev=$(echo "$info" | grep -oE 'dev [^ ]+' | awk '{print $2}')
-    mtu=$(echo "$info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
-    mss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $mss"
+    # 提取核心路由参数
+    gw=$(echo "$current_route" | grep -oE 'via [^ ]+' | awk '{print $2}')
+    dev=$(echo "$current_route" | grep -oE 'dev [^ ]+' | awk '{print $2}')
+    mtu=$(echo "$current_route" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
+    mss=$((mtu - 40))
+    opts="initcwnd 15 initrwnd 15 advmss $mss"
 
-    # 逻辑压缩：尝试 change -> replace -> dev replace -> fallback
+    # 执行修改（逻辑依然采用你的高效尝试链）
     if { [ -n "$gw" ] && [ -n "$dev" ] && ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
        { [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
        { [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; } || \
@@ -236,7 +240,7 @@ apply_initcwnd_optimization() {
         INITCWND_DONE="true"
         [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/MSS $mss)"
     else
-        [[ "$silent" == "false" ]] && warn "InitCWND 内核锁定，将切换应用层补偿"
+        [[ "$silent" == "false" ]] && warn "InitCWND 修改失败（内核或容器限制）"
     fi
 }
 
