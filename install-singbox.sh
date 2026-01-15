@@ -220,8 +220,6 @@ apply_initcwnd_optimization() {
     local silent="${1:-false}" info gw dev mtu mss opts
     command -v ip >/dev/null || return 0
     local current_route=$(ip route show default | head -n1)
-    
-    # 幂等性检查：如果已经包含了 initcwnd 15，则直接退出
     # 幂等性检查：若已包含 initcwnd 15 则跳过
     echo "$current_route" | grep -q "initcwnd 15" && { [[ "$silent" == "false" ]] && info "InitCWND 已优化，跳过"; INITCWND_DONE="true"; return 0; }
 
