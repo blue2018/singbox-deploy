@@ -217,69 +217,27 @@ probe_memory_total() {
 
 # InitCWND 专项优化模块 (取黄金分割点 15 ，比默认 10 强 50%，比 20 更隐蔽)
 apply_initcwnd_optimization() {
-    local silent="${1:-false}" info gw dev mtu mss opts current_cwnd
+    local silent="${1:-false}" info gw dev mtu mss opts
     command -v ip >/dev/null || return 0
-    
-    # === 1. 安全获取路由信息（带兜底逻辑）===
-    info=$(ip route get 1.1.1.1 2>/dev/null | head -n1)
-    if [ -z "$info" ]; then
-        info=$(ip route show default 2>/dev/null | head -n1)
-    fi
+    # 提取核心路由信息
+    info=$(ip route get 1.1.1.1 2>/dev/null | head -n1 || ip route show default | head -n1)
     [ -z "$info" ] && { [[ "$silent" == "false" ]] && warn "未发现可用路由"; return 0; }
-    
-    # === 2. 检测当前 initcwnd 值 ===
-    current_cwnd=$(echo "$info" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}' || echo "")
-    if [ -n "$current_cwnd" ] && [ "$current_cwnd" -ge 15 ]; then
+
+    gw=$(echo "$info" | grep -oE 'via [^ ]+' | awk '{print $2}')
+    dev=$(echo "$info" | grep -oE 'dev [^ ]+' | awk '{print $2}')
+    mtu=$(echo "$info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo 1500)
+    mss=$((mtu - 40)); opts="initcwnd 15 initrwnd 15 advmss $mss"
+
+    # 逻辑压缩：尝试 change -> replace -> dev replace -> fallback
+    if { [ -n "$gw" ] && [ -n "$dev" ] && ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
+       { [ -n "$gw" ] && [ -n "$dev" ] && ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; } || \
+       { [ -n "$dev" ] && ip route replace default dev "$dev" $opts 2>/dev/null; } || \
+       ip route change default $opts 2>/dev/null; then
         INITCWND_DONE="true"
-        [[ "$silent" == "false" ]] && succ "InitCWND 已优化 (当前值: $current_cwnd)"
-        return 0
+        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/MSS $mss)"
+    else
+        [[ "$silent" == "false" ]] && warn "InitCWND 内核锁定，将切换应用层补偿"
     fi
-    
-    # === 3. 提取路由参数 ===
-    gw=$(echo "$info" | grep -oE 'via [^ ]+' | awk '{print $2}' || echo "")
-    dev=$(echo "$info" | grep -oE 'dev [^ ]+' | awk '{print $2}' || echo "")
-    mtu=$(echo "$info" | grep -oE 'mtu [0-9]+' | awk '{print $2}' || echo "1500")
-    mss=$((mtu - 40))
-    opts="initcwnd 15 initrwnd 15 advmss $mss"
-    
-    # === 4. 多策略尝试优化（带静默失败）===
-    # 策略 1: replace 完整路由（推荐）
-    if [ -n "$gw" ] && [ -n "$dev" ]; then
-        if ip route replace default via "$gw" dev "$dev" $opts 2>/dev/null; then
-            INITCWND_DONE="true"
-            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (15/MSS $mss)"
-            return 0
-        fi
-    fi
-    
-    # 策略 2: change 完整路由
-    if [ -n "$gw" ] && [ -n "$dev" ]; then
-        if ip route change default via "$gw" dev "$dev" $opts 2>/dev/null; then
-            INITCWND_DONE="true"
-            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (change 模式)"
-            return 0
-        fi
-    fi
-    
-    # 策略 3: 仅设备模式（无网关环境）
-    if [ -n "$dev" ]; then
-        if ip route replace default dev "$dev" $opts 2>/dev/null; then
-            INITCWND_DONE="true"
-            [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (dev 模式)"
-            return 0
-        fi
-    fi
-    
-    # 策略 4: 纯参数追加（最后手段）
-    if ip route change default $opts 2>/dev/null; then
-        INITCWND_DONE="true"
-        [[ "$silent" == "false" ]] && succ "InitCWND 优化成功 (兜底模式)"
-        return 0
-    fi
-    
-    # === 5. 所有策略失败 ===
-    [[ "$silent" == "false" ]] && warn "InitCWND 内核锁定，将切换应用层补偿"
-    return 0
 }
 
 # ZRAM/Swap 智能配置
