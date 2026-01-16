@@ -713,43 +713,35 @@ create_config() {
     fi
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
-	# 4. WARP JSON 片段生成
-	local warp_outbound=""
-	local warp_rule=""
-	if [[ "${USE_WARP:-false}" == "true" ]]; then
-	    warp_outbound=',
-	    {
-	      "type": "wireguard",
-	      "tag": "warp-out",
-	      "system_interface": false,
-	      "interface_name": "warp0",
-	      "local_address": [
-	        "'"$WARP_V4_ADDR"'",
-	        "'"$WARP_V6_ADDR"'"
-	      ],
-	      "private_key": "'"$WARP_PRIV_KEY"'",
-	      "peers": [
-	        {
-	          "server": "engage.cloudflareclient.com",
-	          "server_port": 2408,
-	          "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-	          "allowed_ips": ["0.0.0.0/0", "::/0"]
-	        }
-	      ],
-	      "mtu": 1280,
-	      "reserved": [0, 0, 0]
-	    }'
-	    
-	    warp_rule='
-	      {
-	        "domain_suffix": [
-	          "google.com", "googlevideo.com", "youtube.com",
-	          "openai.com", "chatgpt.com", "claude.ai",
-	          "amazon.com", "amazon.co.jp", "netflix.com", "netflix.net"
-	        ],
-	        "outbound": "warp-out"
-	      },'
-	fi
+	# 4. WARP JSON 片段生成（符合 Sing-box 1.12.0+ 新格式）
+local warp_outbound=""
+local warp_rule=""
+if [[ "${USE_WARP:-false}" == "true" ]]; then
+    warp_outbound=',
+    {
+      "type": "wireguard",
+      "tag": "warp-out",
+      "server": "engage.cloudflareclient.com",
+      "server_port": 2408,
+      "local_address": [
+        "'"$WARP_V4_ADDR"'",
+        "'"$WARP_V6_ADDR"'"
+      ],
+      "private_key": "'"$WARP_PRIV_KEY"'",
+      "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+      "mtu": 1280
+    }'
+    
+    warp_rule='
+      {
+        "domain_suffix": [
+          "google.com", "googlevideo.com", "youtube.com",
+          "openai.com", "chatgpt.com", "claude.ai",
+          "amazon.com", "amazon.co.jp", "netflix.com", "netflix.net"
+        ],
+        "outbound": "warp-out"
+      },'
+fi
 
     local mem_total=$(probe_memory_total); : ${mem_total:=64}; local timeout="30s"
     [ "$mem_total" -ge 450 ] && timeout="60s"
