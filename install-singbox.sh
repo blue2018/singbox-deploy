@@ -717,10 +717,7 @@ create_config() {
 	local warp_endpoint=""
 	local warp_outbound=""
 	local warp_rule=""
-	
 	if [[ "${USE_WARP:-false}" == "true" ]]; then
-	
-	    # WireGuard Endpoint（新架构）
 	    warp_endpoint='
 	    {
 	      "type": "wireguard",
@@ -736,21 +733,14 @@ create_config() {
 	      "mtu": 1280
 	    }'
 	
-	    # 通过 detour 使用 endpoint 的 outbound
 	    warp_outbound=',
-	    {
-	      "type": "direct",
-	      "tag": "warp-out",
-	      "detour": "warp-ep"
-	    }'
+	    { "type": "direct", "tag": "warp-out", "detour": "warp-ep" }'
 	
-	    # 路由规则保持不变
 	    warp_rule='
 	      {
 	        "domain_suffix": [
-	          "google.com", "googlevideo.com", "youtube.com",
-	          "openai.com", "chatgpt.com", "claude.ai",
-	          "amazon.com", "amazon.co.jp", "netflix.com", "netflix.net"
+	          "google.com","googlevideo.com","youtube.com","openai.com","chatgpt.com","claude.ai",
+	          "amazon.com","amazon.co.jp","netflix.com","netflix.net"
 	        ],
 	        "outbound": "warp-out"
 	      },'
