@@ -328,7 +328,6 @@ apply_userspace_adaptive_profile() {
     # === 2. 低内存环境 (100M以下) 专属优化 ===
     if [ "$mem_total" -lt 100 ]; then
         export GODEBUG="madvdontneed=1,asyncpreemptoff=1,scavenge_target=1"
-        export GOGC="100" 
         info "Runtime → 激进内存回收模式策略"
     fi
     export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="${VAR_HY2_BW:-100}"
@@ -418,7 +417,7 @@ optimize_system() {
 
     # 2. 差异化档位计算
     if [ "$mem_total" -ge 450 ]; then
-        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="500"
+        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="200"
         VAR_UDP_RMEM="33554432"; VAR_UDP_WMEM="33554432"
         VAR_SYSTEMD_NICE="-15"; VAR_SYSTEMD_IOSCHED="realtime"
         VAR_HY2_BW="500"; VAR_DEF_MEM="16777216"
@@ -426,10 +425,10 @@ optimize_system() {
         g_procs=$real_c; g_wnd=24; g_buf=4194304
         [ "$real_c" -ge 2 ] && { net_bgt=3000; net_usc=2000; } || { net_bgt=2500; net_usc=5000; }
         udp_mem_global_min=131072; udp_mem_global_pressure=262144; udp_mem_global_max=524288
-        max_udp_mb=$((mem_total * 50 / 100)); ct_max=65535; ct_stream_to=60
+        max_udp_mb=$((mem_total * 55 / 100)); ct_max=65535; ct_stream_to=60
         SBOX_OPTIMIZE_LEVEL="512M 旗舰版"
     elif [ "$mem_total" -ge 200 ]; then
-        SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="400"
+        SBOX_GOLIMIT="$((mem_total * 80 / 100))MiB"; SBOX_GOGC="150"
         VAR_UDP_RMEM="16777216"; VAR_UDP_WMEM="16777216"
         VAR_SYSTEMD_NICE="-10"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="300"; VAR_DEF_MEM="8388608"
@@ -437,25 +436,25 @@ optimize_system() {
         g_procs=$real_c; g_wnd=16; g_buf=2097152
         [ "$real_c" -ge 2 ] && { net_bgt=1500; net_usc=2500; } || { net_bgt=2000; net_usc=4500; }
         udp_mem_global_min=65536; udp_mem_global_pressure=131072; udp_mem_global_max=262144
-        max_udp_mb=$((mem_total * 43 / 100)); ct_max=32768; ct_stream_to=45
+        max_udp_mb=$((mem_total * 48 / 100)); ct_max=32768; ct_stream_to=45
         SBOX_OPTIMIZE_LEVEL="256M 增强版"
     elif [ "$mem_total" -ge 100 ]; then
-        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="350"
+        SBOX_GOLIMIT="$((mem_total * 78 / 100))MiB"; SBOX_GOGC="120"
         VAR_UDP_RMEM="8388608"; VAR_UDP_WMEM="8388608"
         VAR_SYSTEMD_NICE="-8"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="200"; VAR_DEF_MEM="4194304"
-        max_udp_mb=$((mem_total * 36 / 100)); VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
+        max_udp_mb=$((mem_total * 40 / 100)); VAR_BACKLOG=8000; swappiness_val=60; busy_poll_val=0
         [ "$real_c" -gt 2 ] && g_procs=2 || g_procs=$real_c; g_wnd=10; g_buf=1048576
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3000; } || { net_bgt=1500; net_usc=4000; }
         udp_mem_global_min=32768; udp_mem_global_pressure=65536; udp_mem_global_max=131072
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
-        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="200"
+        SBOX_GOLIMIT="$((mem_total * 82 / 100))MiB"; SBOX_GOGC="100"
         VAR_UDP_RMEM="10485760"; VAR_UDP_WMEM="10485760"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
         VAR_HY2_BW="130"; VAR_DEF_MEM="3145728"
         VAR_BACKLOG=5000; swappiness_val=100; busy_poll_val=0
-        max_udp_mb=$((mem_total * 32 / 100)); g_procs=1; g_wnd=6; g_buf=524288
+        max_udp_mb=$((mem_total * 35 / 100)); g_procs=1; g_wnd=6; g_buf=524288
         [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3500; } || { net_bgt=1300; net_usc=3500; }
         udp_mem_global_min=24576; udp_mem_global_pressure=49152; udp_mem_global_max=98304
         SBOX_OPTIMIZE_LEVEL="64M 激进版"
