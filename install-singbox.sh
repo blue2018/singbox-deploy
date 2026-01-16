@@ -807,18 +807,14 @@ respawn_max=3
 respawn_period=60
 [ -f /etc/sing-box/env ] && . /etc/sing-box/env
 export GOTRACEBACK=none
-export ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true
 command="/bin/sh"
-command_args="-c \"export ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true; $exec_cmd\""
+command_args="-c \"$exec_cmd\""
 pidfile="/run/\${RC_SVCNAME}.pid"
 rc_ulimit="-n 1000000"
 rc_nice="$cur_nice"
 rc_oom_score_adj="-500"
 depend() { need net; after firewall; }
-start_pre() { 
-    ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true /usr/bin/sing-box check -c /etc/sing-box/config.json >/dev/null 2>&1 || return 1
-    ([ -f "$SBOX_CORE" ] && /bin/bash "$SBOX_CORE" --apply-cwnd) & 
-}
+start_pre() { /usr/bin/sing-box check -c /etc/sing-box/config.json >/dev/null 2>&1 || return 1; ([ -f "$SBOX_CORE" ] && /bin/bash "$SBOX_CORE" --apply-cwnd) & }
 start_post() { sleep 2; pidof sing-box >/dev/null && (sleep 3; [ -f "$SBOX_CORE" ] && /bin/bash "$SBOX_CORE" --apply-cwnd) & }
 EOF
         chmod +x /etc/init.d/sing-box
@@ -848,10 +844,9 @@ Type=simple
 User=root
 EnvironmentFile=-/etc/sing-box/env
 Environment=GOTRACEBACK=none
-Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true
-ExecStartPre=/usr/bin/env ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true /usr/bin/sing-box check -c /etc/sing-box/config.json
+ExecStartPre=/usr/bin/sing-box check -c /etc/sing-box/config.json
 ExecStartPre=-/bin/bash $SBOX_CORE --apply-cwnd
-ExecStart=$taskset_bin -c $core_range /usr/bin/env ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true /usr/bin/sing-box run -c /etc/sing-box/config.json
+ExecStart=$taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json
 ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash $SBOX_CORE --apply-cwnd'
 Nice=$cur_nice
 ${io_config}
@@ -978,10 +973,6 @@ RAW_SALA='$FINAL_SALA'
 RAW_IP4='${RAW_IP4:-}'
 RAW_IP6='${RAW_IP6:-}'
 IS_V6_OK='${IS_V6_OK:-false}'
-USE_WARP='${USE_WARP:-false}'
-WARP_PRIV_KEY='${WARP_PRIV_KEY:-}'
-WARP_V4_ADDR='${WARP_V4_ADDR:-}'
-WARP_V6_ADDR='${WARP_V6_ADDR:-}'
 EOF
 
     # 导出函数
@@ -989,7 +980,7 @@ EOF
 get_cpu_core get_env_data display_links display_system_status detect_os copy_to_clipboard \
 create_config setup_service install_singbox info err warn succ optimize_system \
 apply_userspace_adaptive_profile apply_nic_core_boost \
-setup_zrm_swap safe_rtt check_tls_domain generate_cert verify_cert setup_warp_lightweight cleanup_temp backup_config restore_config load_env_vars)
+setup_zrm_swap safe_rtt check_tls_domain generate_cert verify_cert cleanup_temp backup_config restore_config load_env_vars)
 
     for f in "${funcs[@]}"; do
         if declare -f "$f" >/dev/null 2>&1; then declare -f "$f" >> "$CORE_TMP"; echo "" >> "$CORE_TMP"; fi
@@ -1043,11 +1034,10 @@ EOF
 set -uo pipefail
 SBOX_CORE="/etc/sing-box/core_script.sh"
 if [ ! -f "\$SBOX_CORE" ]; then echo "核心文件丢失"; exit 1; fi
-[[ \$# -gt 0 ]] && { export ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true; /bin/bash "\$SBOX_CORE" "\$@"; exit 0; }
+[[ \$# -gt 0 ]] && { /bin/bash "\$SBOX_CORE" "\$@"; exit 0; }
 source "\$SBOX_CORE" --detect-only
 
 service_ctrl() {
-    export ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true
     [ -x "/etc/init.d/sing-box" ] && rc-service sing-box "\$1" && return
     systemctl daemon-reload >/dev/null 2>&1 || true; systemctl "\$1" sing-box
 }
