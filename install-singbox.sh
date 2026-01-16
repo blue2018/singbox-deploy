@@ -714,13 +714,12 @@ create_config() {
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
 	# 4. WARP JSON 片段生成
-	local warp_outbound=""
-	local warp_rule=""
 	if [[ "${USE_WARP:-false}" == "true" ]]; then
 	    warp_outbound=',{
 	        "type": "wireguard",
 	        "tag": "warp-out",
-	        "endpoint": "engage.cloudflareclient.com:2408",
+	        "server": "engage.cloudflareclient.com",
+	        "server_port": 2408,
 	        "local_address": ["'"$WARP_V4_ADDR"'", "'"$WARP_V6_ADDR"'"],
 	        "private_key": "'"$WARP_PRIV_KEY"'",
 	        "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
@@ -744,7 +743,14 @@ create_config() {
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "fatal", "timestamp": true },
-  "dns": {"servers":[{"address":"8.8.4.4","detour":"direct-out"},{"address":"1.1.1.1","detour":"direct-out"}],"strategy":"$ds","independent_cache":false,"disable_cache":false,"disable_expire":false},
+  "dns": {
+    "servers": [
+      {"tag": "dns-remote", "address": "8.8.4.4", "detour": "direct-out"},
+      {"tag": "dns-backup", "address": "1.1.1.1", "detour": "direct-out"}
+    ],
+    "strategy": "$ds",
+    "independent_cache": false
+  },
   "inbounds": [{
     "type": "hysteria2",
     "tag": "hy2-in",
@@ -805,7 +811,6 @@ respawn_max=3
 respawn_period=60
 [ -f /etc/sing-box/env ] && . /etc/sing-box/env
 export GOTRACEBACK=none
-export ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true
 command="/bin/sh"
 command_args="-c \"$exec_cmd\""
 pidfile="/run/\${RC_SVCNAME}.pid"
@@ -847,7 +852,6 @@ ExecStartPre=/usr/bin/sing-box check -c /etc/sing-box/config.json
 ExecStartPre=-/bin/bash $SBOX_CORE --apply-cwnd
 ExecStart=$taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json
 ExecStartPost=-/bin/bash -c 'sleep 3; /bin/bash $SBOX_CORE --apply-cwnd'
-Environment=ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true
 Nice=$cur_nice
 ${io_config}
 LimitNOFILE=1000000
