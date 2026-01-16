@@ -784,8 +784,7 @@ create_config() {
     ],
     "final": "direct-out"
   }
-},
-${endpoints_json}
+}
 EOF
 chmod 600 "/etc/sing-box/config.json"
 }
