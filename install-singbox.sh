@@ -726,7 +726,7 @@ create_config() {
             "mtu": 1280
         }'
         # 生成 Route Rule 片段 (针对常用解锁域名)
-        warp_rule='{ "domain_suffix": ["google.com", "googlevideo.com", "openai.com", "chatgpt.com", "claude.ai", "netflix.com", "netflix.net", "nflxvideo.net"], "outbound": "warp-out" },'
+        warp_rule='{ "domain_suffix": ["google.com", "googlevideo.com", "youtube.com", "openai.com", "chatgpt.com", "claude.ai", "amazon.com", "amazon.co.jp", "netflix.com", "netflix.net", "nflxvideo.net"], "outbound": "warp-out" },'
     fi
 
     local mem_total=$(probe_memory_total); : ${mem_total:=64}; local timeout="30s"
