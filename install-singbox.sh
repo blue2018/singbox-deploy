@@ -1100,8 +1100,9 @@ USER_PORT=$(prompt_for_port)
 optimize_system
 install_singbox "install"
 echo -e "-----------------------------------------------"
-read -r -p "是否集成轻量化 WARP 出口 (解决验证码/解锁)? [Y/N]: " warp_yn
-[[ "$warp_yn" =~ ^[Yy]$ ]] && { setup_warp_lightweight; SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} + WARP"; } || USE_WARP="false"
+read -r -p "是否集成轻量化 WARP 出口? [y/N] (默认N): " warp_yn
+[[ "$warp_yn" =~ ^[Yy]$ ]] && setup_warp_lightweight || { USE_WARP="false"; info "跳过 WARP 集成，保持原生 IP 出口"; }
+[[ "$USE_WARP" == "true" ]] && SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL} + WARP"
 generate_cert
 create_config "$USER_PORT"
 create_sb_tool
