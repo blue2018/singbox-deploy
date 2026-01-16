@@ -686,42 +686,42 @@ install_singbox() {
 }
 
 # ==========================================
-# 配置文件生成
+# 配置文件生成 (v1.12 最终兼容版)
 # ==========================================
 create_config() {
     local PORT_HY2="${1:-}"
     mkdir -p /etc/sing-box
-    # 针对 v1.12+ 的 DNS 策略调整
+    
+    # 策略调整：v1.12 建议在 route 中统一管理 domain_strategy
     local ds="ipv4_only"
     [ "${IS_V6_OK:-false}" = "true" ] && ds="prefer_ipv4"
     
-    # 1. 端口确定逻辑
     if [ -z "$PORT_HY2" ]; then
         if [ -f /etc/sing-box/config.json ]; then PORT_HY2=$(jq -r '.inbounds[0].listen_port' /etc/sing-box/config.json)
         else PORT_HY2=$(shuf -i 10000-60000 -n 1); fi
     fi
     
-    # 2. PSK (密码) 确定逻辑
     local PSK
     if [ -f /etc/sing-box/config.json ]; then PSK=$(jq -r '.inbounds[0].users[0].password' /etc/sing-box/config.json)
     elif [ -f /proc/sys/kernel/random/uuid ]; then PSK=$(cat /proc/sys/kernel/random/uuid | tr -d '\n')
     else local s=$(openssl rand -hex 16); PSK="${s:0:8}-${s:8:4}-${s:12:4}-${s:16:4}-${s:20:12}"; fi
 
-    # 3. Salamander 混淆密码确定逻辑
     local SALA_PASS=""
     if [ -f /etc/sing-box/config.json ]; then
         SALA_PASS=$(jq -r '.inbounds[0].obfs.password // empty' /etc/sing-box/config.json 2>/dev/null || echo "")
     fi
     [ -z "$SALA_PASS" ] && SALA_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
-    # 4. WARP JSON 片段生成 (修复 v1.12+ 兼容性: 使用 endpoint 替代 server/server_port)
+    # WARP: 回滚到 server/server_port 以避开 "unknown field endpoint"
+    # 配合下文 setup_service 中的环境变量生效
     local warp_outbound=""
     local warp_rule=""
     if [[ "${USE_WARP:-false}" == "true" ]]; then
         warp_outbound=',{
             "type": "wireguard",
             "tag": "warp-out",
-            "endpoint": ["engage.cloudflareclient.com:2408"],
+            "server": "engage.cloudflareclient.com",
+            "server_port": 2408,
             "local_address": ["'"$WARP_V4_ADDR"'", "'"$WARP_V6_ADDR"'"],
             "private_key": "'"$WARP_PRIV_KEY"'",
             "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
@@ -742,7 +742,9 @@ create_config() {
     [ "$mem_total" -lt 450 ] && [ "$mem_total" -ge 200 ] && timeout="50s"
     [ "$mem_total" -lt 200 ] && [ "$mem_total" -ge 100 ] && timeout="40s"
     
-    # 5. 写入 Sing-box 配置文件 (修复 Route 和 DNS 警告)
+    # 写入配置：
+    # 1. 移除 outbound 中的 domain_strategy (消除 legacy 警告)
+    # 2. 在 route 中添加 default_domain_resolver (消除 legacy 警告)
     cat > "/etc/sing-box/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
@@ -778,7 +780,8 @@ create_config() {
       { "protocol": "dns", "outbound": "direct-out" }
     ],
     "final": "direct-out",
-    "auto_detect_interface": true
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns-remote"
   }
 }
 EOF
@@ -786,7 +789,7 @@ EOF
 }
 
 # ==========================================
-# 服务配置
+# 服务配置 (环境变量注入修复版)
 # ==========================================
 setup_service() {
     local CPU_N="$CPU_CORE" core_range=""
@@ -798,6 +801,11 @@ setup_service() {
     [ "$CPU_N" -le 1 ] && core_range="0" || core_range="0-$((CPU_N - 1))"
     info "配置服务 (核心: $CPU_N | 绑定: $core_range | 权重: $cur_nice)..."
     
+    # 关键修复：创建环境变量文件，允许 WARP 使用旧版字段
+    # 这是解决 FATAL 错误的唯一官方途径
+    echo "ENABLE_DEPRECATED_WIREGUARD_OUTBOUND=true" > /etc/sing-box/env
+    chmod 600 /etc/sing-box/env
+
     if [ "$OS" = "alpine" ]; then
         command -v taskset >/dev/null || apk add --no-cache util-linux >/dev/null 2>&1
         local exec_cmd="nice -n $cur_nice $taskset_bin -c $core_range /usr/bin/sing-box run -c /etc/sing-box/config.json"
@@ -813,7 +821,9 @@ supervisor="supervise-daemon"
 respawn_delay=10
 respawn_max=3
 respawn_period=60
+# 导入我们刚刚创建的环境变量文件
 [ -f /etc/sing-box/env ] && . /etc/sing-box/env
+export ENABLE_DEPRECATED_WIREGUARD_OUTBOUND
 export GOTRACEBACK=none
 command="/bin/sh"
 command_args="-c \"$exec_cmd\""
@@ -833,9 +843,11 @@ EOF
         [ -n "$SBOX_MEM_MAX" ] && mem_config+="MemoryMax=$SBOX_MEM_MAX"$'\n'
         local io_config=""
         if [ "$mem_total" -ge 200 ]; then
-            [ "$io_class" = "realtime" ] && [ "$mem_total" -ge 450 ] && \
-                io_config="-IOSchedulingClass=realtime"$'\n'"-IOSchedulingPriority=0" || \
-                io_config="-IOSchedulingClass=best-effort"$'\n'"-IOSchedulingPriority=2"
+            if [ "$io_class" = "realtime" ] && [ "$mem_total" -ge 450 ]; then
+                 io_config="-IOSchedulingClass=realtime"$'\n'"-IOSchedulingPriority=0"
+            else
+                 io_config="-IOSchedulingClass=best-effort"$'\n'"-IOSchedulingPriority=2"
+            fi
         else io_config="-IOSchedulingClass=best-effort"$'\n'"-IOSchedulingPriority=4"; fi
         local cpu_quota=$((CPU_N * 100))
         [ "$cpu_quota" -lt 100 ] && cpu_quota=100        
@@ -850,7 +862,7 @@ StartLimitBurst=3
 [Service]
 Type=simple
 User=root
-EnvironmentFile=-/etc/sing-box/env
+EnvironmentFile=/etc/sing-box/env
 Environment=GOTRACEBACK=none
 ExecStartPre=/usr/bin/sing-box check -c /etc/sing-box/config.json
 ExecStartPre=-/bin/bash $SBOX_CORE --apply-cwnd
@@ -879,7 +891,8 @@ EOF
         local ma=$(awk '/^MemAvailable:/{a=$2;f=1} /^MemFree:|Buffers:|Cached:/{s+=$2} END{print (f?a:s)}' /proc/meminfo 2>/dev/null); local ma_mb=$(( ${ma:-0} / 1024 ))
         succ "sing-box 启动成功 | 总内存: ${mem_total:-N/A} MB | 可用: ${ma_mb} MB | 模式: $([[ "$INITCWND_DONE" == "true" ]] && echo "内核" || echo "应用层")"
     else 
-        err "sing-box 启动失败，最近日志："; [ "$OS" = "alpine" ] && { logread 2>/dev/null | tail -n 5 || tail -n 5 /var/log/messages 2>/dev/null || echo "无法获取系统日志"; } || { journalctl -u sing-box -n 5 --no-pager 2>/dev/null || echo "无法获取服务日志"; }
+        err "sing-box 启动失败，最近日志："
+        [ "$OS" = "alpine" ] && { logread 2>/dev/null | tail -n 5 || tail -n 5 /var/log/messages 2>/dev/null || echo "无法获取系统日志"; } || { journalctl -u sing-box -n 5 --no-pager 2>/dev/null || echo "无法获取服务日志"; }
         echo -e "\033[1;33m[配置自检]\033[0m"; /usr/bin/sing-box check -c /etc/sing-box/config.json || true; exit 1
     fi
 }
