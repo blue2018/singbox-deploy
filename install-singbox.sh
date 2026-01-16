@@ -732,10 +732,8 @@ create_config() {
 		  "server_port": 2408,
 		  "mtu": 1280
 		}'
-
 	    warp_outbound=',
 	    { "type": "direct", "tag": "warp-out", "detour": "warp-ep" }'
-	
 	    warp_rule='
 	      {
 	        "domain_suffix": [
@@ -786,7 +784,8 @@ create_config() {
     ],
     "final": "direct-out"
   }
-}
+},
+${endpoints_json}
 EOF
 chmod 600 "/etc/sing-box/config.json"
 }
