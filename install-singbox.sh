@@ -293,36 +293,32 @@ EOF
 
 # 动态 RTT 内存钳位 (激进融合纯计算版)
 safe_rtt() {
-    local RTT_AVG="$1" max_udp_pages="$2" udp_mem_global_min="$3" udp_mem_global_pressure="$4" udp_mem_global_max="$5"     
-    
-    # 1. 基础系数计算 (保持原逻辑)
-    rtt_scale_min=$((RTT_AVG * 256))
-    rtt_scale_pressure=$((RTT_AVG * 512))
-    rtt_scale_max=$((RTT_AVG * 1024))
-    
-    # === 新增：带宽 BDP 保底逻辑 (关键优化) ===
-    # 目标：跑满 200Mbps (约 25MB/s)。
-    # 假设最差情况 RTT=200ms, BDP = 25MB * 0.2 = 5MB。
-    # 加上 50% 的抖动冗余 -> 7.5MB。
-    # 1 Page = 4KB, 7.5MB ≈ 1920 Pages。
-    local bdp_floor=1920
-    
-    # 如果计算出的动态值低于保底值，强制拉升
-    [ "$rtt_scale_min" -lt "$bdp_floor" ] && rtt_scale_min=$bdp_floor
-    [ "$rtt_scale_pressure" -lt $((bdp_floor * 2)) ] && rtt_scale_pressure=$((bdp_floor * 2))
-    [ "$rtt_scale_max" -lt $((bdp_floor * 4)) ] && rtt_scale_max=$((bdp_floor * 4))
-    
-    # 2. 内存上限保护 (更加精准的钳位)
-    # 对于 96M 机器，max_udp_pages 大约是 45MB。rtt_scale_max 可能计算出 30MB，这是安全的。
+    local RTT_AVG="$1" max_udp_pages="$2" udp_mem_global_min="$3" udp_mem_global_pressure="$4" udp_mem_global_max="$5"    
+    # 1. 基础 BDP 计算
+    rtt_scale_min=$((RTT_AVG * 256)); rtt_scale_pressure=$((RTT_AVG * 512)); rtt_scale_max=$((RTT_AVG * 1024))
+    local q_min q_press q_max q_msg
+    # 2. 根据延迟切换 QUIC 模式
+    [ "$RTT_AVG" -ge 150 ] && { q_min=262144; q_press=524288; q_max=1048576; q_msg=" (QUIC长距模式)"; } \
+                           || { q_min=131072; q_press=262144; q_max=524288; q_msg=" (QUIC竞速模式)"; }
+    SBOX_OPTIMIZE_LEVEL="${SBOX_OPTIMIZE_LEVEL:-}${q_msg}"
+    # 3. QUIC 最小值保护（确保缓冲区下限）
+    [ "$q_min" -gt "$rtt_scale_min" ] && rtt_scale_min=$q_min
+    [ "$q_press" -gt "$rtt_scale_pressure" ] && rtt_scale_pressure=$q_press
+    [ "$q_max" -gt "$rtt_scale_max" ] && rtt_scale_max=$q_max
+    # 4. 核心：激进内存保护逻辑 (当超过物理内存 40%-80% 限制时执行钳位)
     if [ "$rtt_scale_max" -gt "$max_udp_pages" ]; then
         rtt_scale_max=$max_udp_pages
-        # 压力值设为最大值的 90%，留出缓冲
-        rtt_scale_pressure=$((max_udp_pages * 90 / 100))
-        # 最小值为最大值的 75%，保证吞吐下限
-        rtt_scale_min=$((max_udp_pages * 75 / 100))
+        rtt_scale_pressure=$((max_udp_pages * 95 / 100))
+        rtt_scale_min=$((max_udp_pages * 80 / 100))
     fi
-    
-    # 3. 最终全局参数边界检查
+    # 5. 实际可用内存二次校验（防宕机保护线：预留 10% 呼吸空间）
+    local avail=$(awk '/MemAvailable/{print int($2/4)}' /proc/meminfo 2>/dev/null || echo "$max_udp_pages")
+    if [ "$rtt_scale_max" -gt "$avail" ]; then
+        rtt_scale_max=$((avail * 90 / 100))
+        rtt_scale_pressure=$((rtt_scale_max * 95 / 100))
+        rtt_scale_min=$((rtt_scale_max * 80 / 100))
+    fi
+    # 6. 档位保护：确保最终值不超出系统定义的全局硬上限
     rtt_scale_max=$(( rtt_scale_max < udp_mem_global_max ? rtt_scale_max : udp_mem_global_max ))
     rtt_scale_pressure=$(( rtt_scale_pressure < udp_mem_global_pressure ? rtt_scale_pressure : udp_mem_global_pressure ))
     rtt_scale_min=$(( rtt_scale_min < udp_mem_global_min ? rtt_scale_min : udp_mem_global_min ))
@@ -331,35 +327,22 @@ safe_rtt() {
 # sing-box 用户态运行时调度人格（Go/QUIC/缓冲区自适应）
 apply_userspace_adaptive_profile() {
     local g_procs="$1" wnd="$2" buf="$3" real_c="$4" mem_total="$5"
-    
-    # 1. 动态设定 GOMEMLIMIT (利用率从保守的 65% 提升到 80%)
-    # 即使是 64M 机器，51MB 给 sing-box 也是安全的，因为 kernel buffer 是内核管理的，不占这部分。
-    local limit_mb=$((mem_total * 80 / 100))
-    export GOMEMLIMIT="${limit_mb}MiB"
-    
-    # 2. 智能 GOGC 策略
-    # 小内存机器不建议设死 GOGC=100，建议设为 off 或大数值，完全依赖 Memory Limit 触发 GC
-    # 这样可以最大程度减少 GC 带来的 CPU 停顿
-    export GOGC=200 
+	export GOGC="${SBOX_GOGC:-100}" GOMEMLIMIT="${SBOX_GOLIMIT:-48MiB}" GOMAXPROCS="$g_procs" GODEBUG="madvdontneed=1"
+    # === 1. GOMAXPROCS 智能调整 ===
+    if [ "$real_c" -eq 1 ]; then
+        export GOMAXPROCS=2      # 单核强行设置 2 个 P (Processor) 能让 GC 协程不完全阻塞业务协程
+        [ "$mem_total" -lt 100 ] && info "极低内存环境: 启用并发 GC 优化"
+    fi    
 
-    # 3. 关键修正：条件式开启 madvdontneed
-    # 只有当内存真的小于 75M (如 64M 机型) 时才开启激进回收
-    if [ "$mem_total" -lt 75 ]; then
-        export GODEBUG="madvdontneed=1,scavenge_target=1"
-        info "Runtime → 激进回收模式 (LowMem)"
-    else
-        # 96M 机器走这里：关闭强制回收，用空间换 CPU 时间
-        export GODEBUG="asyncpreemptoff=1"
-        info "Runtime → 性能优先模式 (96M+)"
+    # === 2. 低内存环境 (100M以下) 专属优化 ===
+    if [ "$mem_total" -lt 100 ]; then
+        export GODEBUG="madvdontneed=1,asyncpreemptoff=1,scavenge_target=1"
+        info "Runtime → 激进内存回收模式策略"
     fi
-
-    # ... (保持原有的 export 和文件写入逻辑不变) ...
-    export GOMAXPROCS="$g_procs"
-    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd"
-    export SINGBOX_UDP_RECVBUF="$buf"
-    export SINGBOX_UDP_SENDBUF="$buf" 
-    export VAR_HY2_BW="${VAR_HY2_BW:-200}"
+    export SINGBOX_QUIC_MAX_CONN_WINDOW="$wnd" VAR_HY2_BW="${VAR_HY2_BW:-100}"
+    export SINGBOX_UDP_RECVBUF="$buf" SINGBOX_UDP_SENDBUF="$buf"  
     
+    # === 3. 持久化配置 (修复潜在变量引用问题) ===
     mkdir -p /etc/sing-box
     cat > /etc/sing-box/env <<EOF
 GOMAXPROCS=$GOMAXPROCS
@@ -367,9 +350,9 @@ GOGC=$GOGC
 GOMEMLIMIT=$GOMEMLIMIT
 GODEBUG=$GODEBUG
 SINGBOX_QUIC_MAX_CONN_WINDOW=$SINGBOX_QUIC_MAX_CONN_WINDOW
-SINGBOX_UDP_RECVBUF=$SINGBOX_UDP_RECVBUF
-SINGBOX_UDP_SENDBUF=$SINGBOX_UDP_SENDBUF
-VAR_HY2_BW=$VAR_HY2_BW
+SINGBOX_UDP_RECVBUF=$buf
+SINGBOX_UDP_SENDBUF=$buf
+VAR_HY2_BW=${VAR_HY2_BW}
 EOF
     chmod 644 /etc/sing-box/env
     
@@ -386,8 +369,7 @@ apply_nic_core_boost() {
     local IFACE=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
     [ -z "$IFACE" ] && return 0
     local real_c="$1" bgt="$2" usc="$3"
-    # 1. 强制调大 Budget，让软中断一次处理更多包
-    sysctl -w net.core.netdev_budget=600 net.core.netdev_budget_usecs=8000 >/dev/null 2>&1 || true
+    sysctl -w net.core.netdev_budget="$bgt" net.core.netdev_budget_usecs="$usc" >/dev/null 2>&1 || true
 	
     local driver=""
     if [ -L "/sys/class/net/$IFACE/device/driver" ]; then
@@ -396,7 +378,7 @@ apply_nic_core_boost() {
     
     local target_qlen=10000
     case "$driver" in
-        virtio_net|veth|"") target_qlen=5000 ;;  # 修改: 增加了空驱动判断，虚拟化环境降低队列
+        virtio_net|veth|"") target_qlen=3000 ;;  # 修改: 增加了空驱动判断，虚拟化环境降低队列
         *) target_qlen=10000 ;;
     esac
     
@@ -405,13 +387,11 @@ apply_nic_core_boost() {
         
         if command -v ethtool >/dev/null 2>&1; then
             ethtool -K "$IFACE" gro on gso on tso on lro off 2>/dev/null || true
-            # 关键优化：大幅提升中断延迟阈值 (20 -> 100+)
-            # 这会增加 0.1ms 的延迟，但能救活 CPU，对吞吐量至关重要
-            local tuned_usc=100 
-            [ "$real_c" -ge 2 ] && tuned_usc=150
-            ethtool -C "$IFACE" rx-usecs "$tuned_usc" tx-usecs "$tuned_usc" 2>/dev/null || true
-            # 尝试增加 Ring Buffer
-            ethtool -G "$IFACE" rx 2048 tx 2048 2>/dev/null || true
+            ethtool -K "$IFACE" tx-udp-segmentation on 2>/dev/null || true
+            ethtool -K "$IFACE" rx-udp-gro-forwarding on 2>/dev/null || true
+            ethtool -C "$IFACE" adaptive-rx on adaptive-tx on 2>/dev/null || true
+            [ "$real_c" -ge 2 ] && us=50 || us=20
+            ethtool -C "$IFACE" rx-usecs "$us" tx-usecs "$us" 2>/dev/null || true
         fi
     fi
     
@@ -437,7 +417,7 @@ optimize_system() {
     local RTT_AVG=$(probe_network_rtt) 
     local mem_total=$(probe_memory_total)
     local real_c="$CPU_CORE" ct_max=16384 ct_udp_to=30 ct_stream_to=30
-    local g_procs g_wnd g_buf net_bgt net_usc dyn_buf
+    local g_procs g_wnd g_buf net_bgt net_usc
     local max_udp_mb udp_mem_global_min udp_mem_global_pressure udp_mem_global_max
     local swappiness_val="${SWAPPINESS_VAL:-10}" busy_poll_val="${BUSY_POLL_VAL:-0}" VAR_BACKLOG="${VAR_BACKLOG:-5000}"
     
@@ -479,15 +459,13 @@ optimize_system() {
         SBOX_OPTIMIZE_LEVEL="128M 紧凑版"
     else
         SBOX_GOLIMIT="$((mem_total * 65 / 100))MiB"; SBOX_GOGC="100"
-		dyn_buf=$(( mem_total * 1024 * 1024 / 8 ))
-		[ "$dyn_buf" -lt 6291456 ] && dyn_buf=6291456
-        VAR_UDP_RMEM="$dyn_buf"; VAR_UDP_WMEM="$dyn_buf"
+        VAR_UDP_RMEM="4194304"; VAR_UDP_WMEM="4194304"
         VAR_SYSTEMD_NICE="-5"; VAR_SYSTEMD_IOSCHED="best-effort"
-        VAR_HY2_BW="200"; VAR_DEF_MEM="4194304"
-        VAR_BACKLOG=8192; swappiness_val=60; busy_poll_val=0
-        max_udp_mb=$((mem_total * 60 / 100)); g_procs=1; g_wnd=20; g_buf=$(( dyn_buf / 4 ))
-		[ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3500; } || { net_bgt=1300; net_usc=3500; }
-        udp_mem_global_min=$((dyn_buf / 4096)); udp_mem_global_pressure=$((dyn_buf * 2 / 4096)); udp_mem_global_max=$((mem_total * 1024 * 1024 / 4096))
+        VAR_HY2_BW="130"; VAR_DEF_MEM="2097152"
+        VAR_BACKLOG=8192; swappiness_val=100; busy_poll_val=0
+        max_udp_mb=$((mem_total * 45 / 100)); g_procs=1; g_wnd=6; g_buf=524288
+        [ "$real_c" -ge 2 ] && { net_bgt=1000; net_usc=3500; } || { net_bgt=1300; net_usc=3500; }
+        udp_mem_global_min=24576; udp_mem_global_pressure=49152; udp_mem_global_max=65536
         SBOX_OPTIMIZE_LEVEL="64M 激进版"
     fi
 
